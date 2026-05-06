@@ -1,0 +1,22 @@
+# AGENTS.md — JARVIS environment
+
+Hand-curated by Jack. Treat as authoritative.
+
+## Host
+- Hostname: m710q
+- OS: <distro + version>
+- User: jarvis (full sudo)
+
+## What's running
+- Minecraft server: systemctl service `minecraft.service`,
+  world dir at /opt/minecraft/world, backed up nightly to /backup/minecraft.
+- <other services as added>
+
+## Conventions
+- Jack's projects live in /home/jack/projects/
+- JARVIS source: ~/jarvis/
+- JARVIS data: ~/.jarvis/
+- JARVIS audit log: ~/.jarvis/data/audit.log
+
+## Notes
+<anything else worth documenting that doesn't fit above>

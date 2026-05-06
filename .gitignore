@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Local env (templates only — runtime secrets live in ~/.jarvis/.env)
+.env

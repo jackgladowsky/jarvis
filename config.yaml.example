@@ -1,0 +1,34 @@
+# JARVIS configuration. Edit freely, restart the service to apply.
+# Secrets live in .env, not here. Copy this to ~/.jarvis/config.yaml.
+
+agent:
+  provider: codex                             # "codex" or "anthropic"
+  model: gpt-5                                # actual identifier TBD
+
+session:
+  inactivity_threshold_minutes: 240           # 4 hours
+  max_duration_hours: 24
+  summarize_on_rotation: true                 # append a TOC entry to recent.md on rotation
+  announce_new_session: false
+
+compaction:
+  enabled: true
+  reserve_tokens: 16384                       # compact when context_tokens > (window - reserve_tokens)
+  keep_recent_tokens: 20000                   # always preserve this much of the tail uncompacted
+
+tools:
+  bash:
+    default_timeout_seconds: 60
+    max_timeout_seconds: 600
+
+telegram:
+  show_typing: true
+  long_tool_call_seconds: 5
+  parse_mode: none                            # "none" / "MarkdownV2" / "HTML"
+                                              # default "none" — MarkdownV2 escaping is a footgun
+
+logging:
+  audit_log_enabled: true
+  audit_log_max_value_bytes: 2048             # truncate logged values larger than this
+  audit_log_redact_patterns: true             # redact API-key-shaped strings
+  level: info                                 # "debug" / "info" / "warn" / "error"
