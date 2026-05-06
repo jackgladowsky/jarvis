@@ -5,3 +5,6 @@ dist/
 
 # Local env (templates only — runtime secrets live in ~/.jarvis/.env)
 .env
+
+# Local dev data sandbox (set JARVIS_DATA_DIR=$PWD/.jarvis-dev)
+.jarvis-dev/
