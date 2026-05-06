@@ -496,11 +496,11 @@ Searchable history of past sessions. "What did we decide about X two weeks ago?"
 
 ## 12. Telegram Transport
 
-- **Library:** `grammy` (TBD, but leading candidate).
+- **Library:** `grammy`.
 - **Auth:** Hard allowlist of Telegram user IDs from `TELEGRAM_ALLOWED_USER_IDS` in `.env`. Messages from non-allowlisted users are silently dropped + logged.
-- **Streaming:** Long responses stream by editing the placeholder message as tokens arrive. Falls back to "working..." indicator for long tool calls.
-- **Markdown:** Default `parse_mode: none`. MarkdownV2 escaping is a footgun — a single unescaped `.` or `_` causes the entire send to fail. Plain text is reliable; code blocks (using triple-backticks) are added selectively when JARVIS wants to show output. Switching back to MarkdownV2 is a config change if it ever feels worth it.
-- **Long tool calls:** If a tool runs longer than `telegram.long_tool_call_seconds`, edit the placeholder to show progress.
+- **Typing indicator:** while the agent is processing, fire `chat_action: typing` every 4 seconds (Telegram expires the indicator after ~5s, so we re-fire on a timer). Stops the moment the run resolves.
+- **Token streaming for the final response:** subscribe to pi-agent-core events. For each assistant message, examine its content blocks: if any `toolCall` block appears, the message is part of internal reasoning and is **not** shown to the user. Only assistant messages that are pure text (no tool calls) are streamed to Telegram via a placeholder + debounced edits (~1.5s minimum between edits to stay under Telegram's edit rate limit). Net effect: the user sees typing → final answer streaming in. Tool calls and "let me check…" filler messages are invisible.
+- **Markdown:** Default `parse_mode: HTML`. Responses run through a small markdown→HTML converter (`src/lib/format.ts`) that handles fenced code blocks, inline `code`, `**bold**`, and `*italic*`; everything else is HTML-escaped for safety. MarkdownV2 was rejected as a footgun (one unescaped `.` blows up the whole send). Setting `parse_mode: none` in config falls back to raw text without conversion.
 - **Per-chat serialization:** see §10.
 - **Bot token security:** Token in `~/.jarvis/.env`, never committed. The user-ID allowlist is the real defense.
 
@@ -626,6 +626,11 @@ The audit log is the one safeguard now that confirmation is gone. It must be use
 - System prompt loaded verbatim from file.
 - All four tools (read, write, edit, bash).
 - Per-chat mutex.
+
+### Phase 3.5 — Telegram polish
+- Typing indicator on a 4s re-fire timer, active for the duration of the agent run.
+- Token-by-token streaming of the final response via placeholder + debounced edits, with tool-call messages skipped (the user sees only the final answer, never the internal reasoning).
+- Markdown→HTML conversion for code blocks and basic inline formatting; default `parse_mode: HTML`.
 
 ### Phase 4 — Sessions
 - Implement Model C session manager.

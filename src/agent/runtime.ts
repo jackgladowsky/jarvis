@@ -1,14 +1,19 @@
 // The agent runtime. Owns the long-lived `Agent` instance, resolves the
-// configured model, and exposes `handleMessage(text)` to the transport layer.
+// configured model, and exposes `handleMessage(text, callbacks)` to the
+// transport layer.
+//
+// Phase 3.5 added the streaming callback API: the transport subscribes to
+// per-assistant-message updates so it can stream the final response into
+// Telegram via placeholder edits. The "skip messages with tool calls" rule
+// (Jack's preference: only the final answer is shown to the user, never the
+// internal tool-call/reasoning steps) lives in this file so the transport
+// stays UI-only.
 //
 // Phase 3 deliberately uses ONE global Agent for the whole process — every
 // chat shares the same conversation history. Phase 4 (DESIGN.md §10)
-// replaces this with per-chat session management: a fresh JSONL session per
-// chat, time-windowed rotation, summarization on rotation, etc. The
-// transport-layer per-chat mutex (lib/mutex.ts) is forward-compatible with
-// that change.
+// replaces this with per-chat session management.
 
-import { Agent } from "@mariozechner/pi-agent-core";
+import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
 import { getModel, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
@@ -50,42 +55,96 @@ const agent = new Agent({
     systemPrompt,
     model: resolveModel(),
     tools: allTools,
-    // No reasoning-mode budget for v1. Could expose via config later.
     thinkingLevel: "off",
   },
   // pi-agent-core invokes this before each LLM request, after any expiry-based
-  // refresh logic in auth.ts. Returning undefined makes the request fail
-  // before going out.
+  // refresh logic in auth.ts.
   getApiKey: getApiKeyForProvider,
 });
 
-// Walk backward through the transcript and pull out the most recent assistant
-// message's plain-text content. Tool-call blocks and thinking blocks are
-// skipped — Telegram wants a single user-facing string.
-function extractAssistantText(): string {
-  for (let i = agent.state.messages.length - 1; i >= 0; i--) {
-    const m = agent.state.messages[i];
-    if (m.role !== "assistant") continue;
+// Streaming callbacks invoked per assistant message. Tool-call messages are
+// filtered out before any callback fires — see the listener below.
+export interface StreamCallbacks {
+  /** Called repeatedly as a text-only assistant message streams in. `text` is
+   *  the full accumulated text so far (not a delta). */
+  onAssistantUpdate?: (text: string) => void | Promise<void>;
+  /** Called once when a text-only assistant message finishes. `text` is the
+   *  final value. */
+  onAssistantEnd?: (text: string) => void | Promise<void>;
+  /** Called when a message that was streaming as text is reclassified as a
+   *  tool-call message (a `toolCall` block appeared mid-stream). The transport
+   *  should clean up any placeholder UI it had created for it. */
+  onAbandon?: () => void | Promise<void>;
+}
 
-    const text = m.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text")
-      .map((c) => c.text)
-      .join("\n")
-      .trim();
+// Pull plain-text content out of an assistant message, joining multiple text
+// blocks. Thinking blocks and tool calls are skipped.
+function extractText(content: ReadonlyArray<{ type: string; text?: string }>): string {
+  return content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("");
+}
 
-    if (text) return text;
-    // Fall back to the error message if the turn ended with stopReason="error".
-    if (m.errorMessage) return `[error] ${m.errorMessage}`;
-    return "(no text in response)";
-  }
-  return "(no response)";
+// True if this message contains any toolCall block — the signal that this
+// message is part of internal reasoning rather than user-facing text.
+function hasToolCall(content: ReadonlyArray<{ type: string }>): boolean {
+  return content.some((c) => c.type === "toolCall");
 }
 
 // Public entrypoint called from transport/telegram.ts under the per-chat lock.
-// Awaits the full agent run (any tool calls finish before this returns) and
-// hands back the final assistant text.
-export async function handleMessage(text: string): Promise<string> {
+// Subscribes to agent events for the duration of the prompt, invokes the
+// passed-in callbacks for streamable assistant messages, and resolves once
+// the agent run is fully settled.
+export async function handleMessage(
+  text: string,
+  callbacks: StreamCallbacks = {},
+): Promise<void> {
   log.debug("agent prompt", { length: text.length });
-  await agent.prompt(text);
-  return extractAssistantText();
+
+  // Per-message bookkeeping. Within a single prompt() call there can be
+  // multiple assistant messages (e.g., text → tool call → final text). We
+  // track the most recent classification so we know when to fire `onAbandon`.
+  let currentMsgIsAbandoned = false;
+
+  const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+    if (event.type === "message_start" && event.message.role === "assistant") {
+      // New assistant message — reset abandon flag.
+      currentMsgIsAbandoned = false;
+      return;
+    }
+
+    if (event.type === "message_update" && event.message.role === "assistant") {
+      const m = event.message;
+      if (hasToolCall(m.content)) {
+        // First time we see a tool-call block in this message: tell the
+        // transport to discard whatever placeholder it had.
+        if (!currentMsgIsAbandoned) {
+          currentMsgIsAbandoned = true;
+          await callbacks.onAbandon?.();
+        }
+        return;
+      }
+      // Pure text so far — stream the latest accumulated text.
+      const t = extractText(m.content).trim();
+      if (t) await callbacks.onAssistantUpdate?.(t);
+      return;
+    }
+
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      const m = event.message;
+      // Tool-call messages are not sent to the user. The transcript still
+      // contains them — just not for display.
+      if (hasToolCall(m.content)) return;
+      const t = extractText(m.content).trim();
+      if (t) await callbacks.onAssistantEnd?.(t);
+      return;
+    }
+  });
+
+  try {
+    await agent.prompt(text);
+  } finally {
+    unsubscribe();
+  }
 }

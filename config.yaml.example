@@ -23,10 +23,11 @@ tools:
     max_timeout_seconds: 600
 
 telegram:
-  show_typing: true
-  long_tool_call_seconds: 5
-  parse_mode: none                            # "none" / "MarkdownV2" / "HTML"
-                                              # default "none" — MarkdownV2 escaping is a footgun
+  show_typing: true                           # 4s re-fire while the agent is working
+  long_tool_call_seconds: 5                   # reserved for future progress UX
+  parse_mode: HTML                            # "none" / "HTML" / "MarkdownV2"
+                                              # HTML enables fenced code blocks, **bold**, *italic*,
+                                              # `inline code`. MarkdownV2 escaping is a footgun.
 
 logging:
   audit_log_enabled: true
