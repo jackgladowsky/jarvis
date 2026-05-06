@@ -1,6 +1,19 @@
+// Two distinct logging concerns live here:
+//
+//   1. `log` — level-gated console logging for app diagnostics. Stderr for
+//      warn/error, stdout for the rest. systemd captures both via journald.
+//
+//   2. `auditToolCall` — append-only structured JSONL audit of every tool
+//      call. With confirmation flows gone (DESIGN.md §5), this log is the
+//      actual safeguard: "what did JARVIS do" is answered by `cat audit.log`.
+//
+// Both are configured via `config.logging` in config.yaml.
+
 import { appendFile } from "node:fs/promises";
 import { config } from "../config.js";
 import { paths } from "../paths.js";
+
+// ─── App log ────────────────────────────────────────────────────────────────
 
 type Level = "debug" | "info" | "warn" | "error";
 const LEVEL_ORDER: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -20,6 +33,16 @@ export const log = {
   error: (...args: unknown[]) => emit("error", args),
 };
 
+// ─── Audit log ──────────────────────────────────────────────────────────────
+
+// Patterns that look like secrets. The list is intentionally short and
+// conservative — false positives ("[REDACTED]" appearing where a normal value
+// belongs) are cheaper than false negatives (real secret leaking into the log).
+//
+//   - sk-...        : OpenAI / Anthropic style API keys
+//   - ghp_...       : GitHub personal access tokens
+//   - eyJ... . ... .: anything JWT-shaped (Codex OAuth creds, etc.)
+//   - SHOUTY=longstr: shell-style env assignments with long values
 const SECRET_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9_-]{20,}/g,
   /ghp_[A-Za-z0-9]{20,}/g,
@@ -31,6 +54,8 @@ function redact(value: string): string {
   if (!config.logging.audit_log_redact_patterns) return value;
   let out = value;
   for (const p of SECRET_PATTERNS) {
+    // For the SHOUTY=value pattern, keep the prefix (so logs stay grep-able)
+    // and redact only the value. For everything else, replace the whole match.
     out = out.replace(p, (match, prefix?: string) =>
       prefix ? `${prefix}[REDACTED]` : "[REDACTED]",
     );
@@ -38,6 +63,9 @@ function redact(value: string): string {
   return out;
 }
 
+// Truncate huge values to keep the audit log readable. Keeps both head and
+// tail so that things like exit-status lines at the end of a long bash output
+// are still visible.
 function truncate(value: string): string {
   const max = config.logging.audit_log_max_value_bytes;
   const buf = Buffer.from(value, "utf-8");
@@ -48,6 +76,9 @@ function truncate(value: string): string {
   return `${head}...[truncated ${buf.length - max} bytes]...${tail}`;
 }
 
+// Recursively sanitize a value before it lands on disk. Strings get redacted
+// and truncated; arrays and plain objects are walked; everything else passes
+// through unchanged.
 export function sanitize(value: unknown): unknown {
   if (typeof value === "string") return truncate(redact(value));
   if (Array.isArray(value)) return value.map(sanitize);
@@ -62,16 +93,19 @@ export function sanitize(value: unknown): unknown {
 }
 
 export interface AuditEntry {
-  ts: string;
-  tool: string;
-  args: unknown;
+  ts: string;          // ISO timestamp
+  tool: string;        // tool name (read / write / edit / bash)
+  args: unknown;       // args after sanitize() — safe to log
   outcome: "ok" | "error";
   duration_ms: number;
-  exit?: number;
-  bytes?: number;
-  error?: string;
+  exit?: number;       // bash only
+  bytes?: number;      // read / write / edit
+  error?: string;      // populated on outcome="error"
 }
 
+// One JSONL line per call. `appendFile` is atomic up to PIPE_BUF on POSIX
+// (~4KB) — at our typical entry sizes that's more than enough for concurrent
+// tool calls not to interleave mid-line.
 export async function auditToolCall(
   partial: Omit<AuditEntry, "ts" | "args"> & { args: unknown },
 ): Promise<void> {

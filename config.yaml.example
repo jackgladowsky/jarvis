@@ -3,7 +3,8 @@
 
 agent:
   provider: codex                             # "codex" or "anthropic"
-  model: gpt-5                                # actual identifier TBD
+  model: gpt-5.1                              # codex options: gpt-5.1 / gpt-5.1-codex-max / gpt-5.1-codex-mini
+                                              # anthropic options: e.g. claude-sonnet-4-6
 
 session:
   inactivity_threshold_minutes: 240           # 4 hours

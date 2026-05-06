@@ -1,8 +1,22 @@
+// Config loader. Two sources, both loaded and frozen at startup:
+//
+//   1. `~/.jarvis/config.yaml`  — non-secret tunables, parsed and zod-validated.
+//   2. `process.env`            — secrets (TELEGRAM_BOT_TOKEN, etc.), populated
+//                                 by systemd's EnvironmentFile= in production
+//                                 or `node --env-file=...` in local dev.
+//
+// Principles (DESIGN.md §8):
+//   - No defaults in code. Every tunable must be present in config.yaml.
+//   - Fail fast. Invalid config blocks startup with a clear zod error.
+//   - Frozen at startup. Restart the service to apply changes.
+
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { paths } from "./paths.js";
 
+// Schema mirrors config.yaml.example exactly. Any drift between the example
+// and this schema is a bug — the example is documentation, this is enforcement.
 const ConfigSchema = z.object({
   agent: z.object({
     provider: z.enum(["codex", "anthropic"]),
@@ -14,6 +28,7 @@ const ConfigSchema = z.object({
     summarize_on_rotation: z.boolean(),
     announce_new_session: z.boolean(),
   }),
+  // Compaction settings mirror pi-coding-agent's defaults. See DESIGN.md §10.
   compaction: z.object({
     enabled: z.boolean(),
     reserve_tokens: z.number().int().positive(),
@@ -40,9 +55,11 @@ const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 
+// Env vars are validated separately. Secrets only — never put tunables here.
 const EnvSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_ALLOWED_USER_IDS: z.string().min(1),
+  // Optional because the anthropic provider doesn't need it, and vice versa.
   CODEX_OAUTH_CREDS_PATH: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
 });
@@ -70,5 +87,7 @@ function loadEnv(): Env {
   return parsed.data;
 }
 
+// Frozen at module load. Anything that imports `config` or `env` gets a
+// snapshot. To change a value, edit the file and restart.
 export const config: Readonly<Config> = Object.freeze(loadConfig());
 export const env: Readonly<Env> = Object.freeze(loadEnv());
