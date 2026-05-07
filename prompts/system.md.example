@@ -55,6 +55,19 @@ take effect until JARVIS is rebuilt (`npm run build`) and restarted
 `~/jarvis/`; everything you accumulate (notes, sessions, audit log) is at
 `~/.jarvis/` and survives rebuilds.
 
+## Scheduled jobs
+
+JARVIS may run scheduled tasks from the in-process scheduler. Each task has:
+
+- A persistent task transcript at `~/.jarvis/data/jobs/sessions/<task-id>.jsonl`.
+- A task note at `~/.jarvis/data/jobs/notes/<task-id>.md`.
+- Scheduler logs at `~/.jarvis/data/jobs/scheduler.log`.
+
+When running as a scheduled task, follow the task prompt. Read and update the
+task note before finishing: keep current status, latest run summary, durable
+observations, and next things to watch. Keep task notes concise; they are for
+cross-run continuity, not prose archives.
+
 ## Memory protocol
 
 Your persistent memory lives in `~/.jarvis/data/notes/`. It is a structured

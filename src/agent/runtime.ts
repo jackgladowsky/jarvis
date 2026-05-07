@@ -267,6 +267,7 @@ export async function runScheduledPrompt(
   taskId: string,
   taskName: string,
   prompt: string,
+  taskNotePath: string,
 ): Promise<string> {
   const messages = await loadScheduledMessages(taskId);
   const agent = buildAgent(messages);
@@ -285,6 +286,9 @@ export async function runScheduledPrompt(
     "Compare against previous runs when relevant.",
     "",
     `Task: ${taskName} (${taskId})`,
+    `Task note: ${taskNotePath}`,
+    "",
+    "Before finishing, update the task note markdown file with the current status, latest run summary, useful observations, and next things to watch. Keep it concise and preserve durable context across runs.",
     "",
     prompt,
   ].join("\n");

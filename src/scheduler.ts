@@ -1,4 +1,5 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import cron, { type ScheduledTask } from "node-cron";
 import { runScheduledPrompt } from "./agent/runtime.js";
 import { config, env, type Config } from "./config.js";
@@ -9,6 +10,42 @@ import { paths } from "./paths.js";
 type SchedulerTask = Config["scheduler"]["tasks"][number];
 
 const activeTasks = new Map<string, ScheduledTask>();
+
+function taskNotePath(task: SchedulerTask): string {
+  return join(paths.scheduledJobNotes, `${task.id}.md`);
+}
+
+async function ensureTaskNote(task: SchedulerTask): Promise<string> {
+  await mkdir(paths.scheduledJobNotes, { recursive: true });
+  const path = taskNotePath(task);
+  try {
+    await readFile(path, "utf-8");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    await writeFile(
+      path,
+      [
+        `# ${task.name}`,
+        "",
+        `**Task ID:** ${task.id}`,
+        "**Status:** active",
+        "**Last run:** never",
+        "",
+        "## Latest",
+        "No runs yet.",
+        "",
+        "## Observations",
+        "- None yet.",
+        "",
+        "## Watch",
+        "- Initial run output.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+  }
+  return path;
+}
 
 async function schedulerLog(message: string): Promise<void> {
   const line = `[${new Date().toISOString()}] ${message}\n`;
@@ -65,7 +102,8 @@ async function runTask(task: SchedulerTask): Promise<void> {
 
   await schedulerLog(`[${task.id}] starting: ${task.name}`);
   try {
-    output = await runScheduledPrompt(task.id, task.name, task.prompt);
+    const notePath = await ensureTaskNote(task);
+    output = await runScheduledPrompt(task.id, task.name, task.prompt, notePath);
     await schedulerLog(`[${task.id}] completed (${output.length} chars)`);
   } catch (err) {
     success = false;
@@ -97,6 +135,7 @@ export async function startScheduler(): Promise<() => void> {
   }
 
   await mkdir(paths.scheduledJobSessions, { recursive: true });
+  await mkdir(paths.scheduledJobNotes, { recursive: true });
   await schedulerLog(`scheduler starting with ${config.scheduler.tasks.length} task(s)`);
 
   for (const task of config.scheduler.tasks) {
@@ -104,6 +143,8 @@ export async function startScheduler(): Promise<() => void> {
       await schedulerLog(`[${task.id}] invalid cron expression: ${task.schedule}`);
       continue;
     }
+
+    await ensureTaskNote(task);
 
     const scheduled = cron.schedule(
       task.schedule,
