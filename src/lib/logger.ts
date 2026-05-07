@@ -14,16 +14,64 @@ import { config } from "../config.js";
 import { paths } from "../paths.js";
 
 // ─── App log ────────────────────────────────────────────────────────────────
+//
+// Single-line `<ts?> <level> <message> key=val key=val` output. systemd's
+// journald already prefixes wall-clock + unit/pid; when we detect we're
+// running under it (JOURNAL_STREAM is set on stdout/stderr by systemd) we
+// drop our own ISO timestamp to avoid duplication. Outside journald (bare
+// `node dist/index.js`, dev runs) we keep it so logs stay self-describing.
 
 type Level = "debug" | "info" | "warn" | "error";
 const LEVEL_ORDER: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 const minLevel = LEVEL_ORDER[config.logging.level];
+const inJournald = !!process.env.JOURNAL_STREAM;
+
+function fmtField(v: unknown): string {
+  if (v === null || v === undefined) return String(v);
+  if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") return String(v);
+  if (v instanceof Error) return JSON.stringify(v.message);
+  if (typeof v === "string") return /[\s"=]/.test(v) || v === "" ? JSON.stringify(v) : v;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
+function fmtMeta(meta: Record<string, unknown>): string {
+  return Object.entries(meta)
+    .map(([k, v]) => `${k}=${fmtField(v)}`)
+    .join(" ");
+}
 
 function emit(level: Level, args: unknown[]): void {
   if (LEVEL_ORDER[level] < minLevel) return;
-  const ts = new Date().toISOString();
   const stream = level === "error" || level === "warn" ? console.error : console.log;
-  stream(`[${ts}] [${level}]`, ...args);
+
+  const last = args.at(-1);
+  const isMeta =
+    args.length >= 2 &&
+    last !== null &&
+    typeof last === "object" &&
+    !Array.isArray(last) &&
+    !(last instanceof Error);
+
+  let body: string;
+  if (isMeta) {
+    const head = args
+      .slice(0, -1)
+      .map((a) => (typeof a === "string" ? a : fmtField(a)))
+      .join(" ");
+    const meta = fmtMeta(last as Record<string, unknown>);
+    body = meta ? `${head} ${meta}` : head;
+  } else {
+    body = args.map((a) => (typeof a === "string" ? a : fmtField(a))).join(" ");
+  }
+
+  const prefix = inJournald
+    ? level.padEnd(5)
+    : `${new Date().toISOString()} ${level.padEnd(5)}`;
+  stream(`${prefix} ${body}`);
 }
 
 export const log = {

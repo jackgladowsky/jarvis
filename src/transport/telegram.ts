@@ -186,9 +186,27 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
           await safe("deleteMessage", ctx.api.deleteMessage(chatId, id));
         }
       },
+
+      // The agent terminated this turn with stopReason "error" / "aborted".
+      // Without this the user sees nothing — silent failures are the worst
+      // kind of failure for a chat bot.
+      onError: async (text: string) => {
+        cancelPendingEdit();
+        const body = `Error: ${text}`;
+        if (placeholder) {
+          const id = placeholder.messageId;
+          placeholder = undefined;
+          await safe(
+            "editMessageText (error)",
+            ctx.api.editMessageText(chatId, id, body),
+          );
+        } else if (!sending) {
+          await safe("reply (agent error)", ctx.reply(body));
+        }
+      },
     });
   } catch (err) {
-    log.error("handler error", err);
+    log.error("handler error", { err: err instanceof Error ? err.message : err });
     cancelPendingEdit();
     await safe("reply (error)", ctx.reply("Something went wrong."));
   } finally {
@@ -208,6 +226,7 @@ export async function runTelegram(handle: Handler): Promise<void> {
       log.warn("dropped non-allowlisted message", { userId, chatId });
       return;
     }
+    log.info("inbound", { chatId, userId, len: ctx.message?.text?.length ?? 0 });
     // Per-chat serialization — see DESIGN.md §10.
     await withLock(chatId, () => processMessage(ctx, handle));
   });
