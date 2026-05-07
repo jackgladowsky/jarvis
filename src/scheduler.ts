@@ -148,9 +148,7 @@ export async function startScheduler(): Promise<() => void> {
 
     const scheduled = cron.schedule(
       task.schedule,
-      () => {
-        void runTask(task);
-      },
+      () => runTask(task),
       {
         timezone: config.scheduler.timezone,
         name: task.id,

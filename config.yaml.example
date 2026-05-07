@@ -32,7 +32,7 @@ telegram:
 scheduler:
   enabled: false
   timezone: America/New_York
-  telegram_chat_id: 7467558496                # Jack's Telegram chat id; used for scheduled job notifications
+  telegram_chat_id: 0                         # Telegram chat id for scheduled job notifications
   tasks: []
 
 logging:
