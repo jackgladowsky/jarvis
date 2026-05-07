@@ -73,6 +73,35 @@ export interface StreamCallbacks {
    *  tool-call message (a `toolCall` block appeared mid-stream). The transport
    *  should clean up any placeholder UI it had created for it. */
   onAbandon?: () => void | Promise<void>;
+  /** Called when the agent terminates a turn with stopReason "error" or
+   *  "aborted". `text` is a user-facing summary — surface it instead of the
+   *  empty assistant message that would otherwise be silent. */
+  onError?: (text: string) => void | Promise<void>;
+}
+
+// Best-effort human-readable error text. Provider errors arrive as JSON-tail
+// strings ("Codex error: {...}", "Anthropic error: {...}"); pull out the
+// inner `error.message` and special-case Codex's usage_limit_reached payload.
+function formatAgentError(stopReason: string, errorMessage?: string): string {
+  if (!errorMessage) {
+    return stopReason === "aborted" ? "Run aborted." : `Error (${stopReason}).`;
+  }
+  const jsonStart = errorMessage.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const obj = JSON.parse(errorMessage.slice(jsonStart));
+      const inner = obj?.error ?? obj;
+      if (inner?.type === "usage_limit_reached" && typeof inner.resets_in_seconds === "number") {
+        const hours = Math.round(inner.resets_in_seconds / 3600);
+        const plan = inner.plan_type ? ` (plan: ${inner.plan_type})` : "";
+        return `Usage limit reached${plan}. Resets in ~${hours}h.`;
+      }
+      if (typeof inner?.message === "string") return inner.message;
+    } catch {
+      // fall through to raw
+    }
+  }
+  return errorMessage.length > 800 ? `${errorMessage.slice(0, 800)}…` : errorMessage;
 }
 
 function extractText(content: ReadonlyArray<{ type: string; text?: string }>): string {
@@ -226,6 +255,20 @@ export async function handleMessage(
       // Tool-call messages aren't shown to the user — DESIGN.md §12 streaming
       // rule. Their content is still in the transcript for context.
       if (hasToolCall(m.content)) return;
+      if (m.stopReason === "error" || m.stopReason === "aborted") {
+        const friendly = formatAgentError(m.stopReason, m.errorMessage);
+        log.warn("agent error", {
+          chatId,
+          sessionId: session.sessionId,
+          stopReason: m.stopReason,
+          err: m.errorMessage ?? "",
+        });
+        if (currentMsgIsAbandoned) {
+          currentMsgIsAbandoned = false;
+        }
+        await callbacks.onError?.(friendly);
+        return;
+      }
       const t = extractText(m.content).trim();
       if (t) await callbacks.onAssistantEnd?.(t);
       return;

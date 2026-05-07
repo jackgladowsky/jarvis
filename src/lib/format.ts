@@ -1,44 +1,57 @@
-// Minimal markdown → Telegram HTML converter.
+// Minimal markdown → Telegram HTML converter plus Telegram-sized chunking.
 //
 // Telegram's HTML parse mode supports a small set of tags:
 //   <b> <strong> <i> <em> <u> <s> <a href> <code> <pre>
 // Everything else must be HTML-escaped (`<`, `>`, `&` matter).
 //
-// We chose HTML over MarkdownV2 because MarkdownV2's escape list is a footgun:
-// `.` `_` `*` `[` `]` `(` `)` `~` `` ` `` `>` `#` `+` `-` `=` `|` `{` `}` `!`
-// all need to be escaped, and one missed character makes the whole send fail.
-// HTML only requires escaping three characters; the rest passes through.
-//
-// Scope: handle ```fenced code blocks```, `inline code`, `**bold**`, `*italic*`,
-// `_italic_`. Everything else is HTML-escaped and sent as-is. This is enough
-// for the common cases (shell output, code snippets, emphasis) without a heavy
-// markdown parser.
+// We use HTML over MarkdownV2 because MarkdownV2's escape list is a footgun.
+// This intentionally handles the markdown shapes JARVIS commonly emits:
+// headings, bullets, links, fenced code, inline code, bold, and italic.
+
+export const TELEGRAM_CHUNK_SOFT_LIMIT = 3200;
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// Apply inline-level formatting to a piece of text known to be outside any
-// fenced code block. Order: HTML-escape first (so subsequent regex literals
-// don't accidentally match HTML entities), then bold/italic/inline-code.
 function formatInline(text: string): string {
   let s = escapeHtml(text);
-  // **bold** — non-greedy, single line
+
+  // [label](https://example.com) → <a href="...">label</a>
+  s = s.replace(/\[([^\]\n]+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+
+  // **bold** — non-greedy, single line.
   s = s.replace(/\*\*([^\n*]+?)\*\*/g, "<b>$1</b>");
-  // *italic* — single asterisks, careful not to match the inside of a `**`
-  // by requiring non-asterisk neighbors via lookarounds
+  // *italic* — single asterisks, careful not to match the inside of `**`.
   s = s.replace(/(^|[^*])\*([^\n*]+?)\*(?!\*)/g, "$1<i>$2</i>");
-  // _italic_ — same shape with underscores; must not be adjacent to word chars
-  // so we don't mangle snake_case identifiers
+  // _italic_ — avoid snake_case identifiers.
   s = s.replace(/(^|[^A-Za-z0-9_])_([^\n_]+?)_(?![A-Za-z0-9_])/g, "$1<i>$2</i>");
-  // `inline code` — must not span newlines
+  // `inline code` — must not span newlines.
   s = s.replace(/`([^`\n]+?)`/g, "<code>$1</code>");
+
   return s;
+}
+
+function formatMarkdownLine(line: string): string {
+  const heading = line.match(/^(#{1,6})\s+(.+)$/);
+  if (heading) return `<b>${formatInline(heading[2])}</b>`;
+
+  const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+  if (bullet) return `• ${formatInline(bullet[1])}`;
+
+  const numbered = line.match(/^\s*(\d+[.)])\s+(.+)$/);
+  if (numbered) return `${numbered[1]} ${formatInline(numbered[2])}`;
+
+  return formatInline(line);
+}
+
+function formatMarkdownBlock(text: string): string {
+  return text.split("\n").map(formatMarkdownLine).join("\n");
 }
 
 // Walk the input character-by-character finding triple-backtick fences.
 // Inside fences: HTML-escape only (no inline formatting). Outside fences:
-// formatInline. Unclosed fences treat the rest of the input as code.
+// format common markdown into Telegram-safe HTML.
 export function markdownToTelegramHtml(input: string): string {
   const out: string[] = [];
   let cursor = 0;
@@ -46,26 +59,22 @@ export function markdownToTelegramHtml(input: string): string {
   while (cursor < input.length) {
     const fenceStart = input.indexOf("```", cursor);
     if (fenceStart === -1) {
-      // No more fences — format remaining text inline and finish.
-      out.push(formatInline(input.slice(cursor)));
+      out.push(formatMarkdownBlock(input.slice(cursor)));
       break;
     }
 
-    // Anything before the fence is regular text.
     if (fenceStart > cursor) {
-      out.push(formatInline(input.slice(cursor, fenceStart)));
+      out.push(formatMarkdownBlock(input.slice(cursor, fenceStart)));
     }
 
     const afterOpen = fenceStart + 3;
     const fenceEnd = input.indexOf("```", afterOpen);
 
     if (fenceEnd === -1) {
-      // Unclosed fence: treat the rest as a code block.
       out.push(`<pre><code>${escapeHtml(input.slice(afterOpen))}</code></pre>`);
       break;
     }
 
-    // Skip the optional language tag and the newline that follows ```lang\n.
     let codeStart = afterOpen;
     const newlineIdx = input.indexOf("\n", afterOpen);
     if (newlineIdx !== -1 && newlineIdx < fenceEnd) {
@@ -78,4 +87,54 @@ export function markdownToTelegramHtml(input: string): string {
   }
 
   return out.join("");
+}
+
+function splitOversizedPart(part: string, maxChars: number): string[] {
+  const chunks: string[] = [];
+  let rest = part.trim();
+  while (rest.length > maxChars) {
+    const candidates = [
+      rest.lastIndexOf("\n", maxChars),
+      rest.lastIndexOf(". ", maxChars),
+      rest.lastIndexOf(" ", maxChars),
+    ].filter((idx) => idx > maxChars * 0.5);
+    const cut = candidates.length > 0 ? Math.max(...candidates) + 1 : maxChars;
+    chunks.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+// Split raw markdown before formatting so we don't cut generated HTML tags in
+// half. Prefer paragraph boundaries; fall back to sentence/space boundaries.
+export function splitTelegramMarkdown(input: string, maxChars = TELEGRAM_CHUNK_SOFT_LIMIT): string[] {
+  const parts = input.split(/\n{2,}/);
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.length > maxChars) {
+      if (current) {
+        chunks.push(current.trim());
+        current = "";
+      }
+      chunks.push(...splitOversizedPart(trimmed, maxChars));
+      continue;
+    }
+
+    const candidate = current ? `${current}\n\n${trimmed}` : trimmed;
+    if (candidate.length > maxChars && current) {
+      chunks.push(current.trim());
+      current = trimmed;
+    } else {
+      current = candidate;
+    }
+  }
+
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.length > 0 ? chunks : [""];
 }
