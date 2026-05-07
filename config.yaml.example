@@ -29,6 +29,12 @@ telegram:
                                               # HTML enables fenced code blocks, **bold**, *italic*,
                                               # `inline code`. MarkdownV2 escaping is a footgun.
 
+scheduler:
+  enabled: false
+  timezone: America/New_York
+  telegram_chat_id: 7467558496                # Jack's Telegram chat id; used for scheduled job notifications
+  tasks: []
+
 logging:
   audit_log_enabled: true
   audit_log_max_value_bytes: 2048             # truncate logged values larger than this

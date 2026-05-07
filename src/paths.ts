@@ -36,6 +36,11 @@ export const paths = {
   notesProjects: join(DATA_BASE, "data", "notes", "projects"),
   notesProjectsArchive: join(DATA_BASE, "data", "notes", "projects", "archive"),
 
+  // Scheduled job state — independent persistent sessions per task.
+  scheduledJobs: join(DATA_BASE, "data", "jobs"),
+  scheduledJobSessions: join(DATA_BASE, "data", "jobs", "sessions"),
+  scheduledJobsLog: join(DATA_BASE, "data", "jobs", "scheduler.log"),
+
   // Append-only audit log of every tool call. See DESIGN.md §13.
   audit: join(DATA_BASE, "data", "audit.log"),
 

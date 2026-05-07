@@ -45,6 +45,20 @@ const ConfigSchema = z.object({
     long_tool_call_seconds: z.number().int().positive(),
     parse_mode: z.enum(["none", "MarkdownV2", "HTML"]),
   }),
+  scheduler: z.object({
+    enabled: z.boolean(),
+    timezone: z.string().min(1),
+    telegram_chat_id: z.number().int(),
+    tasks: z.array(
+      z.object({
+        id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
+        name: z.string().min(1),
+        schedule: z.string().min(1),
+        prompt: z.string().min(1),
+        notify: z.enum(["always", "on_issue", "never"]),
+      }),
+    ),
+  }),
   logging: z.object({
     audit_log_enabled: z.boolean(),
     audit_log_max_value_bytes: z.number().int().positive(),
