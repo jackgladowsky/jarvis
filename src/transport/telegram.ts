@@ -13,12 +13,12 @@
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
 import { Bot, type Context } from "grammy";
+import { handleMessage, rotateSession } from "../agent/runtime.js";
 import { config, env } from "../config.js";
 import { isAllowed } from "../lib/allowlist.js";
 import { markdownToTelegramHtml } from "../lib/format.js";
 import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
-import { handleMessage } from "../agent/runtime.js";
 
 type Handler = typeof handleMessage;
 
@@ -56,6 +56,15 @@ async function safe<T>(label: string, p: Promise<T>): Promise<T | undefined> {
 async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   const chatId = ctx.chat!.id;
   const userText = ctx.message?.text ?? "";
+
+  // ── Slash commands ──────────────────────────────────────────────────────
+  // Intercept commands before the agent runs. Currently just `/new` — see
+  // DESIGN.md §10. More commands can land here without touching the runtime.
+  if (userText.trim() === "/new") {
+    const sessionId = await rotateSession(chatId);
+    await safe("reply (/new)", ctx.reply(`Started a new session (${sessionId}).`));
+    return;
+  }
 
   // ── Typing indicator ────────────────────────────────────────────────────
   // Fires immediately and then on a 4s loop until the agent run resolves.
@@ -107,7 +116,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 
   // ── Run the agent with streaming callbacks ──────────────────────────────
   try {
-    await handle(userText, {
+    await handle(chatId, userText, {
       // Streaming text update for an in-progress text-only assistant message.
       // Either send the placeholder if we don't have one yet, or schedule a
       // debounced edit to the existing one.
