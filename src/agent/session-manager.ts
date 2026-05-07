@@ -57,6 +57,35 @@ function archivedSessionFile(id: string): string {
   return join(paths.sessionsArchive, `${id}.jsonl`);
 }
 
+// Shared parser used by both `load` (active session) and `loadArchived`
+// (already-rotated session). Walks forward applying compaction entries.
+async function loadFile(filePath: string): Promise<LoadedSession> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf-8");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { tail: [] };
+    }
+    throw err;
+  }
+
+  let previousSummary: string | undefined;
+  let tail: AgentMessage[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const parsed = JSON.parse(line) as unknown;
+    if (isCompactionEntry(parsed)) {
+      previousSummary = parsed.summary;
+      tail = []; // everything before this is now folded into the summary
+    } else {
+      tail.push(parsed as AgentMessage);
+    }
+  }
+
+  return { previousSummary, tail: dropDanglingToolCalls(tail) };
+}
+
 async function loadActive(): Promise<void> {
   try {
     const raw = await readFile(paths.activeSessions, "utf-8");
@@ -182,8 +211,8 @@ function isCompactionEntry(parsed: unknown): parsed is CompactionEntry {
   );
 }
 
-// Read the JSONL transcript for a session, applying any compaction entries.
-// Walk forward: each compaction entry replaces the running tail with itself
+// Read the active session's JSONL, applying any compaction entries. Walk
+// forward: each compaction entry replaces the running tail with itself
 // (i.e., it represents "everything before me is now this summary"). The
 // final state is whatever messages came after the most recent compaction
 // plus the most recent summary (if any).
@@ -192,30 +221,15 @@ function isCompactionEntry(parsed: unknown): parsed is CompactionEntry {
 // question #7) — they happen when the process crashed mid-tool. A re-prompt
 // from the user starts a clean turn.
 export async function load(sessionId: string): Promise<LoadedSession> {
-  let raw: string;
-  try {
-    raw = await readFile(sessionFile(sessionId), "utf-8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { tail: [] };
-    }
-    throw err;
-  }
+  return loadFile(sessionFile(sessionId));
+}
 
-  let previousSummary: string | undefined;
-  let tail: AgentMessage[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    const parsed = JSON.parse(line) as unknown;
-    if (isCompactionEntry(parsed)) {
-      previousSummary = parsed.summary;
-      tail = []; // everything before this is now folded into the summary
-    } else {
-      tail.push(parsed as AgentMessage);
-    }
-  }
-
-  return { previousSummary, tail: dropDanglingToolCalls(tail) };
+// Same forward-walk semantics, but reads from the archive directory. Used
+// by the session-end summarizer (Phase 5) to compress a rotated session
+// down to a one-line `recent.md` entry without ever touching the raw,
+// pre-compaction history.
+export async function loadArchived(sessionId: string): Promise<LoadedSession> {
+  return loadFile(archivedSessionFile(sessionId));
 }
 
 // Walk the tail and remove assistant messages with toolCall content blocks

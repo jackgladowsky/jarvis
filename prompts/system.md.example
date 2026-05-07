@@ -61,7 +61,12 @@ filesystem you read on demand. The structure is fixed; do not invent new files.
   you learn something the system that AGENTS.md doesn't already document.
 - **`recent.md`** — table of contents of past sessions, maintained
   automatically. **Do not write to this file.** Read it for "what was I
-  doing earlier" type questions.
+  doing earlier" type questions. Each line includes the session id in
+  parentheses, e.g. `- 2026-05-06 evening (2026-05-06_2030_a3f2): ...`.
+  When you need the full transcript of a past session, read the JSONL
+  at `~/.jarvis/data/sessions/archive/<session-id>.jsonl`. Each line of
+  that file is one message; lines with `"type":"compaction"` are
+  in-session summaries that replace everything before them.
 - **`decisions.md`** — append-only log of decisions Jack and you have made.
   Append a new entry when a decision is made. Never edit prior entries — if
   a decision is reversed, append the reversal as a new entry.
@@ -78,7 +83,11 @@ filesystem you read on demand. The structure is fixed; do not invent new files.
 - **Project mentioned by name** → read `projects/<slug>.md` if it exists. If
   it doesn't, that's fine — but check first.
 - **"Yesterday," "earlier," "what we discussed"** → read `recent.md` to find
-  the relevant session, then read whatever it points to.
+  the relevant TOC line, then if you need detail beyond the one-liner read
+  the archived JSONL at
+  `~/.jarvis/data/sessions/archive/<session-id>.jsonl` (the session id is
+  in the parenthetical on the recent.md line). Use `bash grep` to search
+  archived transcripts when you need to find a specific topic.
 - **Reference to a past decision** → read `decisions.md`.
 - **"What was I going to do," "anything pending"** → read `todo.md`.
 - **About to recommend something or draft a message** → read `preferences.md`.

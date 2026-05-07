@@ -24,6 +24,7 @@ import { log } from "../lib/logger.js";
 import { getApiKeyForProvider } from "./auth.js";
 import { maybeCompact } from "./compaction.js";
 import * as sessions from "./session-manager.js";
+import { summarizeArchived } from "./summarizer.js";
 import { systemPrompt } from "./system-prompt.js";
 import { allTools } from "./tools/index.js";
 
@@ -127,6 +128,12 @@ export async function handleMessage(
     isNew: session.isNew,
     length: text.length,
   });
+  // If resolveSession just archived an old session, kick off the TOC
+  // summarizer in the background. Don't await — the user's new turn
+  // shouldn't wait on an extra LLM call. Errors are caught inside.
+  if (session.rotatedFrom) {
+    void summarizeArchived(session.rotatedFrom, model);
+  }
 
   // Load the session and apply compaction if we're near the context window.
   // `maybeCompact` may run an LLM call to produce a summary, persist a
@@ -199,5 +206,8 @@ export async function handleMessage(
 // transport. Returns the fresh session id for confirmation messages.
 export async function rotateSession(chatId: number): Promise<string> {
   const fresh = await sessions.forceRotate(chatId);
+  if (fresh.rotatedFrom) {
+    void summarizeArchived(fresh.rotatedFrom, model);
+  }
   return fresh.sessionId;
 }
