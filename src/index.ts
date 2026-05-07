@@ -6,6 +6,7 @@
 import { handleMessage } from "./agent/runtime.js";
 import * as sessions from "./agent/session-manager.js";
 import { log } from "./lib/logger.js";
+import { startScheduler } from "./scheduler.js";
 import { runTelegram } from "./transport/telegram.js";
 
 async function main(): Promise<void> {
@@ -13,9 +14,14 @@ async function main(): Promise<void> {
   // Load active.json and create session dirs before any messages can arrive.
   // Crash recovery (replaying transcripts) happens lazily inside handleMessage.
   await sessions.init();
+  const stopScheduler = await startScheduler();
   // runTelegram only resolves once the bot is stopped (via SIGINT/SIGTERM
   // handlers in transport/telegram.ts).
-  await runTelegram(handleMessage);
+  try {
+    await runTelegram(handleMessage);
+  } finally {
+    stopScheduler();
+  }
   log.info("jarvis exited cleanly");
 }
 

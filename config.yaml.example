@@ -29,6 +29,12 @@ telegram:
                                               # HTML enables fenced code blocks, **bold**, *italic*,
                                               # `inline code`. MarkdownV2 escaping is a footgun.
 
+scheduler:
+  enabled: false
+  timezone: America/New_York
+  telegram_chat_id: 0                         # Telegram chat id for scheduled job notifications
+  tasks: []                                   # static/bootstrap tasks; chat-created tasks live in ~/.jarvis/data/jobs/tasks.json
+
 logging:
   audit_log_enabled: true
   audit_log_max_value_bytes: 2048             # truncate logged values larger than this

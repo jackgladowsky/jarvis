@@ -17,10 +17,13 @@
 // is fine; if it ever shows up in profiling, move to a per-session Agent
 // cache later.
 
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import { getModel, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
+import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
 import { maybeCompact } from "./compaction.js";
 import * as sessions from "./session-manager.js";
@@ -101,6 +104,51 @@ function buildAgent(messages: AgentMessage[]): Agent {
 // Wrap a compaction summary as a synthetic user message that the LLM can
 // read. Plain text with delimiter tags so the model knows it's history,
 // not the user's current ask.
+
+function scheduledSessionFile(taskId: string): string {
+  return join(paths.scheduledJobSessions, `${taskId}.jsonl`);
+}
+
+async function loadScheduledMessages(taskId: string): Promise<AgentMessage[]> {
+  let raw: string;
+  try {
+    raw = await readFile(scheduledSessionFile(taskId), "utf-8");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+
+  const messages = raw
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as AgentMessage);
+  return dropDanglingScheduledToolCalls(messages);
+}
+
+function dropDanglingScheduledToolCalls(messages: AgentMessage[]): AgentMessage[] {
+  const out = messages.slice();
+  while (out.length > 0) {
+    const last = out[out.length - 1];
+    if (last.role !== "assistant") break;
+    const hasToolCall = (last.content ?? []).some(
+      (c: { type: string }) => c.type === "toolCall",
+    );
+    if (!hasToolCall) break;
+    out.pop();
+  }
+  return out;
+}
+
+async function appendScheduledMessages(
+  taskId: string,
+  messages: AgentMessage[],
+): Promise<void> {
+  if (messages.length === 0) return;
+  await mkdir(paths.scheduledJobSessions, { recursive: true });
+  const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
+  await appendFile(scheduledSessionFile(taskId), lines, "utf-8");
+}
+
 function makeSummaryMessage(summary: string): AgentMessage {
   return {
     role: "user",
@@ -210,4 +258,47 @@ export async function rotateSession(chatId: number): Promise<string> {
     void summarizeArchived(fresh.rotatedFrom, model);
   }
   return fresh.sessionId;
+}
+
+// Scheduled jobs use persistent per-task sessions, independent from Telegram
+// chat sessions. No rotation/compaction yet; the first cut mirrors AgentBox's
+// useful bit: each task keeps context across runs.
+export async function runScheduledPrompt(
+  taskId: string,
+  taskName: string,
+  prompt: string,
+  taskNotePath: string,
+): Promise<string> {
+  const messages = await loadScheduledMessages(taskId);
+  const agent = buildAgent(messages);
+  const before = agent.state.messages.length;
+  let finalText = "";
+
+  const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+    if (event.type !== "message_end" || event.message.role !== "assistant") return;
+    if (hasToolCall(event.message.content)) return;
+    finalText = extractText(event.message.content).trim();
+  });
+
+  const taskPrompt = [
+    "You are running as a scheduled JARVIS task.",
+    "Your output may be sent to Jack as a Telegram notification, so be concise and focus on what is actionable.",
+    "Compare against previous runs when relevant.",
+    "",
+    `Task: ${taskName} (${taskId})`,
+    `Task note: ${taskNotePath}`,
+    "",
+    "Before finishing, update the task note markdown file with the current status, latest run summary, useful observations, and next things to watch. Keep it concise and preserve durable context across runs.",
+    "",
+    prompt,
+  ].join("\n");
+
+  try {
+    await agent.prompt(taskPrompt);
+  } finally {
+    unsubscribe();
+  }
+
+  await appendScheduledMessages(taskId, agent.state.messages.slice(before));
+  return finalText || "(no output)";
 }

@@ -55,6 +55,42 @@ take effect until JARVIS is rebuilt (`npm run build`) and restarted
 `~/jarvis/`; everything you accumulate (notes, sessions, audit log) is at
 `~/.jarvis/` and survives rebuilds.
 
+## Scheduled jobs
+
+JARVIS may run scheduled tasks from the in-process scheduler. Dynamic tasks
+created from chat live in `~/.jarvis/data/jobs/tasks.json`; the scheduler
+reloads this file automatically. The file format is:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "short-slug",
+      "name": "Human name",
+      "schedule": "0 8 * * *",
+      "notify": "always",
+      "prompt": "What the scheduled agent should do."
+    }
+  ]
+}
+```
+
+For recurring scheduled-task requests from Jack, edit this file directly with a
+valid cron expression. This is for repeatable tasks, not arbitrary one-off
+reminders yet; if Jack asks for a one-off reminder and no reminder system
+exists, say that it is not implemented.
+
+Each task also has:
+
+- A persistent task transcript at `~/.jarvis/data/jobs/sessions/<task-id>.jsonl`.
+- A task note at `~/.jarvis/data/jobs/notes/<task-id>.md`.
+- Scheduler logs at `~/.jarvis/data/jobs/scheduler.log`.
+
+When running as a scheduled task, follow the task prompt. Read and update the
+task note before finishing: keep current status, latest run summary, durable
+observations, and next things to watch. Keep task notes concise; they are for
+cross-run continuity, not prose archives.
+
 ## Memory protocol
 
 Your persistent memory lives in `~/.jarvis/data/notes/`. It is a structured
