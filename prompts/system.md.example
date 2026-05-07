@@ -57,7 +57,30 @@ take effect until JARVIS is rebuilt (`npm run build`) and restarted
 
 ## Scheduled jobs
 
-JARVIS may run scheduled tasks from the in-process scheduler. Each task has:
+JARVIS may run scheduled tasks from the in-process scheduler. Dynamic tasks
+created from chat live in `~/.jarvis/data/jobs/tasks.json`; the scheduler
+reloads this file automatically. The file format is:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "short-slug",
+      "name": "Human name",
+      "schedule": "0 8 * * *",
+      "notify": "always",
+      "prompt": "What the scheduled agent should do."
+    }
+  ]
+}
+```
+
+For recurring scheduled-task requests from Jack, edit this file directly with a
+valid cron expression. This is for repeatable tasks, not arbitrary one-off
+reminders yet; if Jack asks for a one-off reminder and no reminder system
+exists, say that it is not implemented.
+
+Each task also has:
 
 - A persistent task transcript at `~/.jarvis/data/jobs/sessions/<task-id>.jsonl`.
 - A task note at `~/.jarvis/data/jobs/notes/<task-id>.md`.

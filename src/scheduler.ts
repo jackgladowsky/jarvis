@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import cron, { type ScheduledTask } from "node-cron";
+import { z } from "zod";
 import { runScheduledPrompt } from "./agent/runtime.js";
 import { config, env, type Config } from "./config.js";
 import { markdownToTelegramHtml } from "./lib/format.js";
@@ -9,7 +10,34 @@ import { paths } from "./paths.js";
 
 type SchedulerTask = Config["scheduler"]["tasks"][number];
 
-const activeTasks = new Map<string, ScheduledTask>();
+interface ActiveScheduledTask {
+  job: ScheduledTask;
+  signature: string;
+}
+
+const DynamicTaskSchema = z.object({
+  id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
+  name: z.string().min(1),
+  schedule: z.string().min(1),
+  prompt: z.string().min(1),
+  notify: z.enum(["always", "on_issue", "never"]),
+});
+
+const DynamicTasksFileSchema = z.object({
+  tasks: z.array(DynamicTaskSchema),
+});
+
+const TASK_RELOAD_MS = 30_000;
+const activeTasks = new Map<string, ActiveScheduledTask>();
+
+function taskSignature(task: SchedulerTask): string {
+  return JSON.stringify({
+    name: task.name,
+    schedule: task.schedule,
+    prompt: task.prompt,
+    notify: task.notify,
+  });
+}
 
 function taskNotePath(task: SchedulerTask): string {
   return join(paths.scheduledJobNotes, `${task.id}.md`);
@@ -56,6 +84,37 @@ async function schedulerLog(message: string): Promise<void> {
   } catch (err) {
     log.warn("scheduler log write failed", err);
   }
+}
+
+async function ensureTasksFile(): Promise<void> {
+  await mkdir(paths.scheduledJobs, { recursive: true });
+  try {
+    await readFile(paths.scheduledJobTasks, "utf-8");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    await writeFile(
+      paths.scheduledJobTasks,
+      JSON.stringify({ tasks: [] }, null, 2) + "\n",
+      "utf-8",
+    );
+  }
+}
+
+async function loadDynamicTasks(): Promise<SchedulerTask[]> {
+  await ensureTasksFile();
+  const raw = await readFile(paths.scheduledJobTasks, "utf-8");
+  const parsed = DynamicTasksFileSchema.safeParse(JSON.parse(raw));
+  if (!parsed.success) {
+    throw new Error(`Invalid scheduled tasks file at ${paths.scheduledJobTasks}: ${parsed.error}`);
+  }
+  return parsed.data.tasks;
+}
+
+async function loadTasks(): Promise<SchedulerTask[]> {
+  const byId = new Map<string, SchedulerTask>();
+  for (const task of config.scheduler.tasks) byId.set(task.id, task);
+  for (const task of await loadDynamicTasks()) byId.set(task.id, task);
+  return [...byId.values()];
 }
 
 function formatNotification(text: string): { text: string; parse_mode?: "HTML" | "MarkdownV2" } {
@@ -128,6 +187,55 @@ async function runTask(task: SchedulerTask): Promise<void> {
   }
 }
 
+function stopTask(id: string): void {
+  const active = activeTasks.get(id);
+  if (!active) return;
+  void active.job.stop();
+  void active.job.destroy();
+  activeTasks.delete(id);
+}
+
+async function registerTask(task: SchedulerTask): Promise<void> {
+  if (!cron.validate(task.schedule)) {
+    await schedulerLog(`[${task.id}] invalid cron expression: ${task.schedule}`);
+    return;
+  }
+
+  await ensureTaskNote(task);
+  const signature = taskSignature(task);
+  const existing = activeTasks.get(task.id);
+  if (existing?.signature === signature) return;
+  stopTask(task.id);
+
+  const job = cron.schedule(
+    task.schedule,
+    () => runTask(task),
+    {
+      timezone: config.scheduler.timezone,
+      name: task.id,
+      noOverlap: true,
+    },
+  );
+  activeTasks.set(task.id, { job, signature });
+  await schedulerLog(`[${task.id}] registered: ${task.name} @ ${task.schedule}`);
+}
+
+async function reloadTasks(): Promise<void> {
+  const tasks = await loadTasks();
+  const seen = new Set(tasks.map((task) => task.id));
+
+  for (const id of [...activeTasks.keys()]) {
+    if (!seen.has(id)) {
+      stopTask(id);
+      await schedulerLog(`[${id}] unregistered`);
+    }
+  }
+
+  for (const task of tasks) {
+    await registerTask(task);
+  }
+}
+
 export async function startScheduler(): Promise<() => void> {
   if (!config.scheduler.enabled) {
     log.info("scheduler disabled");
@@ -136,34 +244,23 @@ export async function startScheduler(): Promise<() => void> {
 
   await mkdir(paths.scheduledJobSessions, { recursive: true });
   await mkdir(paths.scheduledJobNotes, { recursive: true });
-  await schedulerLog(`scheduler starting with ${config.scheduler.tasks.length} task(s)`);
+  await ensureTasksFile();
+  await schedulerLog("scheduler starting");
+  await reloadTasks();
 
-  for (const task of config.scheduler.tasks) {
-    if (!cron.validate(task.schedule)) {
-      await schedulerLog(`[${task.id}] invalid cron expression: ${task.schedule}`);
-      continue;
-    }
-
-    await ensureTaskNote(task);
-
-    const scheduled = cron.schedule(
-      task.schedule,
-      () => runTask(task),
-      {
-        timezone: config.scheduler.timezone,
-        name: task.id,
-        noOverlap: true,
-      },
-    );
-    activeTasks.set(task.id, scheduled);
-    await schedulerLog(`[${task.id}] registered: ${task.name} @ ${task.schedule}`);
-  }
+  let reloading = false;
+  const reloadTimer = setInterval(() => {
+    if (reloading) return;
+    reloading = true;
+    void reloadTasks()
+      .catch((err) => schedulerLog(`reload failed: ${err instanceof Error ? err.message : String(err)}`))
+      .finally(() => {
+        reloading = false;
+      });
+  }, TASK_RELOAD_MS);
 
   return () => {
-    for (const [id, task] of activeTasks) {
-      void task.stop();
-      void task.destroy();
-      activeTasks.delete(id);
-    }
+    clearInterval(reloadTimer);
+    for (const id of [...activeTasks.keys()]) stopTask(id);
   };
 }

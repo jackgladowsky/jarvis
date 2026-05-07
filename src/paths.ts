@@ -38,6 +38,7 @@ export const paths = {
 
   // Scheduled job state — independent persistent sessions per task.
   scheduledJobs: join(DATA_BASE, "data", "jobs"),
+  scheduledJobTasks: join(DATA_BASE, "data", "jobs", "tasks.json"),
   scheduledJobSessions: join(DATA_BASE, "data", "jobs", "sessions"),
   scheduledJobNotes: join(DATA_BASE, "data", "jobs", "notes"),
   scheduledJobsLog: join(DATA_BASE, "data", "jobs", "scheduler.log"),

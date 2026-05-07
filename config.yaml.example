@@ -33,7 +33,7 @@ scheduler:
   enabled: false
   timezone: America/New_York
   telegram_chat_id: 0                         # Telegram chat id for scheduled job notifications
-  tasks: []
+  tasks: []                                   # static/bootstrap tasks; chat-created tasks live in ~/.jarvis/data/jobs/tasks.json
 
 logging:
   audit_log_enabled: true
