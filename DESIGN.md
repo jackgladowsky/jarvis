@@ -128,19 +128,30 @@ The full canonical prompt is in **Appendix A**. JARVIS itself can edit `~/.jarvi
 
 ## 5. Tool Surface (v1)
 
-Four tools. Same as `pi-coding-agent`. The model is smart — it can compose. Adding a tool is something to *resist*, not something to do speculatively.
+Five tools. Adding a tool is still something to *resist*, not something to do speculatively — the model is smart and can compose. The first four mirror `pi-coding-agent`; the fifth (`web_search`) is the deliberate exception, see below.
 
 ```
 read(path)               # read a file
 write(path, content)     # create or overwrite
 edit(path, old, new)     # surgical string-replace, must be unique
 bash(command, timeout?)  # run shell commands, captures stdout/stderr/exit
+web_search(input)        # query → /search; URL → /contents (Exa-backed)
 ```
 
-That's it. Want to manage Docker? `bash docker ps`. Restart a service? `bash systemctl restart foo`. Search the filesystem? `bash grep -r ...`. Curl an API? `bash curl ...`. The shell is already the universal tool.
+For most things, `bash` is still the universal tool. Want to manage Docker? `bash docker ps`. Restart a service? `bash systemctl restart foo`. Search the filesystem? `bash grep -r ...`. Curl an internal API? `bash curl ...`.
 
-### Why no web tools
-`bash curl` + `bash w3m -dump` is fine for v1. If JARVIS visibly struggles with web access via shell, add a real `web_fetch` tool. Don't preempt.
+### Why we have web_search (the one exception to "four tools")
+The original plan was `bash curl` + `bash w3m -dump` for v1. In practice that fails on two fronts: there's no curl-able general-purpose search engine, and most public sites now block `curl` user-agents outright (Cloudflare, anti-scraping). So we added one tool, backed by Exa (the Exa API key Jack already has lots of credits for):
+
+- **One tool, two modes.** Pass a query → `POST /search`; pass an http(s) URL → `POST /contents`. Dispatch is on input shape — no `mode` parameter, no separate `web_fetch` companion.
+- **Search returns metadata only** (title + URL + date). No `contents` requested. The model picks a result and follows up with a URL fetch when it actually wants the page. This keeps token cost predictable.
+- **Contents returns extracted markdown**, capped at 25k chars to bound context.
+- **Internal/private URLs still go through `bash curl`** — Exa only knows the public web.
+
+If the cap or defaults turn out wrong in practice, tune them in `web-search.ts`. There's intentionally no config block for them — yet another knob is overkill for this surface.
+
+### Why no note tools
+Notes are markdown files in `~/.jarvis/data/notes/`. JARVIS reads them with `read`, edits them with `edit` or `write`. The filesystem is the API. Custom note tools would be reinventing files with worse ergonomics — the model already knows how to work with files, so we use that.
 
 ### Why no note tools
 Notes are markdown files in `~/.jarvis/data/notes/`. JARVIS reads them with `read`, edits them with `edit` or `write`. The filesystem is the API. Custom note tools would be reinventing files with worse ergonomics — the model already knows how to work with files, so we use that.

@@ -62,6 +62,10 @@ const EnvSchema = z.object({
   // Optional because the anthropic provider doesn't need it, and vice versa.
   CODEX_OAUTH_CREDS_PATH: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  // Required: powers the `web_search` tool. Search and page-fetch both go
+  // through Exa — without this key the tool throws on every call. Treated
+  // as load-bearing rather than optional so startup fails fast if missing.
+  EXA_API_KEY: z.string().min(1),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
