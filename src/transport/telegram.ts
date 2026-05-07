@@ -16,7 +16,7 @@ import { Bot, type Context } from "grammy";
 import { handleMessage, rotateSession } from "../agent/runtime.js";
 import { config, env } from "../config.js";
 import { isAllowed } from "../lib/allowlist.js";
-import { markdownToTelegramHtml } from "../lib/format.js";
+import { markdownToTelegramHtml, splitTelegramMarkdown } from "../lib/format.js";
 import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
 
@@ -39,6 +39,12 @@ function format(text: string): { text: string; parse_mode?: "HTML" | "MarkdownV2
   if (mode === "HTML") return { text: markdownToTelegramHtml(text), parse_mode: "HTML" };
   if (mode === "MarkdownV2") return { text, parse_mode: "MarkdownV2" }; // user opt-in; no escaping helper
   return { text };
+}
+
+function chunks(text: string): string[] {
+  return config.telegram.parse_mode === "HTML"
+    ? splitTelegramMarkdown(text)
+    : splitTelegramMarkdown(text);
 }
 
 // Wraps grammy's reply/edit calls so failures (rate limits, network) don't
@@ -94,11 +100,13 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 
   const flushEdit = async (text: string): Promise<void> => {
     if (!placeholder || text === placeholder.lastSentText) return;
-    const formatted = format(text);
+    const streamText = chunks(text)[0] ?? text;
+    const formatted = format(streamText);
     const result = await safe(
       "editMessageText",
       ctx.api.editMessageText(chatId, placeholder.messageId, formatted.text, {
         parse_mode: formatted.parse_mode,
+        link_preview_options: { is_disabled: true },
       }),
     );
     if (result !== undefined) {
@@ -114,6 +122,43 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     }
   };
 
+  const sendFinalChunks = async (text: string): Promise<void> => {
+    const parts = chunks(text);
+    const [first, ...rest] = parts;
+
+    if (placeholder) {
+      const formatted = format(first);
+      await safe(
+        "editMessageText (final chunk 1)",
+        ctx.api.editMessageText(chatId, placeholder.messageId, formatted.text, {
+          parse_mode: formatted.parse_mode,
+          link_preview_options: { is_disabled: true },
+        }),
+      );
+      placeholder = undefined;
+    } else if (!sending) {
+      const formatted = format(first);
+      await safe(
+        "reply (final chunk 1)",
+        ctx.reply(formatted.text, {
+          parse_mode: formatted.parse_mode,
+          link_preview_options: { is_disabled: true },
+        }),
+      );
+    }
+
+    for (const part of rest) {
+      const formatted = format(part);
+      await safe(
+        "reply (final chunk)",
+        ctx.reply(formatted.text, {
+          parse_mode: formatted.parse_mode,
+          link_preview_options: { is_disabled: true },
+        }),
+      );
+    }
+  };
+
   // ── Run the agent with streaming callbacks ──────────────────────────────
   try {
     await handle(chatId, userText, {
@@ -123,16 +168,19 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
       onAssistantUpdate: async (text: string) => {
         if (!placeholder && !sending) {
           sending = true;
-          const formatted = format(text);
+          const formatted = format(chunks(text)[0] ?? text);
           const sent = await safe(
             "reply (placeholder)",
-            ctx.reply(formatted.text, { parse_mode: formatted.parse_mode }),
+            ctx.reply(formatted.text, {
+              parse_mode: formatted.parse_mode,
+              link_preview_options: { is_disabled: true },
+            }),
           );
           sending = false;
           if (sent) {
             placeholder = {
               messageId: sent.message_id,
-              lastSentText: text,
+              lastSentText: chunks(text)[0] ?? text,
               lastEditAt: Date.now(),
             };
           }
@@ -162,18 +210,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
       // skip-tool-call rule) starts with a fresh placeholder.
       onAssistantEnd: async (text: string) => {
         cancelPendingEdit();
-        if (placeholder) {
-          await flushEdit(text);
-        } else if (!sending) {
-          // Very fast turn — message_end fired before any update did. Send
-          // the full text in one go.
-          const formatted = format(text);
-          await safe(
-            "reply (final)",
-            ctx.reply(formatted.text, { parse_mode: formatted.parse_mode }),
-          );
-        }
-        placeholder = undefined;
+        await sendFinalChunks(text);
       },
 
       // A streaming text message just sprouted a tool call — discard our

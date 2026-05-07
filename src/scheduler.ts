@@ -4,7 +4,7 @@ import cron, { type ScheduledTask } from "node-cron";
 import { z } from "zod";
 import { runScheduledPrompt } from "./agent/runtime.js";
 import { config, env, type Config } from "./config.js";
-import { markdownToTelegramHtml } from "./lib/format.js";
+import { markdownToTelegramHtml, splitTelegramMarkdown } from "./lib/format.js";
 import { log } from "./lib/logger.js";
 import { paths } from "./paths.js";
 
@@ -125,22 +125,25 @@ function formatNotification(text: string): { text: string; parse_mode?: "HTML" |
 }
 
 async function sendTelegram(chatId: number, text: string): Promise<void> {
-  const formatted = formatNotification(text);
-  const response = await fetch(
-    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: formatted.text,
-        parse_mode: formatted.parse_mode,
-      }),
-    },
-  );
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Telegram sendMessage failed: ${response.status} ${body}`);
+  for (const chunk of splitTelegramMarkdown(text)) {
+    const formatted = formatNotification(chunk);
+    const response = await fetch(
+      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: formatted.text,
+          parse_mode: formatted.parse_mode,
+          link_preview_options: { is_disabled: true },
+        }),
+      },
+    );
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Telegram sendMessage failed: ${response.status} ${body}`);
+    }
   }
 }
 
