@@ -15,9 +15,18 @@
 // The Anthropic path is straightforward — just hand back the env-stored API key.
 
 import { chmod, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { openaiCodexOAuthProvider, type OAuthCredentials } from "@mariozechner/pi-ai/oauth";
 import { env } from "../config.js";
 import { log } from "../lib/logger.js";
+import { paths } from "../paths.js";
+
+// Resolve the creds path: env override wins, otherwise default to the data
+// dir. The default keeps secrets co-located with the rest of `~/.jarvis/`,
+// which is already chmod-tightened and backed up alongside everything else.
+function credsPath(): string {
+  return env.CODEX_OAUTH_CREDS_PATH ?? join(paths.data, ".codex-creds.json");
+}
 
 // Refresh this many ms before the stored expiry. 5 min covers clock skew and
 // any in-flight requests that could otherwise straddle expiry.
@@ -29,23 +38,37 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 let cached: OAuthCredentials | undefined;
 
 async function loadCreds(): Promise<OAuthCredentials> {
-  if (!env.CODEX_OAUTH_CREDS_PATH) {
-    throw new Error("CODEX_OAUTH_CREDS_PATH is not set in .env");
+  const path = credsPath();
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf-8");
+  } catch (err) {
+    // If the env override was set, surface the underlying error verbatim —
+    // the user pointed us at a specific file and it's missing/unreadable.
+    // Only swap in a friendlier message when we fell back to the default.
+    if (!env.CODEX_OAUTH_CREDS_PATH) {
+      throw new Error(
+        `Codex OAuth credentials not found at default location ${path}. ` +
+          `Run pi-ai's login flow on a machine with a browser, copy the ` +
+          `resulting JSON to that path (chmod 600), or set ` +
+          `CODEX_OAUTH_CREDS_PATH in .env to point at an existing creds file.`,
+      );
+    }
+    throw err;
   }
-  const raw = await readFile(env.CODEX_OAUTH_CREDS_PATH, "utf-8");
   const parsed = JSON.parse(raw) as OAuthCredentials;
   // Light-touch validation: pi-ai's refreshToken needs all three fields.
   if (!parsed.access || !parsed.refresh || typeof parsed.expires !== "number") {
-    throw new Error(`malformed creds at ${env.CODEX_OAUTH_CREDS_PATH}`);
+    throw new Error(`malformed creds at ${path}`);
   }
   return parsed;
 }
 
 async function persistCreds(creds: OAuthCredentials): Promise<void> {
-  if (!env.CODEX_OAUTH_CREDS_PATH) return;
-  await writeFile(env.CODEX_OAUTH_CREDS_PATH, JSON.stringify(creds, null, 2), "utf-8");
+  const path = credsPath();
+  await writeFile(path, JSON.stringify(creds, null, 2), "utf-8");
   // Re-tighten perms after every write — the file holds a refresh token.
-  await chmod(env.CODEX_OAUTH_CREDS_PATH, 0o600);
+  await chmod(path, 0o600);
 }
 
 // Returns a usable access token, refreshing if we're inside the buffer window.

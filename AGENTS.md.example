@@ -1,22 +1,50 @@
 # AGENTS.md — JARVIS environment
 
-Hand-curated by Jack. Treat as authoritative.
+This file is the canonical per-host source of truth. JARVIS reads it on
+demand for environment context — hostname, OS, the user it runs as, what's
+running, where things live. The system prompt is intentionally generic;
+everything host-specific belongs here.
+
+Hand-curated. The setup script copies this template to `~/.jarvis/AGENTS.md`
+on first install; from then on the live copy is yours to edit freely. Keep
+it terse and accurate. JARVIS may also edit it at your direction.
 
 ## Host
-- Hostname: m710q
-- OS: <distro + version>
-- User: jarvis (full sudo)
+- Hostname: <hostname>
+- Hardware: <make/model, e.g. "Lenovo ThinkCentre M710q">
+- OS: <distro + version + kernel, e.g. "Ubuntu 24.04 LTS, kernel 6.8">
+- Disk / RAM: <quick capacity notes>
+- Network: <SSH port, VPN/Tailscale, anything inbound>
 
-## What's running
-- Minecraft server: systemctl service `minecraft.service`,
-  world dir at /opt/minecraft/world, backed up nightly to /backup/minecraft.
-- <other services as added>
+## User JARVIS runs as
+- <username> (uid <N>)
+- Groups: <relevant ones, e.g. sudo, docker>
+- Sudo: <passwordless? gated?>
+- Home: /home/<username>
+
+## JARVIS layout
+- Source: ~/jarvis/   (git repo, replaceable wholesale)
+- Data:   ~/.jarvis/  (per-host, never in source)
+- Config: ~/.jarvis/config.yaml
+- Secrets: ~/.jarvis/.env (chmod 600)
+- System prompt: ~/.jarvis/prompts/system.md
+- Audit log: ~/.jarvis/data/audit.log
+- Sessions: ~/.jarvis/data/sessions/
+- Notes: ~/.jarvis/data/notes/
+
+## Services running on this box
+
+### Docker containers
+- <name> — <image>, <one-line purpose>. Mount/world/data paths.
+- <add as needed; remove when retired>
+
+### Notable systemd services
+- <name> — <one-line purpose>
+- <run `systemctl list-units --type=service --state=running` for the live list>
 
 ## Conventions
-- Jack's projects live in /home/jack/projects/
-- JARVIS source: ~/jarvis/
-- JARVIS data: ~/.jarvis/
-- JARVIS audit log: ~/.jarvis/data/audit.log
+- <where projects live, e.g. "Jack's projects: /home/<user>/projects/">
+- Code style for JARVIS source: see DESIGN.md in ~/jarvis/.
 
 ## Notes
 <anything else worth documenting that doesn't fit above>

@@ -155,32 +155,37 @@ Notes are markdown files in `~/.jarvis/data/notes/`. JARVIS reads them with `rea
 
 ## 6. AGENTS.md Convention
 
-Borrowed from `pi-coding-agent`. A hand-written markdown file at `~/.jarvis/AGENTS.md` documents the environment. The system prompt tells JARVIS to read this file when it needs environment context.
+Borrowed from `pi-coding-agent`. A hand-written markdown file at `~/.jarvis/AGENTS.md` documents the environment. The system prompt is intentionally generic and does not name the host, user, or running services — JARVIS reads `AGENTS.md` on demand for that. This keeps the system prompt portable and makes per-host facts editable without a code/prompt change.
 
 This is *not* memory — it's environment documentation, curated by Jack (or by JARVIS at Jack's instruction). Stable. Memory in the accumulating sense lives in `~/.jarvis/data/notes/` (see §11).
 
-A *template* `AGENTS.md.example` lives in the repo. On first install, the setup script copies it to `~/.jarvis/AGENTS.md`. From then on, the live copy is edited freely; updates never overwrite it.
+A *template* `AGENTS.md.example` lives in the repo with placeholders. On first install, the setup script copies it to `~/.jarvis/AGENTS.md`; from then on, the live copy is edited freely and updates never overwrite it.
 
-Sketch contents:
+Sketch contents (see `AGENTS.md.example` for the full template):
 
 ```markdown
 # AGENTS.md — JARVIS environment
 
 ## Host
-- Hostname: m710q
-- OS: [whatever]
-- User: jarvis (full sudo)
+- Hostname: <hostname>
+- Hardware: <make/model>
+- OS: <distro + version + kernel>
 
-## What's running
-- Minecraft server: systemctl service `minecraft.service`,
-  world dir at /opt/minecraft/world, backed up nightly to /backup/minecraft.
-- [other services as added]
+## User JARVIS runs as
+- <username> (uid <N>)
+- Sudo: <passwordless? gated?>
+- Home: /home/<username>
+
+## JARVIS layout
+- Source: ~/jarvis/
+- Data: ~/.jarvis/
+- Audit log: ~/.jarvis/data/audit.log
+
+## Services running on this box
+- <docker containers, systemd services, etc.>
 
 ## Conventions
-- Jack's projects live in /home/jack/projects/
-- JARVIS source: ~/jarvis/
-- JARVIS data: ~/.jarvis/
-- JARVIS audit log: ~/.jarvis/data/audit.log
+- <where projects live, etc.>
 ```
 
 ---
@@ -251,9 +256,11 @@ The system prompt is its own separate file (`~/.jarvis/prompts/system.md`) refer
 ```bash
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USER_IDS=123456789           # comma-separated if multiple
-CODEX_OAUTH_CREDS_PATH=/home/jarvis/.jarvis/.codex-creds.json
+# CODEX_OAUTH_CREDS_PATH=                     # optional override; defaults to <data_dir>/.codex-creds.json
 ANTHROPIC_API_KEY=...                         # optional, fallback provider
 ```
+
+The Codex creds path defaults to `~/.jarvis/.codex-creds.json` (resolved via `paths.data` in `src/agent/auth.ts`). Set the env var only when you need to point at a creds file outside the data dir.
 
 ### `config.yaml` contents
 ```yaml
@@ -549,9 +556,9 @@ Same for `AGENTS.md.example` and `prompts/system.md.example` — drift expected,
 
 ### Service config
 
-- `jarvis.service` runs as the `jarvis` user.
+- `jarvis.service` runs as the `jack` user.
 - Auto-restart on failure.
-- `WorkingDirectory=/home/jarvis/jarvis`, `EnvironmentFile=/home/jarvis/.jarvis/.env`.
+- `WorkingDirectory=/home/jack/jarvis`, `EnvironmentFile=/home/jack/.jarvis/.env`.
 
 ### Audit log hygiene
 
@@ -691,10 +698,10 @@ The canonical version of this prompt lives at `~/.jarvis/prompts/system.md`. The
 ```markdown
 # JARVIS
 
-You are JARVIS, Jack's personal assistant. You live on Jack's M710q — a
-Linux dev/homelab box. You run as the `jarvis` user with full sudo access.
-The box is non-critical: a Minecraft server and some dev work, nothing that
-can't be redeployed.
+You are JARVIS, Jack's personal assistant. You run on a Linux box Jack owns,
+with full shell access via the bash tool. For host specifics — hostname, OS,
+the user you run as, services, paths — read `~/.jarvis/AGENTS.md`. It's
+hand-curated by Jack and authoritative.
 
 You are reachable via Telegram. Your responses go to Jack as chat messages.
 
@@ -805,7 +812,7 @@ Be terse. These are reference notes, not prose.
 **`environment.md`** — sectioned by topic:
 ```
 ## Services
-- Minecraft: systemctl `minecraft.service`, world at /opt/minecraft/world.
+- Minecraft: docker container `minecraft-fabric`, world at /home/jack/gaming/servers/advancements/data/world.
 
 ## Installed tools
 - Node 20, Python 3.12, Docker, ...
