@@ -155,25 +155,67 @@ export async function forceRotate(chatId: number): Promise<ResolvedSession> {
   return { ...fresh, rotatedFrom: previous ?? fresh.rotatedFrom };
 }
 
-// Read the JSONL transcript for a session. Returns an empty array if the
-// file doesn't exist (fresh session).
+// Compaction entry stored inline in the session JSONL — DESIGN.md §10.
+// "Everything before me is now this summary." Subsequent loads collapse the
+// pre-compaction messages and surface the summary as `previousSummary`.
+export interface CompactionEntry {
+  type: "compaction";
+  timestamp: number;
+  summary: string;
+  tokensBefore: number;
+}
+
+// What `load` returns. The runtime composes `effective = [synthetic-summary
+// message wrapping previousSummary] + tail` to feed the agent.
+export interface LoadedSession {
+  /** Most recent compaction's summary text, if any compactions exist. */
+  previousSummary?: string;
+  /** Messages appended AFTER the most recent compaction entry. */
+  tail: AgentMessage[];
+}
+
+function isCompactionEntry(parsed: unknown): parsed is CompactionEntry {
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    (parsed as { type?: string }).type === "compaction"
+  );
+}
+
+// Read the JSONL transcript for a session, applying any compaction entries.
+// Walk forward: each compaction entry replaces the running tail with itself
+// (i.e., it represents "everything before me is now this summary"). The
+// final state is whatever messages came after the most recent compaction
+// plus the most recent summary (if any).
 //
 // Trailing assistant messages with unanswered tool calls are dropped (open
 // question #7) — they happen when the process crashed mid-tool. A re-prompt
 // from the user starts a clean turn.
-export async function loadMessages(sessionId: string): Promise<AgentMessage[]> {
+export async function load(sessionId: string): Promise<LoadedSession> {
   let raw: string;
   try {
     raw = await readFile(sessionFile(sessionId), "utf-8");
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { tail: [] };
+    }
     throw err;
   }
-  const messages = raw
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as AgentMessage);
-  return dropDanglingToolCalls(messages);
+
+  let previousSummary: string | undefined;
+  let tail: AgentMessage[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const parsed = JSON.parse(line) as unknown;
+    if (isCompactionEntry(parsed)) {
+      previousSummary = parsed.summary;
+      tail = []; // everything before this is now folded into the summary
+    } else {
+      tail.push(parsed as AgentMessage);
+    }
+  }
+
+  return { previousSummary, tail: dropDanglingToolCalls(tail) };
 }
 
 // Walk the tail and remove assistant messages with toolCall content blocks
@@ -203,6 +245,22 @@ export async function appendMessages(
   if (messages.length === 0) return;
   const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
   await appendFile(sessionFile(sessionId), lines, "utf-8");
+}
+
+// Append a compaction entry to the session's JSONL. Once written, the next
+// `load` will surface the summary as `previousSummary` and treat any
+// subsequent messages as the new tail.
+export async function appendCompactionEntry(
+  sessionId: string,
+  entry: { summary: string; tokensBefore: number },
+): Promise<void> {
+  const line: CompactionEntry = {
+    type: "compaction",
+    timestamp: Date.now(),
+    summary: entry.summary,
+    tokensBefore: entry.tokensBefore,
+  };
+  await appendFile(sessionFile(sessionId), JSON.stringify(line) + "\n", "utf-8");
 }
 
 // Stamp lastMessageAt after a successful turn so the inactivity rotation

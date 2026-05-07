@@ -22,6 +22,7 @@ import { getModel, type Model, registerBuiltInApiProviders } from "@mariozechner
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 import { getApiKeyForProvider } from "./auth.js";
+import { maybeCompact } from "./compaction.js";
 import * as sessions from "./session-manager.js";
 import { systemPrompt } from "./system-prompt.js";
 import { allTools } from "./tools/index.js";
@@ -96,6 +97,22 @@ function buildAgent(messages: AgentMessage[]): Agent {
   });
 }
 
+// Wrap a compaction summary as a synthetic user message that the LLM can
+// read. Plain text with delimiter tags so the model knows it's history,
+// not the user's current ask.
+function makeSummaryMessage(summary: string): AgentMessage {
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: `<context-summary>\n${summary}\n</context-summary>\n\nThe text above summarizes earlier conversation that has been compacted. Continue from this point.`,
+      },
+    ],
+    timestamp: 0,
+  };
+}
+
 // Public entrypoint called from transport/telegram.ts under the per-chat
 // lock. Resolves the session, runs the agent, persists new messages.
 export async function handleMessage(
@@ -111,8 +128,19 @@ export async function handleMessage(
     length: text.length,
   });
 
-  const previous = await sessions.loadMessages(session.sessionId);
-  const agent = buildAgent(previous);
+  // Load the session and apply compaction if we're near the context window.
+  // `maybeCompact` may run an LLM call to produce a summary, persist a
+  // `compaction` entry to the JSONL, and return the trimmed message list.
+  const loaded = await sessions.load(session.sessionId);
+  const compaction = await maybeCompact(session.sessionId, loaded, model, makeSummaryMessage);
+  if (compaction.didCompact) {
+    log.info("compaction applied", {
+      chatId,
+      sessionId: session.sessionId,
+      tokensBefore: compaction.tokensBefore,
+    });
+  }
+  const agent = buildAgent(compaction.messages);
 
   // Track abandon state per assistant message so the transport gets notified
   // exactly once when a streaming text message turns into a tool call.
