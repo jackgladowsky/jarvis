@@ -556,9 +556,13 @@ Same for `AGENTS.md.example` and `prompts/system.md.example` — drift expected,
 
 ### Service config
 
-- `jarvis.service` runs as the `jack` user.
-- Auto-restart on failure.
-- `WorkingDirectory=/home/jack/jarvis`, `EnvironmentFile=/home/jack/.jarvis/.env`.
+`scripts/install-systemd.sh` writes `/etc/systemd/system/jarvis.service` and `/etc/logrotate.d/jarvis` from values probed at install time — the running user, the absolute repo path, the `node` binary on `PATH`, and `JARVIS_DATA_DIR` (or `~/.jarvis/`). Re-running it overwrites the unit with a fresh render of those values.
+
+- Runs as the user who installed it (`User=$(whoami)`); not auto-started.
+- `Type=simple`, `Restart=on-failure`, `RestartSec=5`.
+- `WorkingDirectory=<absolute repo path>`, `EnvironmentFile=<DATA_BASE>/.env`.
+- `ExecStart=<absolute node path> <repo>/dist/index.js`.
+- Logs go to journald — `journalctl -fu jarvis` to follow.
 
 ### Audit log hygiene
 
@@ -570,11 +574,17 @@ The audit log is the one safeguard now that confirmation is gone. It must be use
 - **Rotation:** logrotate config installed by `install-systemd.sh`. Daily rotation, keep 30 days, gzip.
 - **What's logged:** timestamp, tool name, redacted/truncated args, exit status / outcome summary, duration.
 
-### Backups
+### Backups (deferred — see open question #12)
 
-- Nightly rsync of `~/.jarvis/` (excluding `cache/`) to a separate host. Includes `.env` and config.
-- Encrypt the backup target.
-- Minecraft world: independent nightly rsync, separate cron job.
+Not built in v1. The irreplaceable surface is `~/.jarvis/data/{sessions,notes}` plus `audit.log` and the codex creds — losing them means losing every conversation, JARVIS's accumulated memory, and the OAuth dance. Nothing under `~/jarvis/` (source) needs backup; it's git.
+
+When this gets built, the rough shape:
+- Nightly tarball of `~/.jarvis/` (excluding `cache/`), optionally encrypted.
+- Pushed off-box (rsync to another host, or rclone to cloud — pick one).
+- Retention: keep last N, prune older.
+- Minecraft world: independent of JARVIS, separate cron.
+
+Until then: don't `rm -rf ~/.jarvis/` casually.
 
 ### Uninstall / reinstall
 
@@ -597,6 +607,7 @@ The audit log is the one safeguard now that confirmation is gone. It must be use
 9. **Memory read accuracy.** The risk of retrieval-based memory is JARVIS not reading when it should. Where in conversations does this happen? Surface in Phase 7 tuning.
 10. **Cancellation.** v1 queues messages received during a running agent loop. v1.5 should add `/cancel`.
 11. **Config validation strictness.** Hard-fail on missing keys vs warn-and-default. v1 hard-fails (clearer).
+12. **Backups.** Deferred from Phase 6. The irreplaceable surface is `~/.jarvis/data/` plus `audit.log` and `.codex-creds.json` — covered by source control? No. Need a real backup story before treating this box as anything other than a fast-redeploy scratch host. Sketch in §13. Pick: tar+rclone-to-cloud, rsync-to-second-box, or borg/restic local + offsite copy.
 
 ---
 
@@ -652,10 +663,11 @@ The audit log is the one safeguard now that confirmation is gone. It must be use
 - Verify JARVIS actually reads/writes the other notes per the prompt rules.
 
 ### Phase 6 — Hardening
-- systemd service, auto-restart.
-- `install-systemd.sh` and `update.sh` scripts.
-- Audit log integration with redaction + truncation + rotation.
-- Backup script for `~/.jarvis/`.
+- systemd service, auto-restart (`scripts/install-systemd.sh`).
+- `scripts/update.sh` — git pull / install / build / restart, with fail-before-restart safety.
+- Logrotate config for `audit.log` (daily, keep 30, gzip via copytruncate) installed alongside the unit.
+- Audit log redaction + truncation already shipped with Phase 3; this phase wires rotation around it.
+- Backup script — **deferred** (open question #12). The data surface is small enough to manually `tar` for now; revisit before promoting the box past "fast-redeploy scratch" status.
 
 ### Phase 7 — Tuning
 - Live-fire usage for a week or two.
