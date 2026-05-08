@@ -13,7 +13,7 @@
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
 import { Bot, type Context } from "grammy";
-import { handleMessage, rotateSession } from "../agent/runtime.js";
+import { cancelChatRun, handleMessage, rotateSession, type StatusMode } from "../agent/runtime.js";
 import { config, env } from "../config.js";
 import { isAllowed } from "../lib/allowlist.js";
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "../lib/format.js";
@@ -30,6 +30,30 @@ const TYPING_REFIRE_MS = 4000;
 // placeholder. Telegram's per-chat edit rate limit is ~1/sec; 1.5s gives us
 // margin and keeps the UI from stuttering.
 const EDIT_DEBOUNCE_MS = 1500;
+const STATUS_EDIT_DEBOUNCE_MS = 2500;
+
+const statusModes = new Map<number, Exclude<StatusMode, "off">>();
+
+function statusModeFor(chatId: number): StatusMode {
+  return statusModes.get(chatId) ?? "off";
+}
+
+function parseModeCommand(text: string): { command: "thinking" | "verbose"; arg: string } | undefined {
+  const [rawCommand, rawArg = ""] = text.trim().split(/\s+/, 2);
+  const command = rawCommand.replace(/^\//, "").split("@")[0];
+  if (command !== "thinking" && command !== "verbose") return undefined;
+  return { command, arg: rawArg.toLowerCase() };
+}
+
+function setStatusMode(chatId: number, mode: StatusMode): void {
+  if (mode === "off") statusModes.delete(chatId);
+  else statusModes.set(chatId, mode);
+}
+
+function modeLabel(mode: StatusMode): string {
+  if (mode === "off") return "off";
+  return mode;
+}
 
 // Convert agent text to whatever Telegram expects, depending on parse_mode.
 // Skipping the conversion when parse_mode === "none" keeps the bot strictly
@@ -64,11 +88,34 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   const userText = ctx.message?.text ?? "";
 
   // ── Slash commands ──────────────────────────────────────────────────────
-  // Intercept commands before the agent runs. Currently just `/new` — see
-  // DESIGN.md §10. More commands can land here without touching the runtime.
+  // Intercept commands before the agent runs.
   if (userText.trim() === "/new") {
     const sessionId = await rotateSession(chatId);
     await safe("reply (/new)", ctx.reply(`Started a new session (${sessionId}).`));
+    return;
+  }
+
+  const modeCommand = parseModeCommand(userText);
+  if (modeCommand) {
+    const current = statusModeFor(chatId);
+    let next: StatusMode;
+    if (["off", "false", "0", "stop"].includes(modeCommand.arg)) next = "off";
+    else if (["on", "true", "1", ""].includes(modeCommand.arg)) {
+      next = modeCommand.command === "verbose" ? "verbose" : "thinking";
+    } else {
+      await safe("reply (mode usage)", ctx.reply("Usage: /thinking [on|off] or /verbose [on|off]."));
+      return;
+    }
+    setStatusMode(chatId, next);
+    await safe(
+      "reply (mode)",
+      ctx.reply(`Progress updates: ${modeLabel(current)} → ${modeLabel(next)}.`),
+    );
+    return;
+  }
+
+  if (userText.trim().startsWith("/cancel")) {
+    await safe("reply (/cancel idle)", ctx.reply("No active run to cancel."));
     return;
   }
 
@@ -97,6 +144,69 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   // Latest text accumulated since the last successful edit; used by the
   // debounce timer when it fires.
   let pendingEditText = "";
+
+  // Optional progress/status message for /thinking and /verbose. It is one
+  // Telegram message, edited in place and deleted after the final answer.
+  const runStatusMode = statusModeFor(chatId);
+  let statusMessage: { messageId: number; lines: string[]; lastEditAt: number } | undefined;
+  let pendingStatusTimer: NodeJS.Timeout | undefined;
+  let pendingStatusText = "";
+  const startedAt = Date.now();
+
+  const renderStatus = (lines: string[]): string => {
+    const elapsed = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    return [`Working… ${elapsed}s`, "", ...lines.slice(-4)].join("\n");
+  };
+
+  const flushStatus = async (text: string): Promise<void> => {
+    if (!statusMessage) return;
+    await safe("editMessageText (status)", ctx.api.editMessageText(chatId, statusMessage.messageId, text));
+    statusMessage.lastEditAt = Date.now();
+  };
+
+  const cancelPendingStatus = () => {
+    if (pendingStatusTimer) {
+      clearTimeout(pendingStatusTimer);
+      pendingStatusTimer = undefined;
+    }
+  };
+
+  const pushStatus = async (text: string): Promise<void> => {
+    if (runStatusMode === "off") return;
+    const line = `→ ${text}`;
+
+    if (!statusMessage) {
+      const sent = await safe("reply (status)", ctx.reply(renderStatus([line])));
+      if (sent) {
+        statusMessage = { messageId: sent.message_id, lines: [line], lastEditAt: Date.now() };
+      }
+      return;
+    }
+
+    if (statusMessage.lines.at(-1) !== line) statusMessage.lines.push(line);
+    const rendered = renderStatus(statusMessage.lines);
+    const elapsed = Date.now() - statusMessage.lastEditAt;
+    if (elapsed >= STATUS_EDIT_DEBOUNCE_MS) {
+      cancelPendingStatus();
+      await flushStatus(rendered);
+    } else {
+      pendingStatusText = rendered;
+      if (!pendingStatusTimer) {
+        pendingStatusTimer = setTimeout(() => {
+          pendingStatusTimer = undefined;
+          void flushStatus(pendingStatusText);
+        }, STATUS_EDIT_DEBOUNCE_MS - elapsed);
+      }
+    }
+  };
+
+  const clearStatus = async (): Promise<void> => {
+    cancelPendingStatus();
+    if (!statusMessage) return;
+    const id = statusMessage.messageId;
+    statusMessage = undefined;
+    await safe("deleteMessage (status)", ctx.api.deleteMessage(chatId, id));
+  };
 
   const flushEdit = async (text: string): Promise<void> => {
     if (!placeholder || text === placeholder.lastSentText) return;
@@ -210,6 +320,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
       // skip-tool-call rule) starts with a fresh placeholder.
       onAssistantEnd: async (text: string) => {
         cancelPendingEdit();
+        await clearStatus();
         await sendFinalChunks(text);
       },
 
@@ -229,7 +340,8 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
       // kind of failure for a chat bot.
       onError: async (text: string) => {
         cancelPendingEdit();
-        const body = `Error: ${text}`;
+        await clearStatus();
+        const body = text === "Run aborted." ? "Cancelled." : `Error: ${text}`;
         if (placeholder) {
           const id = placeholder.messageId;
           placeholder = undefined;
@@ -241,15 +353,20 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
           await safe("reply (agent error)", ctx.reply(body));
         }
       },
+
+      onStatus: pushStatus,
+      statusMode: runStatusMode,
     });
   } catch (err) {
     log.error("handler error", { err: err instanceof Error ? err.message : err });
     cancelPendingEdit();
+    await clearStatus();
     await safe("reply (error)", ctx.reply("Something went wrong."));
   } finally {
     active = false;
     if (typingTimer) clearInterval(typingTimer);
     cancelPendingEdit();
+    cancelPendingStatus();
   }
 }
 
@@ -263,7 +380,20 @@ export async function runTelegram(handle: Handler): Promise<void> {
       log.warn("dropped non-allowlisted message", { userId, chatId });
       return;
     }
-    log.info("inbound", { chatId, userId, len: ctx.message?.text?.length ?? 0 });
+    const text = ctx.message?.text ?? "";
+    log.info("inbound", { chatId, userId, len: text.length });
+
+    // /cancel must bypass the per-chat lock; otherwise it queues behind the
+    // thing it is supposed to stop. Comedy, but not useful comedy.
+    if (text.trim().startsWith("/cancel")) {
+      const cancelled = cancelChatRun(chatId);
+      await safe(
+        cancelled ? "reply (/cancel)" : "reply (/cancel idle)",
+        ctx.reply(cancelled ? "Cancelling…" : "No active run to cancel."),
+      );
+      return;
+    }
+
     // Per-chat serialization — see DESIGN.md §10.
     await withLock(chatId, () => processMessage(ctx, handle));
   });

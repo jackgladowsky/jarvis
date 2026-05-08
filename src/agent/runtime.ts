@@ -62,6 +62,8 @@ const model = resolveModel();
 
 // Streaming callbacks invoked per assistant message. Tool-call messages are
 // filtered out before any callback fires — see the listener below.
+export type StatusMode = "off" | "thinking" | "verbose";
+
 export interface StreamCallbacks {
   /** Called repeatedly as a text-only assistant message streams in. `text`
    *  is the full accumulated text so far (not a delta). */
@@ -77,6 +79,19 @@ export interface StreamCallbacks {
    *  "aborted". `text` is a user-facing summary — surface it instead of the
    *  empty assistant message that would otherwise be silent. */
   onError?: (text: string) => void | Promise<void>;
+  /** Optional coarse progress telemetry. This is observable state, not model
+   *  chain-of-thought: loading context, calling tools, finishing, etc. */
+  onStatus?: (text: string) => void | Promise<void>;
+  statusMode?: StatusMode;
+}
+
+const activeChatAgents = new Map<number, Agent>();
+
+export function cancelChatRun(chatId: number): boolean {
+  const agent = activeChatAgents.get(chatId);
+  if (!agent) return false;
+  agent.abort();
+  return true;
 }
 
 // Best-effort human-readable error text. Provider errors arrive as JSON-tail
@@ -113,6 +128,39 @@ function extractText(content: ReadonlyArray<{ type: string; text?: string }>): s
 
 function hasToolCall(content: ReadonlyArray<{ type: string }>): boolean {
   return content.some((c) => c.type === "toolCall");
+}
+
+function compactJson(value: unknown): string {
+  try {
+    const text = JSON.stringify(value);
+    return text.length > 180 ? `${text.slice(0, 177)}…` : text;
+  } catch {
+    return String(value);
+  }
+}
+
+function formatStatus(event: AgentEvent, mode: StatusMode): string | undefined {
+  if (mode === "off") return undefined;
+  switch (event.type) {
+    case "agent_start":
+      return "Starting";
+    case "turn_start":
+      return "Thinking";
+    case "tool_execution_start":
+      return mode === "verbose"
+        ? `Running ${event.toolName}: ${compactJson(event.args)}`
+        : `Running ${event.toolName}`;
+    case "tool_execution_update":
+      return mode === "verbose"
+        ? `${event.toolName} update: ${compactJson(event.partialResult)}`
+        : `Running ${event.toolName}`;
+    case "tool_execution_end":
+      return event.isError ? `${event.toolName} failed` : `${event.toolName} done`;
+    case "agent_end":
+      return "Finalizing";
+    default:
+      return undefined;
+  }
 }
 
 // Build a fresh Agent for a given session. Tools, system prompt, and model
@@ -225,12 +273,16 @@ export async function handleMessage(
     });
   }
   const agent = buildAgent(compaction.messages);
+  activeChatAgents.set(chatId, agent);
 
   // Track abandon state per assistant message so the transport gets notified
   // exactly once when a streaming text message turns into a tool call.
   let currentMsgIsAbandoned = false;
 
   const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+    const status = formatStatus(event, callbacks.statusMode ?? "off");
+    if (status) await callbacks.onStatus?.(status);
+
     if (event.type === "message_start" && event.message.role === "assistant") {
       currentMsgIsAbandoned = false;
       return;
@@ -283,6 +335,7 @@ export async function handleMessage(
     await agent.prompt(text);
   } finally {
     unsubscribe();
+    if (activeChatAgents.get(chatId) === agent) activeChatAgents.delete(chatId);
   }
 
   // Persist new messages + stamp lastMessageAt. Do this even if the prompt
