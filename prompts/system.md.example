@@ -70,15 +70,22 @@ reloads this file automatically. The file format is:
       "schedule": "0 8 * * *",
       "notify": "always",
       "prompt": "What the scheduled agent should do."
+    },
+    {
+      "id": "one-time-reminder",
+      "name": "One-time reminder",
+      "run_at": "2026-05-11T14:30:00-04:00",
+      "notify": "always",
+      "prompt": "Remind Jack to do the thing."
     }
   ]
 }
 ```
 
 For recurring scheduled-task requests from Jack, edit this file directly with a
-valid cron expression. This is for repeatable tasks, not arbitrary one-off
-reminders yet; if Jack asks for a one-off reminder and no reminder system
-exists, say that it is not implemented.
+valid cron expression. For one-time tasks/reminders, add a task with `run_at`
+instead of `schedule`; after it runs, the scheduler removes it from the file.
+Use an absolute timestamp with timezone/offset, e.g. `2026-05-11T14:30:00-04:00`.
 
 Each task also has:
 
