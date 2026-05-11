@@ -8,42 +8,81 @@ import { markdownToTelegramHtml, splitTelegramMarkdown } from "./lib/format.js";
 import { log } from "./lib/logger.js";
 import { paths } from "./paths.js";
 
-type SchedulerTask = Config["scheduler"]["tasks"][number];
+type RecurringTask = Config["scheduler"]["tasks"][number];
+type OneTimeTask = {
+  id: string;
+  name: string;
+  run_at: string;
+  prompt: string;
+  notify: "always" | "on_issue" | "never";
+};
+type SchedulerJob = RecurringTask | OneTimeTask;
 
-interface ActiveScheduledTask {
-  job: ScheduledTask;
+interface ActiveScheduledJob {
+  cronJob?: ScheduledTask;
+  timeout?: NodeJS.Timeout;
   signature: string;
 }
 
-const DynamicTaskSchema = z.object({
+const BaseTaskSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
   name: z.string().min(1),
-  schedule: z.string().min(1),
   prompt: z.string().min(1),
   notify: z.enum(["always", "on_issue", "never"]),
 });
+
+const RecurringTaskSchema = BaseTaskSchema.extend({
+  schedule: z.string().min(1),
+});
+
+const OneTimeTaskSchema = BaseTaskSchema.extend({
+  run_at: z.string().min(1).refine((value) => !Number.isNaN(Date.parse(value)), {
+    message: "run_at must be a valid date/time string",
+  }),
+});
+
+const DynamicTaskSchema = z.union([
+  RecurringTaskSchema.strict(),
+  OneTimeTaskSchema.strict(),
+]);
 
 const DynamicTasksFileSchema = z.object({
   tasks: z.array(DynamicTaskSchema),
 });
 
 const TASK_RELOAD_MS = 30_000;
-const activeTasks = new Map<string, ActiveScheduledTask>();
+const MAX_TIMEOUT_MS = 2_147_483_647;
+const activeJobs = new Map<string, ActiveScheduledJob>();
 
-function taskSignature(task: SchedulerTask): string {
-  return JSON.stringify({
-    name: task.name,
-    schedule: task.schedule,
-    prompt: task.prompt,
-    notify: task.notify,
-  });
+type DynamicTask = z.infer<typeof DynamicTaskSchema>;
+
+function isOneTimeTask(task: SchedulerJob): task is OneTimeTask {
+  return "run_at" in task;
 }
 
-function taskNotePath(task: SchedulerTask): string {
+function taskSignature(task: SchedulerJob): string {
+  return JSON.stringify(
+    isOneTimeTask(task)
+      ? {
+          name: task.name,
+          run_at: task.run_at,
+          prompt: task.prompt,
+          notify: task.notify,
+        }
+      : {
+          name: task.name,
+          schedule: task.schedule,
+          prompt: task.prompt,
+          notify: task.notify,
+        },
+  );
+}
+
+function taskNotePath(task: SchedulerJob): string {
   return join(paths.scheduledJobNotes, `${task.id}.md`);
 }
 
-async function ensureTaskNote(task: SchedulerTask): Promise<string> {
+async function ensureTaskNote(task: SchedulerJob): Promise<string> {
   await mkdir(paths.scheduledJobNotes, { recursive: true });
   const path = taskNotePath(task);
   try {
@@ -56,7 +95,7 @@ async function ensureTaskNote(task: SchedulerTask): Promise<string> {
         `# ${task.name}`,
         "",
         `**Task ID:** ${task.id}`,
-        "**Status:** active",
+        isOneTimeTask(task) ? "**Status:** pending" : "**Status:** active",
         "**Last run:** never",
         "",
         "## Latest",
@@ -100,18 +139,35 @@ async function ensureTasksFile(): Promise<void> {
   }
 }
 
-async function loadDynamicTasks(): Promise<SchedulerTask[]> {
+async function readDynamicTasksFile(): Promise<z.infer<typeof DynamicTasksFileSchema>> {
   await ensureTasksFile();
   const raw = await readFile(paths.scheduledJobTasks, "utf-8");
   const parsed = DynamicTasksFileSchema.safeParse(JSON.parse(raw));
   if (!parsed.success) {
     throw new Error(`Invalid scheduled tasks file at ${paths.scheduledJobTasks}: ${parsed.error}`);
   }
-  return parsed.data.tasks;
+  return parsed.data;
 }
 
-async function loadTasks(): Promise<SchedulerTask[]> {
-  const byId = new Map<string, SchedulerTask>();
+async function loadDynamicTasks(): Promise<DynamicTask[]> {
+  return (await readDynamicTasksFile()).tasks;
+}
+
+async function removeOneTimeTask(id: string): Promise<void> {
+  const file = await readDynamicTasksFile();
+  const tasks = file.tasks.filter((task) => !(task.id === id && "run_at" in task));
+  if (tasks.length === file.tasks.length) return;
+  await writeFile(
+    paths.scheduledJobTasks,
+    JSON.stringify({ tasks }, null, 2) + "\n",
+    "utf-8",
+  );
+  stopTask(id);
+  await schedulerLog(`[${id}] removed one-time task`);
+}
+
+async function loadTasks(): Promise<SchedulerJob[]> {
+  const byId = new Map<string, SchedulerJob>();
   for (const task of config.scheduler.tasks) byId.set(task.id, task);
   for (const task of await loadDynamicTasks()) byId.set(task.id, task);
   return [...byId.values()];
@@ -147,7 +203,7 @@ async function sendTelegram(chatId: number, text: string): Promise<void> {
   }
 }
 
-function shouldNotify(task: SchedulerTask, success: boolean, output: string): boolean {
+function shouldNotify(task: SchedulerJob, success: boolean, output: string): boolean {
   if (task.notify === "never") return false;
   if (task.notify === "always") return true;
   if (!success) return true;
@@ -157,7 +213,7 @@ function shouldNotify(task: SchedulerTask, success: boolean, output: string): bo
   );
 }
 
-async function runTask(task: SchedulerTask): Promise<void> {
+async function runTask(task: SchedulerJob): Promise<void> {
   const started = Date.now();
   let success = true;
   let output = "";
@@ -188,17 +244,24 @@ async function runTask(task: SchedulerTask): Promise<void> {
       );
     }
   }
+
+  if (isOneTimeTask(task)) {
+    await removeOneTimeTask(task.id);
+  }
 }
 
 function stopTask(id: string): void {
-  const active = activeTasks.get(id);
+  const active = activeJobs.get(id);
   if (!active) return;
-  void active.job.stop();
-  void active.job.destroy();
-  activeTasks.delete(id);
+  if (active.cronJob) {
+    void active.cronJob.stop();
+    void active.cronJob.destroy();
+  }
+  if (active.timeout) clearTimeout(active.timeout);
+  activeJobs.delete(id);
 }
 
-async function registerTask(task: SchedulerTask): Promise<void> {
+async function registerRecurringTask(task: RecurringTask): Promise<void> {
   if (!cron.validate(task.schedule)) {
     await schedulerLog(`[${task.id}] invalid cron expression: ${task.schedule}`);
     return;
@@ -206,11 +269,11 @@ async function registerTask(task: SchedulerTask): Promise<void> {
 
   await ensureTaskNote(task);
   const signature = taskSignature(task);
-  const existing = activeTasks.get(task.id);
+  const existing = activeJobs.get(task.id);
   if (existing?.signature === signature) return;
   stopTask(task.id);
 
-  const job = cron.schedule(
+  const cronJob = cron.schedule(
     task.schedule,
     () => runTask(task),
     {
@@ -219,15 +282,58 @@ async function registerTask(task: SchedulerTask): Promise<void> {
       noOverlap: true,
     },
   );
-  activeTasks.set(task.id, { job, signature });
+  activeJobs.set(task.id, { cronJob, signature });
   await schedulerLog(`[${task.id}] registered: ${task.name} @ ${task.schedule}`);
+}
+
+async function registerOneTimeTask(task: OneTimeTask): Promise<void> {
+  await ensureTaskNote(task);
+  const runAt = Date.parse(task.run_at);
+  if (Number.isNaN(runAt)) {
+    await schedulerLog(`[${task.id}] invalid run_at: ${task.run_at}`);
+    return;
+  }
+
+  const signature = taskSignature(task);
+  const existing = activeJobs.get(task.id);
+  if (existing?.signature === signature) return;
+  stopTask(task.id);
+
+  const delay = runAt - Date.now();
+  const timeout = setTimeout(
+    () => {
+      if (Date.now() < runAt) {
+        activeJobs.delete(task.id);
+        void registerOneTimeTask(task).catch((err) =>
+          schedulerLog(`[${task.id}] one-time reschedule failed: ${err instanceof Error ? err.message : String(err)}`),
+        );
+        return;
+      }
+      void runTask(task).catch((err) =>
+        schedulerLog(`[${task.id}] one-time run failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    },
+    Math.max(0, Math.min(delay, MAX_TIMEOUT_MS)),
+  );
+  activeJobs.set(task.id, { timeout, signature });
+
+  const when = delay <= 0 ? "now" : new Date(runAt).toISOString();
+  await schedulerLog(`[${task.id}] registered one-time: ${task.name} @ ${when}`);
+}
+
+async function registerTask(task: SchedulerJob): Promise<void> {
+  if (isOneTimeTask(task)) {
+    await registerOneTimeTask(task);
+  } else {
+    await registerRecurringTask(task);
+  }
 }
 
 async function reloadTasks(): Promise<void> {
   const tasks = await loadTasks();
   const seen = new Set(tasks.map((task) => task.id));
 
-  for (const id of [...activeTasks.keys()]) {
+  for (const id of [...activeJobs.keys()]) {
     if (!seen.has(id)) {
       stopTask(id);
       await schedulerLog(`[${id}] unregistered`);
@@ -264,6 +370,6 @@ export async function startScheduler(): Promise<() => void> {
 
   return () => {
     clearInterval(reloadTimer);
-    for (const id of [...activeTasks.keys()]) stopTask(id);
+    for (const id of [...activeJobs.keys()]) stopTask(id);
   };
 }

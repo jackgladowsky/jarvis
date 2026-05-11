@@ -156,7 +156,7 @@ scheduler:
   tasks: []
 ```
 
-Dynamic tasks live in `~/.jarvis/data/jobs/tasks.json` and are hot-reloaded roughly every 30 seconds:
+Dynamic tasks live in `~/.jarvis/data/jobs/tasks.json` and are hot-reloaded roughly every 30 seconds. Recurring tasks use `schedule` (cron). One-time tasks/reminders use `run_at` (absolute timestamp with timezone/offset) and are removed from the file after they run.
 
 ```json
 {
@@ -167,6 +167,13 @@ Dynamic tasks live in `~/.jarvis/data/jobs/tasks.json` and are hot-reloaded roug
       "schedule": "0 7 * * *",
       "notify": "always",
       "prompt": "Write Jack a concise morning newsletter."
+    },
+    {
+      "id": "call-mom",
+      "name": "Call Mom Reminder",
+      "run_at": "2026-05-11T17:00:00-04:00",
+      "notify": "always",
+      "prompt": "Remind Jack to call Mom."
     }
   ]
 }
