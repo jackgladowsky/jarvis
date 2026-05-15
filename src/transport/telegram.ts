@@ -124,8 +124,9 @@ async function downloadTelegramImage(
     throw new Error(`image is too large (${Math.ceil(buffer.byteLength / 1024 / 1024)} MB)`);
   }
 
-  const mimeType = response.headers.get("content-type")?.split(";")[0] || candidate.mimeType;
-  if (!mimeType.startsWith("image/")) throw new Error(`Telegram file was not an image (${mimeType})`);
+  const responseMimeType = response.headers.get("content-type")?.split(";")[0];
+  const mimeType = responseMimeType?.startsWith("image/") ? responseMimeType : candidate.mimeType;
+  if (!mimeType.startsWith("image/")) throw new Error(`Telegram file was not an image (${responseMimeType ?? mimeType})`);
 
   return { type: "image", data: buffer.toString("base64"), mimeType };
 }
