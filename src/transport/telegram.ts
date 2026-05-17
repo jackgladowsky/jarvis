@@ -13,6 +13,7 @@
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
 import { Bot, type Context } from "grammy";
+import type { ImageContent } from "@mariozechner/pi-ai";
 import { cancelChatRun, handleMessage, rotateSession, type StatusMode } from "../agent/runtime.js";
 import { config, env } from "../config.js";
 import { isAllowed } from "../lib/allowlist.js";
@@ -31,6 +32,8 @@ const TYPING_REFIRE_MS = 4000;
 // margin and keeps the UI from stuttering.
 const EDIT_DEBOUNCE_MS = 1500;
 const STATUS_EDIT_DEBOUNCE_MS = 2500;
+const MAX_TELEGRAM_IMAGES = 4;
+const MAX_TELEGRAM_IMAGE_BYTES = 10 * 1024 * 1024;
 
 const statusModes = new Map<number, Exclude<StatusMode, "off">>();
 
@@ -83,9 +86,60 @@ async function safe<T>(label: string, p: Promise<T>): Promise<T | undefined> {
   }
 }
 
+function imageCandidateFileIds(ctx: Context): Array<{ fileId: string; mimeType: string; fileSize?: number }> {
+  const message = ctx.message;
+  const out: Array<{ fileId: string; mimeType: string; fileSize?: number }> = [];
+
+  const photos = message?.photo ?? [];
+  const bestPhoto = photos.at(-1);
+  if (bestPhoto) {
+    out.push({ fileId: bestPhoto.file_id, mimeType: "image/jpeg", fileSize: bestPhoto.file_size });
+  }
+
+  const document = message?.document;
+  if (document?.mime_type?.startsWith("image/")) {
+    out.push({ fileId: document.file_id, mimeType: document.mime_type, fileSize: document.file_size });
+  }
+
+  return out.slice(0, MAX_TELEGRAM_IMAGES);
+}
+
+async function downloadTelegramImage(
+  ctx: Context,
+  candidate: { fileId: string; mimeType: string; fileSize?: number },
+): Promise<ImageContent> {
+  if (candidate.fileSize && candidate.fileSize > MAX_TELEGRAM_IMAGE_BYTES) {
+    throw new Error(`image is too large (${Math.ceil(candidate.fileSize / 1024 / 1024)} MB)`);
+  }
+
+  const file = await ctx.api.getFile(candidate.fileId);
+  if (!file.file_path) throw new Error("Telegram did not return a file path");
+
+  const url = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.byteLength > MAX_TELEGRAM_IMAGE_BYTES) {
+    throw new Error(`image is too large (${Math.ceil(buffer.byteLength / 1024 / 1024)} MB)`);
+  }
+
+  const responseMimeType = response.headers.get("content-type")?.split(";")[0];
+  const mimeType = responseMimeType?.startsWith("image/") ? responseMimeType : candidate.mimeType;
+  if (!mimeType.startsWith("image/")) throw new Error(`Telegram file was not an image (${responseMimeType ?? mimeType})`);
+
+  return { type: "image", data: buffer.toString("base64"), mimeType };
+}
+
+async function readImages(ctx: Context): Promise<ImageContent[]> {
+  const candidates = imageCandidateFileIds(ctx);
+  if (candidates.length === 0) return [];
+  return Promise.all(candidates.map((candidate) => downloadTelegramImage(ctx, candidate)));
+}
+
 async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   const chatId = ctx.chat!.id;
-  const userText = ctx.message?.text ?? "";
+  const userText = ctx.message?.text ?? ctx.message?.caption ?? "";
 
   // ── Slash commands ──────────────────────────────────────────────────────
   // Intercept commands before the agent runs.
@@ -118,6 +172,21 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     await safe("reply (/cancel idle)", ctx.reply("No active run to cancel."));
     return;
   }
+
+  let images: ImageContent[] = [];
+  try {
+    images = await readImages(ctx);
+  } catch (err) {
+    log.warn("telegram image read failed", { chatId, err: err instanceof Error ? err.message : err });
+    await safe("reply (image read failed)", ctx.reply(`Couldn't read that image: ${err instanceof Error ? err.message : String(err)}`));
+    return;
+  }
+
+  if (!userText.trim() && images.length === 0) {
+    await safe("reply (unsupported message)", ctx.reply("I can read text and images. Whatever that was, Telegram is being coy."));
+    return;
+  }
+  const promptText = userText.trim() || "Describe the attached image(s).";
 
   // ── Typing indicator ────────────────────────────────────────────────────
   // Fires immediately and then on a 4s loop until the agent run resolves.
@@ -271,7 +340,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 
   // ── Run the agent with streaming callbacks ──────────────────────────────
   try {
-    await handle(chatId, userText, {
+    await handle(chatId, promptText, {
       // Streaming text update for an in-progress text-only assistant message.
       // Either send the placeholder if we don't have one yet, or schedule a
       // debounced edit to the existing one.
@@ -356,7 +425,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 
       onStatus: pushStatus,
       statusMode: runStatusMode,
-    });
+    }, images);
   } catch (err) {
     log.error("handler error", { err: err instanceof Error ? err.message : err });
     cancelPendingEdit();
@@ -373,15 +442,16 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 export async function runTelegram(handle: Handler): Promise<void> {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
-  bot.on("message:text", async (ctx) => {
+  bot.on("message", async (ctx) => {
     const userId = ctx.from?.id;
     const chatId = ctx.chat.id;
     if (userId === undefined || !isAllowed(userId)) {
       log.warn("dropped non-allowlisted message", { userId, chatId });
       return;
     }
-    const text = ctx.message?.text ?? "";
-    log.info("inbound", { chatId, userId, len: text.length });
+    const text = ctx.message?.text ?? ctx.message?.caption ?? "";
+    const imageCount = imageCandidateFileIds(ctx).length;
+    log.info("inbound", { chatId, userId, len: text.length, imageCount });
 
     // /cancel must bypass the per-chat lock; otherwise it queues behind the
     // thing it is supposed to stop. Comedy, but not useful comedy.

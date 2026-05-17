@@ -20,7 +20,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { getModel, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
+import { getModel, type ImageContent, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
@@ -245,6 +245,7 @@ export async function handleMessage(
   chatId: number,
   text: string,
   callbacks: StreamCallbacks = {},
+  images: ImageContent[] = [],
 ): Promise<void> {
   const session = await sessions.resolveSession(chatId);
   log.debug("agent prompt", {
@@ -252,6 +253,7 @@ export async function handleMessage(
     sessionId: session.sessionId,
     isNew: session.isNew,
     length: text.length,
+    imageCount: images.length,
   });
   // If resolveSession just archived an old session, kick off the TOC
   // summarizer in the background. Don't await — the user's new turn
@@ -332,7 +334,7 @@ export async function handleMessage(
   const before = agent.state.messages.length;
 
   try {
-    await agent.prompt(text);
+    await agent.prompt(text, images);
   } finally {
     unsubscribe();
     if (activeChatAgents.get(chatId) === agent) activeChatAgents.delete(chatId);
