@@ -23,6 +23,7 @@ import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 import { getApiKeyForProvider } from "./auth.js";
 import * as sessions from "./session-manager.js";
+import type { LoadedSession } from "./session-manager.js";
 
 // ─── Token estimation ───────────────────────────────────────────────────────
 
@@ -275,11 +276,17 @@ export interface MaybeCompactResult {
 // Called by the runtime before each agent.prompt(). If the session is under
 // the threshold this is just a token-count + return; otherwise it runs the
 // full compaction pipeline and returns the freshly compacted message list.
-export async function maybeCompact(
+export interface CompactionStore {
+  appendCompactionEntry: (entry: { summary: string; tokensBefore: number }) => Promise<void>;
+  reload: () => Promise<LoadedSession>;
+}
+
+export async function maybeCompactLoaded(
   sessionId: string,
-  loaded: { previousSummary?: string; tail: AgentMessage[] },
+  loaded: LoadedSession,
   model: Model<any>,
   makeSummaryMessage: (summary: string) => AgentMessage,
+  store: CompactionStore,
 ): Promise<MaybeCompactResult> {
   // Build the effective list (what the agent would actually see this turn).
   const effective = loaded.previousSummary
@@ -318,17 +325,29 @@ export async function maybeCompact(
   const toSummarize = loaded.tail.slice(0, cut);
   const newSummary = await generateSummary(toSummarize, model, loaded.previousSummary);
 
-  await sessions.appendCompactionEntry(sessionId, {
+  await store.appendCompactionEntry({
     summary: newSummary,
     tokensBefore: tokens,
   });
 
   // Reload — the JSONL now has the new compaction entry, and `load` will
   // surface it as the new previousSummary with the freshly trimmed tail.
-  const reloaded = await sessions.load(sessionId);
+  const reloaded = await store.reload();
   const newEffective = reloaded.previousSummary
     ? [makeSummaryMessage(reloaded.previousSummary), ...reloaded.tail]
     : reloaded.tail.slice();
 
   return { messages: newEffective, didCompact: true, tokensBefore: tokens };
+}
+
+export async function maybeCompact(
+  sessionId: string,
+  loaded: LoadedSession,
+  model: Model<any>,
+  makeSummaryMessage: (summary: string) => AgentMessage,
+): Promise<MaybeCompactResult> {
+  return maybeCompactLoaded(sessionId, loaded, model, makeSummaryMessage, {
+    appendCompactionEntry: (entry) => sessions.appendCompactionEntry(sessionId, entry),
+    reload: () => sessions.load(sessionId),
+  });
 }

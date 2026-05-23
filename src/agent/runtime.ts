@@ -17,7 +17,7 @@
 // is fine; if it ever shows up in profiling, move to a per-session Agent
 // cache later.
 
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import { getModel, type ImageContent, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
@@ -25,7 +25,7 @@ import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
-import { maybeCompact } from "./compaction.js";
+import { estimateContextTokens, maybeCompact, maybeCompactLoaded } from "./compaction.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { systemPrompt } from "./system-prompt.js";
@@ -186,20 +186,46 @@ function scheduledSessionFile(taskId: string): string {
   return join(paths.scheduledJobSessions, `${taskId}.jsonl`);
 }
 
-async function loadScheduledMessages(taskId: string): Promise<AgentMessage[]> {
+interface ScheduledLoadedSession {
+  previousSummary?: string;
+  tail: AgentMessage[];
+}
+
+function isCompactionEntry(parsed: unknown): parsed is {
+  type: "compaction";
+  summary: string;
+  tokensBefore: number;
+} {
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    (parsed as { type?: string }).type === "compaction"
+  );
+}
+
+async function loadScheduledMessages(taskId: string): Promise<ScheduledLoadedSession> {
   let raw: string;
   try {
     raw = await readFile(scheduledSessionFile(taskId), "utf-8");
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { tail: [] };
     throw err;
   }
 
-  const messages = raw
-    .split("\n")
-    .filter((line) => line.trim())
-    .map((line) => JSON.parse(line) as AgentMessage);
-  return dropDanglingScheduledToolCalls(messages);
+  let previousSummary: string | undefined;
+  let tail: AgentMessage[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const parsed = JSON.parse(line) as unknown;
+    if (isCompactionEntry(parsed)) {
+      previousSummary = parsed.summary;
+      tail = [];
+    } else {
+      tail.push(parsed as AgentMessage);
+    }
+  }
+
+  return { previousSummary, tail: dropDanglingScheduledToolCalls(tail) };
 }
 
 function dropDanglingScheduledToolCalls(messages: AgentMessage[]): AgentMessage[] {
@@ -224,6 +250,36 @@ async function appendScheduledMessages(
   await mkdir(paths.scheduledJobSessions, { recursive: true });
   const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
   await appendFile(scheduledSessionFile(taskId), lines, "utf-8");
+}
+
+async function appendScheduledCompactionEntry(
+  taskId: string,
+  entry: { summary: string; tokensBefore: number },
+): Promise<void> {
+  await mkdir(paths.scheduledJobSessions, { recursive: true });
+  const line = {
+    type: "compaction",
+    timestamp: Date.now(),
+    summary: entry.summary,
+    tokensBefore: entry.tokensBefore,
+  };
+  await appendFile(scheduledSessionFile(taskId), JSON.stringify(line) + "\n", "utf-8");
+}
+
+async function archiveScheduledSession(taskId: string, reason: string): Promise<string | undefined> {
+  const src = scheduledSessionFile(taskId);
+  const archiveDir = join(paths.scheduledJobSessions, "archive");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dst = join(archiveDir, `${taskId}-${stamp}.jsonl`);
+  await mkdir(archiveDir, { recursive: true });
+  try {
+    await rename(src, dst);
+    log.warn("archived scheduled session", { taskId, reason, path: dst });
+    return dst;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
 }
 
 function makeSummaryMessage(summary: string): AgentMessage {
@@ -359,22 +415,58 @@ export async function rotateSession(chatId: number): Promise<string> {
 }
 
 // Scheduled jobs use persistent per-task sessions, independent from Telegram
-// chat sessions. No rotation/compaction yet; the first cut mirrors AgentBox's
-// useful bit: each task keeps context across runs.
+// chat sessions. They share the same compaction format so recurring jobs do
+// not grow until they fall out of the model context window.
 export async function runScheduledPrompt(
   taskId: string,
   taskName: string,
   prompt: string,
   taskNotePath: string,
 ): Promise<string> {
-  const messages = await loadScheduledMessages(taskId);
-  const agent = buildAgent(messages);
+  const loaded = await loadScheduledMessages(taskId);
+  let initialMessages: AgentMessage[];
+  try {
+    const compaction = await maybeCompactLoaded(
+      `scheduled:${taskId}`,
+      loaded,
+      model,
+      makeSummaryMessage,
+      {
+        appendCompactionEntry: (entry) => appendScheduledCompactionEntry(taskId, entry),
+        reload: () => loadScheduledMessages(taskId),
+      },
+    );
+    if (compaction.didCompact) {
+      log.info("scheduled compaction applied", {
+        taskId,
+        tokensBefore: compaction.tokensBefore,
+        tokensAfter: estimateContextTokens(compaction.messages),
+      });
+    }
+    initialMessages = compaction.messages;
+  } catch (err) {
+    const reason = `scheduled compaction failed: ${err instanceof Error ? err.message : String(err)}`;
+    await archiveScheduledSession(taskId, reason);
+    initialMessages = [];
+  }
+
+  const agent = buildAgent(initialMessages);
   const before = agent.state.messages.length;
   let finalText = "";
+  let errorText = "";
 
   const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
     if (event.type !== "message_end" || event.message.role !== "assistant") return;
     if (hasToolCall(event.message.content)) return;
+    if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+      errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
+      log.warn("scheduled agent error", {
+        taskId,
+        stopReason: event.message.stopReason,
+        err: event.message.errorMessage ?? "",
+      });
+      return;
+    }
     finalText = extractText(event.message.content).trim();
   });
 
@@ -398,5 +490,7 @@ export async function runScheduledPrompt(
   }
 
   await appendScheduledMessages(taskId, agent.state.messages.slice(before));
-  return finalText || "(no output)";
+  if (errorText) throw new Error(errorText);
+  if (!finalText) throw new Error("scheduled agent produced no final output");
+  return finalText;
 }
