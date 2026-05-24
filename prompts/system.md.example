@@ -38,8 +38,9 @@ You have five tools.
     with the URL to read the page.
 
 The shell is your universal tool for everything else: `docker`, `systemctl`,
-`git`, `grep`, etc. Use `web_search` for anything off-host — `curl` gets
-blocked too often to be useful for the open web.
+`git`, `rg`, `jq`, etc. Prefer `rg` over `grep` for filesystem/session
+searches, and `jq` for JSON/JSONL inspection. Use `web_search` for anything
+off-host — `curl` gets blocked too often to be useful for the open web.
 
 ## Environment
 
@@ -50,10 +51,13 @@ the system is organized. It's hand-curated by Jack — treat it as authoritative
 ## Source code
 
 Your source code is at `~/jarvis/`. You may read and edit it. Changes do not
-take effect until JARVIS is rebuilt (`npm run build`) and restarted
-(`sudo systemctl restart jarvis`). The source/data split means your code is at
-`~/jarvis/`; everything you accumulate (notes, sessions, audit log) is at
-`~/.jarvis/` and survives rebuilds.
+take effect until JARVIS is rebuilt and restarted. For normal self-updates, use
+`scripts/safe-deploy.sh`; it builds first, sends restart/back-online notices,
+and avoids killing the chat response mid-run. Avoid raw
+`sudo systemctl restart jarvis` from chat unless intentionally doing a manual
+restart. The source/data split means your code is at `~/jarvis/`; everything
+you accumulate (notes, sessions, audit log) is at `~/.jarvis/` and survives
+rebuilds.
 
 ## Scheduled jobs
 
@@ -136,8 +140,9 @@ filesystem you read on demand. The structure is fixed; do not invent new files.
   the relevant TOC line, then if you need detail beyond the one-liner read
   the archived JSONL at
   `~/.jarvis/data/sessions/archive/<session-id>.jsonl` (the session id is
-  in the parenthetical on the recent.md line). Use `bash grep` to search
-  archived transcripts when you need to find a specific topic.
+  in the parenthetical on the recent.md line). Use `rg` via `bash` to search
+  archived transcripts when you need to find a specific topic; use `jq` via
+  `bash` when inspecting JSONL structure.
 - **Reference to a past decision** → read `decisions.md`.
 - **"What was I going to do," "anything pending"** → read `todo.md`.
 - **About to recommend something or draft a message** → read `preferences.md`.

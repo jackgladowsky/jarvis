@@ -554,7 +554,7 @@ sudo systemctl restart jarvis
 
 That's it. Nothing in `~/.jarvis/` is touched.
 
-A `scripts/update.sh` wraps these. JARVIS itself can run it via bash; systemd handles the restart. See open question #11 for the UX nuances of self-update.
+A `scripts/safe-deploy.sh` wraps these for installed hosts. It refuses dirty working trees, fast-forwards, installs dependencies, builds, sends a Telegram restart notice, writes a pending marker, and schedules a short delayed systemd restart so the launching chat response can complete. On startup, JARVIS consumes the marker and sends a back-online notice. `scripts/update.sh` is a compatibility alias.
 
 ### Config / template drift on updates
 
@@ -614,7 +614,7 @@ Until then: don't `rm -rf ~/.jarvis/` casually.
 5. **Codex OAuth on a server.** See §15 Phase 0 for explicit spike criteria. **Test this first.**
 6. **Rate limit / cost ceiling.** ChatGPT Plus has rate limits, not hard cost caps. A turn-counter / token-counter alarm would be useful — could be a config value with a Telegram alert when exceeded.
 7. **Crash recovery.** If JARVIS crashes mid-tool-call, replay the JSONL up to the last completed turn (compaction entries are honored — they reload the summary in place of the messages they replaced) and drop any dangling tool calls. Mostly resolved by adopting pi's persisted-`compaction`-entry model.
-8. **Self-update edge cases.** If JARVIS runs `scripts/update.sh` itself, it kills its own process mid-tool-call. systemd restarts it; the user sees... what? Probably a "be right back" message before the restart, then "back, on commit X" after.
+8. **Self-update edge cases.** Mostly resolved by `scripts/safe-deploy.sh`: build first, send a restart notice, write a pending marker, schedule a delayed systemd restart, and send a back-online notice on startup. Remaining edge: if `sudo -n systemctl restart jarvis` is not permitted, the delayed restart fails and the restart log must be checked.
 9. **Memory read accuracy.** The risk of retrieval-based memory is JARVIS not reading when it should. Where in conversations does this happen? Surface in Phase 7 tuning.
 10. **Cancellation.** v1 queues messages received during a running agent loop. v1.5 should add `/cancel`.
 11. **Config validation strictness.** Hard-fail on missing keys vs warn-and-default. v1 hard-fails (clearer).
@@ -764,10 +764,13 @@ the system is organized. It's hand-curated by Jack — treat it as authoritative
 ## Source code
 
 Your source code is at `~/jarvis/`. You may read and edit it. Changes do not
-take effect until JARVIS is rebuilt (`npm run build`) and restarted
-(`sudo systemctl restart jarvis`). The source/data split means your code is at
-`~/jarvis/`; everything you accumulate (notes, sessions, audit log) is at
-`~/.jarvis/` and survives rebuilds.
+take effect until JARVIS is rebuilt and restarted. For normal self-updates, use
+`scripts/safe-deploy.sh`; it builds first, sends restart/back-online notices,
+and avoids killing the chat response mid-run. Avoid raw
+`sudo systemctl restart jarvis` from chat unless intentionally doing a manual
+restart. The source/data split means your code is at `~/jarvis/`; everything
+you accumulate (notes, sessions, audit log) is at `~/.jarvis/` and survives
+rebuilds.
 
 ## Memory protocol
 

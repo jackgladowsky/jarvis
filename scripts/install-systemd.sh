@@ -64,6 +64,9 @@ ExecStart=$NODE_BIN $REPO_ROOT/dist/index.js
 # RestartSec gives Telegram's long-poll a moment to settle before we reconnect.
 Restart=on-failure
 RestartSec=5
+# Keep self-deploy restarts snappy; Telegram long-poll shutdown should not
+# make a deploy feel haunted.
+TimeoutStopSec=10
 # Logs flow into journald — \`journalctl -fu jarvis\` to follow.
 StandardOutput=journal
 StandardError=journal
