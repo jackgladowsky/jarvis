@@ -214,6 +214,26 @@ scripts/safe-deploy.sh
 
 `safe-deploy.sh` refuses to run with a dirty working tree and will not restart the service unless the new code builds. If it does restart, it sends a Telegram "restarting" notice, writes a pending deploy marker, schedules the restart after a short delay, and JARVIS sends a back-online notice on startup. `scripts/update.sh` remains as a backwards-compatible alias.
 
+## Background workers
+
+Long-running tasks can run outside the main Telegram chat:
+
+```text
+/bg <prompt>          # start a background worker
+/tasks                # list recent background tasks
+/task <id>            # show status + recent mailbox
+/answer <id> <text>   # answer a worker question and resume it
+/cancelbg <id>        # cancel a background worker
+```
+
+Workers use isolated git worktrees under `~/jarvis-worktrees/` and task state under `~/.jarvis/data/background/`. Tasks run as role pipelines such as `researcher -> implementer -> reviewer`; the reviewer does not edit files and marks the task `ready_for_pr` or `needs_fix`. Main JARVIS should still inspect before pushing/opening a PR.
+
+Useful shell entrypoint:
+
+```bash
+scripts/start-background-task.sh "Implement the thing"
+```
+
 ## Operations
 
 Useful commands:

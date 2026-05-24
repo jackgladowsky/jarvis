@@ -43,6 +43,15 @@ export const paths = {
   scheduledJobNotes: join(DATA_BASE, "data", "jobs", "notes"),
   scheduledJobsLog: join(DATA_BASE, "data", "jobs", "scheduler.log"),
 
+  // Background workers — manually launched long-running agents with isolated
+  // task state and git worktrees.
+  background: join(DATA_BASE, "data", "background"),
+  backgroundTasks: join(DATA_BASE, "data", "background", "tasks"),
+  backgroundSessions: join(DATA_BASE, "data", "background", "sessions"),
+  backgroundNotes: join(DATA_BASE, "data", "background", "notes"),
+  backgroundMail: join(DATA_BASE, "data", "background", "mail"),
+  backgroundWorktrees: join(homedir(), "jarvis-worktrees"),
+
   // Safe deploy state. `scripts/safe-deploy.sh` writes a marker before the
   // delayed restart; startup consumes it and sends a back-online notice.
   deployPending: join(DATA_BASE, "data", "deploy", "pending.json"),

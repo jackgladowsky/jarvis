@@ -282,6 +282,72 @@ async function archiveScheduledSession(taskId: string, reason: string): Promise<
   }
 }
 
+function backgroundSessionFile(taskId: string): string {
+  return join(paths.backgroundSessions, `${taskId}.jsonl`);
+}
+
+async function loadBackgroundMessages(taskId: string): Promise<ScheduledLoadedSession> {
+  let raw: string;
+  try {
+    raw = await readFile(backgroundSessionFile(taskId), "utf-8");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { tail: [] };
+    throw err;
+  }
+
+  let previousSummary: string | undefined;
+  let tail: AgentMessage[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const parsed = JSON.parse(line) as unknown;
+    if (isCompactionEntry(parsed)) {
+      previousSummary = parsed.summary;
+      tail = [];
+    } else {
+      tail.push(parsed as AgentMessage);
+    }
+  }
+
+  return { previousSummary, tail: dropDanglingScheduledToolCalls(tail) };
+}
+
+async function appendBackgroundMessages(taskId: string, messages: AgentMessage[]): Promise<void> {
+  if (messages.length === 0) return;
+  await mkdir(paths.backgroundSessions, { recursive: true });
+  const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
+  await appendFile(backgroundSessionFile(taskId), lines, "utf-8");
+}
+
+async function appendBackgroundCompactionEntry(
+  taskId: string,
+  entry: { summary: string; tokensBefore: number },
+): Promise<void> {
+  await mkdir(paths.backgroundSessions, { recursive: true });
+  const line = {
+    type: "compaction",
+    timestamp: Date.now(),
+    summary: entry.summary,
+    tokensBefore: entry.tokensBefore,
+  };
+  await appendFile(backgroundSessionFile(taskId), JSON.stringify(line) + "\n", "utf-8");
+}
+
+async function archiveBackgroundSession(taskId: string, reason: string): Promise<string | undefined> {
+  const src = backgroundSessionFile(taskId);
+  const archiveDir = join(paths.backgroundSessions, "archive");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dst = join(archiveDir, `${taskId}-${stamp}.jsonl`);
+  await mkdir(archiveDir, { recursive: true });
+  try {
+    await rename(src, dst);
+    log.warn("archived background session", { taskId, reason, path: dst });
+    return dst;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+}
+
 function makeSummaryMessage(summary: string): AgentMessage {
   return {
     role: "user",
@@ -492,5 +558,84 @@ export async function runScheduledPrompt(
   await appendScheduledMessages(taskId, agent.state.messages.slice(before));
   if (errorText) throw new Error(errorText);
   if (!finalText) throw new Error("scheduled agent produced no final output");
+  return finalText;
+}
+
+export async function runBackgroundPrompt(
+  taskId: string,
+  taskName: string,
+  prompt: string,
+  taskNotePath: string,
+): Promise<string> {
+  const loaded = await loadBackgroundMessages(taskId);
+  let initialMessages: AgentMessage[];
+  try {
+    const compaction = await maybeCompactLoaded(
+      `background:${taskId}`,
+      loaded,
+      model,
+      makeSummaryMessage,
+      {
+        appendCompactionEntry: (entry) => appendBackgroundCompactionEntry(taskId, entry),
+        reload: () => loadBackgroundMessages(taskId),
+      },
+    );
+    if (compaction.didCompact) {
+      log.info("background compaction applied", {
+        taskId,
+        tokensBefore: compaction.tokensBefore,
+        tokensAfter: estimateContextTokens(compaction.messages),
+      });
+    }
+    initialMessages = compaction.messages;
+  } catch (err) {
+    const reason = `background compaction failed: ${err instanceof Error ? err.message : String(err)}`;
+    await archiveBackgroundSession(taskId, reason);
+    initialMessages = [];
+  }
+
+  const agent = buildAgent(initialMessages);
+  const before = agent.state.messages.length;
+  let finalText = "";
+  let errorText = "";
+
+  const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+    if (event.type !== "message_end" || event.message.role !== "assistant") return;
+    if (hasToolCall(event.message.content)) return;
+    if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+      errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
+      log.warn("background agent error", {
+        taskId,
+        stopReason: event.message.stopReason,
+        err: event.message.errorMessage ?? "",
+      });
+      return;
+    }
+    finalText = extractText(event.message.content).trim();
+  });
+
+  const taskPrompt = [
+    "You are running as a background JARVIS worker.",
+    "You have one long-running task. Work autonomously, but do not make product/security/destructive decisions by guessing.",
+    "If blocked, write a question to the task mailbox, set the task status to waiting_on_main in its task JSON, and stop.",
+    "If finished, update the task note and task JSON with status awaiting_review. Do not push, merge, deploy, or edit the main checkout unless explicitly instructed.",
+    "Use the assigned git worktree for repo changes.",
+    "Your final response is a concise handoff summary for main JARVIS.",
+    "",
+    `Task: ${taskName} (${taskId})`,
+    `Task note: ${taskNotePath}`,
+    "",
+    prompt,
+  ].join("\n");
+
+  try {
+    await agent.prompt(taskPrompt);
+  } finally {
+    unsubscribe();
+  }
+
+  await appendBackgroundMessages(taskId, agent.state.messages.slice(before));
+  if (errorText) throw new Error(errorText);
+  if (!finalText) throw new Error("background agent produced no final output");
   return finalText;
 }
