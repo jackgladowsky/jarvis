@@ -5,6 +5,7 @@
 
 import { handleMessage } from "./agent/runtime.js";
 import * as sessions from "./agent/session-manager.js";
+import { notifyPendingDeployComplete } from "./lib/deploy-notify.js";
 import { log } from "./lib/logger.js";
 import { startScheduler } from "./scheduler.js";
 import { runTelegram } from "./transport/telegram.js";
@@ -14,6 +15,7 @@ async function main(): Promise<void> {
   // Load active.json and create session dirs before any messages can arrive.
   // Crash recovery (replaying transcripts) happens lazily inside handleMessage.
   await sessions.init();
+  await notifyPendingDeployComplete();
   const stopScheduler = await startScheduler();
   // runTelegram only resolves once the bot is stopped (via SIGINT/SIGTERM
   // handlers in transport/telegram.ts).

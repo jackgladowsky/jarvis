@@ -199,7 +199,7 @@ JARVIS_DATA_DIR=$PWD/.jarvis-dev node --env-file=$PWD/.jarvis-dev/.env dist/inde
 
 ## Deploy/update
 
-After changing code:
+After changing code locally:
 
 ```bash
 pnpm run build
@@ -209,10 +209,10 @@ sudo systemctl restart jarvis
 For a clean pull/build/restart flow on an installed host:
 
 ```bash
-scripts/update.sh
+scripts/safe-deploy.sh
 ```
 
-`update.sh` refuses to run with a dirty working tree and will not restart the service unless the new code builds.
+`safe-deploy.sh` refuses to run with a dirty working tree and will not restart the service unless the new code builds. If it does restart, it sends a Telegram "restarting" notice, writes a pending deploy marker, schedules the restart after a short delay, and JARVIS sends a back-online notice on startup. `scripts/update.sh` remains as a backwards-compatible alias.
 
 ## Operations
 

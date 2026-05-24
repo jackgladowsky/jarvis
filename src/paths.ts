@@ -43,6 +43,10 @@ export const paths = {
   scheduledJobNotes: join(DATA_BASE, "data", "jobs", "notes"),
   scheduledJobsLog: join(DATA_BASE, "data", "jobs", "scheduler.log"),
 
+  // Safe deploy state. `scripts/safe-deploy.sh` writes a marker before the
+  // delayed restart; startup consumes it and sends a back-online notice.
+  deployPending: join(DATA_BASE, "data", "deploy", "pending.json"),
+
   // Append-only audit log of every tool call. See DESIGN.md §13.
   audit: join(DATA_BASE, "data", "audit.log"),
 
