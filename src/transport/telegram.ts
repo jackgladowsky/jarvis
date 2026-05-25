@@ -15,6 +15,7 @@
 import { Bot, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { cancelChatRun, handleMessage, rotateSession, type StatusMode } from "../agent/runtime.js";
+import { renderUsageReport } from "../agent/usage.js";
 import {
   answerBackgroundTask,
   cancelBackgroundTask,
@@ -232,6 +233,16 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   if (userText.trim() === "/new") {
     const sessionId = await rotateSession(chatId);
     await safe("reply (/new)", ctx.reply(`Started a new session (${sessionId}).`));
+    return;
+  }
+
+  if (commandName(userText) === "usage") {
+    try {
+      await safe("reply (/usage)", ctx.reply(await renderUsageReport(chatId)));
+    } catch (err) {
+      log.warn("usage command failed", { chatId, err: err instanceof Error ? err.message : err });
+      await safe("reply (/usage failed)", ctx.reply(`Usage report failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
     return;
   }
 

@@ -20,45 +20,16 @@
 import { appendFile, mkdir, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { getModel, type ImageContent, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
-import { config } from "../config.js";
+import { type ImageContent } from "@mariozechner/pi-ai";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
 import { estimateContextTokens, maybeCompact, maybeCompactLoaded } from "./compaction.js";
+import { model } from "./model.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { systemPrompt } from "./system-prompt.js";
 import { allTools } from "./tools/index.js";
-
-// Register pi-ai's built-in providers (anthropic, openai-codex, etc.) so
-// `getModel(provider, id)` can find them. Must run before resolveModel().
-registerBuiltInApiProviders();
-
-// Maps the friendly config string to pi-ai's provider key. The auth module
-// keys off the same provider strings — keep these in sync.
-const PROVIDER_KEY: Record<string, string> = {
-  codex: "openai-codex",
-  anthropic: "anthropic",
-};
-
-// Resolve the model once at startup. The same Model<> object is reused
-// across every per-chat Agent we build — sessions only differ in transcript.
-function resolveModel(): Model<any> {
-  const providerKey = PROVIDER_KEY[config.agent.provider];
-  if (!providerKey) {
-    throw new Error(`unknown agent.provider: ${config.agent.provider}`);
-  }
-  const m = getModel(providerKey as any, config.agent.model as any);
-  if (!m) {
-    throw new Error(
-      `model "${config.agent.model}" not found in provider "${providerKey}"`,
-    );
-  }
-  return m;
-}
-
-const model = resolveModel();
 
 // Streaming callbacks invoked per assistant message. Tool-call messages are
 // filtered out before any callback fires — see the listener below.

@@ -27,7 +27,7 @@ import { paths } from "../paths.js";
 
 // Per-chat metadata stored in active.json. Keyed by chat id (stringified, since
 // JSON object keys are always strings).
-interface ActiveSessionEntry {
+export interface ActiveSessionEntry {
   sessionId: string;
   startedAt: number;       // ms epoch
   lastMessageAt: number;   // ms epoch
@@ -146,6 +146,11 @@ export async function init(): Promise<void> {
 
 // Look up the active session for a chat, rotating if it's stale. The runtime
 // calls this at the start of each handleMessage.
+export function getActiveSession(chatId: number): ActiveSessionEntry | undefined {
+  const entry = active[String(chatId)];
+  return entry ? { ...entry } : undefined;
+}
+
 export async function resolveSession(chatId: number): Promise<ResolvedSession> {
   const key = String(chatId);
   const now = Date.now();
