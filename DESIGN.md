@@ -1,14 +1,14 @@
 # JARVIS — Design Doc
 
-**Status:** v0 draft, pre-build
+**Status:** living design notes; implementation exists
 **Owner:** Jack
-**Last updated:** 2026-05-06
+**Last updated:** 2026-05-25
 
 A personal, persistent AI assistant. Lives on Jack's M710q, accessed primarily via Telegram, built on `pi-agent-core`. Authenticates to Codex (ChatGPT Plus/Pro) via OAuth.
 
-This doc captures decisions made so far and flags open questions. Iterate freely — nothing here is final until code is written, and even then.
+This doc captures the original design rationale plus selected architecture notes. Some later sections remain historical; prefer `README.md`, `AGENTS.md.example`, `config.yaml.example`, and source for current operational detail.
 
-> **A note on length:** this doc is long because every section reflects a real decision. Once code exists, this will likely fork into a stable `DESIGN.md` (rationale, decisions log) and a living `ARCHITECTURE.md` (paths, layout, install). For now, one file. The full system prompt is in the appendix and is the canonical version — what's in §4 is summary.
+> **A note on length:** this doc is long because every section reflects a real decision. Keep factual drift corrected, but avoid turning it into a second README. The live system prompt is `~/.jarvis/prompts/system.md`; the repo template is `prompts/system.md.example`.
 
 ---
 
@@ -29,10 +29,9 @@ This doc captures decisions made so far and flags open questions. Iterate freely
 - Multi-user / shared access.
 - Voice interface.
 - Local LLM inference.
-- Proactive messaging on a schedule. (v2.)
+- Calendar / email style integrations. Scheduled prompts exist, but external app integrations do not.
 - Episodic memory / semantic search over past sessions. (v2.)
 - Web UI. Telegram is the only interface.
-- Calendar / email integrations. (Add when wanted, not preemptively.)
 - SSH-out to other machines. Parked — interesting future direction, but not v1.
 - Custom note/memory tools. Notes are just files in a known directory.
 - Hot-reload of config. Restart the service.
@@ -46,9 +45,9 @@ This doc captures decisions made so far and flags open questions. Iterate freely
 **Host:** Jack's Lenovo ThinkCentre M710q.
 - i7-6700T, 32GB RAM, 256GB NVMe.
 - Currently runs a Minecraft server and miscellaneous dev work. Nothing critical.
-- JARVIS lives here as a regular Linux user (`jarvis`) with full shell access to its own machine.
+- JARVIS runs as a regular Linux user with full shell access to its own machine. The systemd installer uses the installing user (`User=$(whoami)`); on Jack's current host that is `jack`, not a separate `jarvis` user.
 
-**Threat model posture:** the box is non-critical and JARVIS is an *inhabitant* of it, not a fenced-off operator. If JARVIS does something dumb, worst case is reinstalling the OS and redeploying from git. The Minecraft world gets backed up nightly to a separate location so even that worst case is recoverable.
+**Threat model posture:** the box is non-critical and JARVIS is an *inhabitant* of it, not a fenced-off operator. If JARVIS does something dumb, worst case is reinstalling the OS and redeploying from git. The Minecraft world has independent backups, so even that worst case is recoverable.
 
 **Filesystem layout (high level):**
 - **`~/jarvis/`** — source code, git-managed. Replaceable wholesale.
@@ -75,9 +74,9 @@ The deciding factor: Jack already doesn't care if the M710q gets wrecked. Isolat
 - **Language:** TypeScript (Node 20+).
 - **Agent framework:** `@mariozechner/pi-agent-core` for the loop. Mirror tool implementations and core agent logic (compaction, etc.) from `@mariozechner/pi-coding-agent` but don't extend it directly — its CLI/TUI/per-cwd-session model fights the Telegram use case. **Default rule:** when designing agent logic, look at how pi does it before inventing custom machinery.
 - **LLM provider:** Codex via OAuth (ChatGPT Plus/Pro), through `pi-ai`'s OAuth flow. Anthropic API key as a fallback.
-- **Transport:** Telegram Bot API. Library: `grammy` (modern, good TS types) unless we hit a reason not to.
+- **Transport:** Telegram Bot API. Library: `grammy`.
 - **Config:** YAML for tunables, dotenv for secrets. `zod` for runtime validation.
-- **Storage:** Plain files for v1. JSONL for sessions, markdown for notes, append-only flat file for audit log. SQLite is on the table for v2 if files become limiting.
+- **Storage:** Plain files for v1. JSONL for sessions/jobs/workers, markdown for notes, append-only flat file for audit log. SQLite is on the table later if files become limiting.
 
 ---
 
@@ -122,13 +121,13 @@ This means:
 - Token budget at session start is fixed and predictable. Memory size doesn't bloat the prompt.
 - Behavior is fully specified by one file. No "the prompt says X but the injection logic does Y."
 
-The full canonical prompt is in **Appendix A**. JARVIS itself can edit `~/.jarvis/prompts/system.md` (it has the tools), though changes only take effect after a service restart.
+The canonical prompt lives in `~/.jarvis/prompts/system.md`; the repo template is `prompts/system.md.example`. JARVIS itself can edit the live prompt, though changes only take effect after a service restart.
 
 ---
 
 ## 5. Tool Surface (v1)
 
-Five tools. Adding a tool is still something to *resist*, not something to do speculatively — the model is smart and can compose. The first four mirror `pi-coding-agent`; the fifth (`web_search`) is the deliberate exception, see below.
+Five tools. Adding another tool is still something to *resist*, not something to do speculatively — the model is smart and can compose. The first four mirror `pi-coding-agent`; the fifth (`web_search`) is the deliberate exception, see below.
 
 ```
 read(path)               # read a file
@@ -153,14 +152,11 @@ If the cap or defaults turn out wrong in practice, tune them in `web-search.ts`.
 ### Why no note tools
 Notes are markdown files in `~/.jarvis/data/notes/`. JARVIS reads them with `read`, edits them with `edit` or `write`. The filesystem is the API. Custom note tools would be reinventing files with worse ergonomics — the model already knows how to work with files, so we use that.
 
-### Why no note tools
-Notes are markdown files in `~/.jarvis/data/notes/`. JARVIS reads them with `read`, edits them with `edit` or `write`. The filesystem is the API. Custom note tools would be reinventing files with worse ergonomics — the model already knows how to work with files, so we use that.
-
 ### Tool safety posture
 - The M710q is the sandbox. JARVIS can do anything inside it.
 - **No confirmation flow.** JARVIS executes what it decides to execute. If it does something destructive, that's accepted risk.
 - **Audit log is the actual safeguard.** Every tool call hits `~/.jarvis/data/audit.log` with timestamp, redacted args, outcome. Append-only. See §13 for redaction/rotation.
-- The Minecraft world directory has nightly rsync backups, independent of JARVIS.
+- The Minecraft world backups are independent of JARVIS.
 
 ---
 
@@ -209,13 +205,13 @@ The single most important structural decision in this design. Source code and da
 - Git-managed.
 - Contains: TypeScript source, package.json, tsconfig, build scripts, templates (`AGENTS.md.example`, `config.yaml.example`, `prompts/system.md.example`), README.
 - Replaceable wholesale: deleting and re-cloning loses nothing.
-- Updated via `git pull && npm install && npm run build`.
+- Updated via `scripts/safe-deploy.sh` on installed hosts, or `pnpm install && pnpm run build` for local development.
 
 ### Data: `~/.jarvis/`
 - Never in source, gitignored if the path ever appears in source for any reason.
 - Contains: secrets (`.env`), config (`config.yaml`), prompt (`prompts/system.md`), environment docs (`AGENTS.md`), sessions, notes, audit log, regenerable cache.
 - Survives updates by virtue of being in a different directory.
-- Backed up nightly to a separate host. Irreplaceable.
+- Irreplaceable; back it up separately from source. `scripts/backup-jarvis-data.sh` creates local tarball backups, while off-box policy remains operational.
 
 ### Why this matters
 With this split, updates are atomic and risk-free. Without it, every update has to be careful about what to preserve. The cost of separation is one extra path to track in code; the benefit is that the update story becomes a non-issue.
@@ -274,42 +270,8 @@ ANTHROPIC_API_KEY=...                         # optional, fallback provider
 The Codex creds path defaults to `~/.jarvis/.codex-creds.json` (resolved via `paths.data` in `src/agent/auth.ts`). Set the env var only when you need to point at a creds file outside the data dir.
 
 ### `config.yaml` contents
-```yaml
-# JARVIS configuration. Edit freely, restart the service to apply.
-# Secrets live in .env, not here.
 
-agent:
-  provider: codex                             # "codex" or "anthropic"
-  model: gpt-5                                # actual identifier TBD
-
-session:
-  inactivity_threshold_minutes: 240           # 4 hours
-  max_duration_hours: 24
-  summarize_on_rotation: true                 # append a TOC entry to recent.md on rotation
-  announce_new_session: false
-
-compaction:
-  enabled: true
-  reserve_tokens: 16384                       # compact when context_tokens > (window - reserve_tokens)
-  keep_recent_tokens: 20000                   # always preserve this much of the tail uncompacted
-
-tools:
-  bash:
-    default_timeout_seconds: 60
-    max_timeout_seconds: 600
-
-telegram:
-  show_typing: true
-  long_tool_call_seconds: 5
-  parse_mode: none                            # "none" / "MarkdownV2" / "HTML"
-                                              # default "none" — MarkdownV2 escaping is a footgun
-
-logging:
-  audit_log_enabled: true
-  audit_log_max_value_bytes: 2048             # truncate logged values larger than this
-  audit_log_redact_patterns: true             # redact API-key-shaped strings
-  level: info                                 # "debug" / "info" / "warn" / "error"
-```
+See `config.yaml.example` for the current committed schema and defaults. Keep that file as the source of truth for concrete model names, Telegram parse mode, scheduler settings, and any newly added config keys; embedded examples in this design doc are intentionally avoided to prevent drift.
 
 Note what's *not* here anymore:
 - `memory.inject_files`, `memory.max_notes_injected_chars` — gone, no injection.
@@ -341,70 +303,50 @@ export const config = Object.freeze(ConfigSchema.parse(raw));
 
 ### Source tree (`~/jarvis/`, git-managed)
 
-```
+```text
 ~/jarvis/
 ├── src/
-│   ├── index.ts                        # entrypoint, signal handling
+│   ├── index.ts                        # entrypoint and startup orchestration
 │   ├── config.ts                       # YAML + env loading, validation, frozen export
-│   ├── paths.ts                        # path resolution
-│   ├── transport/
-│   │   └── telegram.ts                 # bot, message handler, edit-streaming
-│   ├── agent/
-│   │   ├── runtime.ts                  # pi-agent-core Agent setup
-│   │   ├── system-prompt.ts            # loads prompts/system.md (no injection)
-│   │   ├── session-manager.ts          # Model C lifecycle, rotation, archive, per-chat mutex
-│   │   ├── summarizer.ts               # session → notes routing
-│   │   └── tools/
-│   │       ├── read.ts
-│   │       ├── write.ts
-│   │       ├── edit.ts
-│   │       └── bash.ts
-│   └── lib/
-│       ├── logger.ts                   # audit log with redaction + truncation
-│       └── allowlist.ts
+│   ├── paths.ts                        # central data-path resolution
+│   ├── scheduler.ts                    # recurring and one-time scheduled jobs
+│   ├── transport/telegram.ts           # bot, commands, streaming, image input
+│   ├── background/                     # task manager, worker, pipeline types
+│   ├── agent/                          # runtime, auth, sessions, compaction, summarizer, tools
+│   └── lib/                            # logging, formatting, allowlist, mutex, deploy notice
 ├── scripts/
-│   ├── setup-host.sh                   # one-shot M710q prep (user, dirs, deps, copy templates)
-│   ├── install-systemd.sh              # install jarvis.service
-│   ├── update.sh                       # pull, build, restart
-│   ├── check-config.sh                 # diff config.yaml.example vs live
-│   └── archive-projects.sh             # move stale projects to archive (cron-friendly)
-├── AGENTS.md.example                   # template, copied on install
-├── config.yaml.example                 # template, copied on install
-├── prompts/
-│   └── system.md.example               # template, copied on install
-├── .env.example                        # template, copied on install
-├── .gitignore
+│   ├── setup-host.sh                   # bootstrap ~/.jarvis, install deps, build
+│   ├── install-systemd.sh              # install jarvis.service and logrotate
+│   ├── safe-deploy.sh                  # fast-forward/build/delayed restart with notices
+│   ├── update.sh                       # compatibility alias for safe-deploy.sh
+│   ├── start-background-task.sh        # shell entrypoint for detached workers
+│   ├── run-background-worker.sh        # worker bootstrap wrapper
+│   └── backup-jarvis-data.sh           # data backup helper
+├── AGENTS.md.example                   # host facts template
+├── config.yaml.example                 # non-secret config template
+├── prompts/system.md.example           # system prompt template
+├── .env.example                        # secrets template
 ├── package.json
 ├── tsconfig.json
+├── DESIGN.md
 └── README.md
 ```
 
 ### Data tree (`~/.jarvis/`, never in source)
 
-```
+```text
 ~/.jarvis/
 ├── .env                                # secrets (chmod 600)
+├── .codex-creds.json                   # default Codex OAuth credentials path
 ├── config.yaml                         # tunables
 ├── AGENTS.md                           # environment docs (live)
-├── prompts/
-│   └── system.md                       # system prompt (live, edited freely)
+├── prompts/system.md                   # system prompt (live, edited freely)
 ├── data/
-│   ├── sessions/
-│   │   ├── active.json                 # { chat_id: session_id }
-│   │   ├── 2026-05-06_0900_a3f2.jsonl  # current session
-│   │   └── archive/
-│   │       └── 2026-05-05_2030_b8c1.jsonl
-│   ├── notes/
-│   │   ├── about.md                    # stable identity facts about Jack
-│   │   ├── environment.md              # learned facts about the system
-│   │   ├── recent.md                   # rolling TOC of past sessions (max 30 entries)
-│   │   ├── decisions.md                # decisions log, append-only
-│   │   ├── todo.md                     # open questions / things to revisit
-│   │   ├── preferences.md              # how Jack likes things done
-│   │   └── projects/
-│   │       ├── <slug>.md               # one file per active project
-│   │       └── archive/
-│   │           └── <slug>.md           # archived projects (stale or marked done)
+│   ├── sessions/                       # Telegram chat sessions
+│   ├── notes/                          # markdown memory
+│   ├── jobs/                           # scheduler tasks, sessions, notes, log
+│   ├── background/                     # worker task JSON, sessions, notes, mail, logs
+│   ├── deploy/                         # safe-deploy pending/completed markers
 │   └── audit.log                       # every tool call, append-only, redacted+truncated
 └── cache/                              # safe to delete, regenerable
 ```
@@ -431,7 +373,7 @@ All thresholds come from `config.yaml`. Each `.jsonl` file: one message per line
 ### Per-chat serialization
 The mutex prevents concurrent agent loops on the same chat, which would otherwise corrupt the session JSONL and produce interleaved tool calls. v1: simple async queue keyed by `chat_id`. If Jack sends a message while one is in-flight, it queues behind.
 
-A `/cancel` command interrupts the currently-running agent loop for that chat (v1.5 — for now, just queue).
+A `/cancel` command bypasses the per-chat queue and aborts the currently-running agent loop for that chat.
 
 ### Compaction (within a session)
 
@@ -441,7 +383,7 @@ Mirror `pi-coding-agent`'s algorithm directly — same shape, same defaults. Can
 - **Algorithm:** walk backward from the newest message accumulating tokens until `keep_recent_tokens` is reached → that's the cut. LLM-summarize everything from the previous compaction boundary (or session start) up to the cut, using a structured prompt (Goal / Constraints / Progress / Decisions / Next / Critical Context). Reload context as `[system prompt] + [summary] + [messages from firstKeptEntryId onward]`.
 - **Iterative:** subsequent compactions pass the previous summary in as context, so history isn't lost across multiple passes.
 - **Persisted in the JSONL.** The summary is written as a `compaction` entry — `{type, id, timestamp, summary, firstKeptEntryId, tokensBefore}` — sitting inline with regular messages. The JSONL stays self-contained: no sidecar files. Crash recovery (open question #7) replays the JSONL and the compaction entries do their job naturally.
-- **Manual override:** reserved command `/compact [instructions]`.
+- **Manual override:** not exposed as a Telegram command; compaction is automatic.
 - **Sticky:** only the system prompt. Everything else (including notes JARVIS read this session) is compactable — it can re-read.
 
 Defaults live in `config.yaml.compaction`: `enabled: true`, `reserve_tokens: 16384`, `keep_recent_tokens: 20000`. Match pi's defaults; tune based on actual usage.
@@ -451,7 +393,7 @@ Defaults live in `config.yaml.compaction`: `enabled: true`, `reserve_tokens: 163
 When a session rotates and `session.summarize_on_rotation` is true, run one LLM call: produce a one-line entry summarizing the session, append it to `recent.md`. That's the entire job.
 
 - **Single file, append-only.** No multi-file routing, no structured-op schema, no path-allowlist validation, no idempotence dance.
-- **JARVIS writes everything else inline.** Decisions, durable facts, project status, todos, environment discoveries — these go into their respective notes files *during the conversation*, via `read`/`write`/`edit`, governed by the write triggers in the system prompt (Appendix A). The model is in the conversation when the durable fact is observed; that's the right moment to capture it. Reconstructing intent from a transcript after the fact is harder and more error-prone.
+- **JARVIS writes everything else inline.** Decisions, durable facts, project status, todos, environment discoveries — these go into their respective notes files *during the conversation*, via `read`/`write`/`edit`, governed by the write triggers in the system prompt. The model is in the conversation when the durable fact is observed; that's the right moment to capture it. Reconstructing intent from a transcript after the fact is harder and more error-prone.
 - **Why split it this way:** `recent.md` is the one thing that genuinely has to be code-driven — a session can't write its own TOC entry from inside itself. Everything else can be done by JARVIS in context, with full nuance, while it still has the thread.
 - **Cost:** if JARVIS forgets to write a decision to `decisions.md` mid-conversation, it's lost from notes (still in the JSONL). Mitigation: the system prompt has explicit write triggers; Phase 7 tunes them based on what actually gets missed.
 
@@ -492,7 +434,7 @@ Memory in JARVIS is *filesystem convention + prompt rules + on-demand retrieval*
         └── <slug>.md — archived projects (no recent activity OR explicitly done)
 ```
 
-Each file has a defined purpose, defined read trigger, defined write trigger, defined format. All of this lives in the system prompt — see Appendix A.
+Each file has a defined purpose, defined read trigger, defined write trigger, defined format. All of this lives in the current system prompt template.
 
 ### Why this works
 
@@ -520,6 +462,9 @@ Searchable history of past sessions. "What did we decide about X two weeks ago?"
 - **Token streaming for the final response:** subscribe to pi-agent-core events. For each assistant message, examine its content blocks: if any `toolCall` block appears, the message is part of internal reasoning and is **not** shown to the user. Only assistant messages that are pure text (no tool calls) are streamed to Telegram via a placeholder + debounced edits (~1.5s minimum between edits to stay under Telegram's edit rate limit). Net effect: the user sees typing → final answer streaming in. Tool calls and "let me check…" filler messages are invisible.
 - **Markdown:** Default `parse_mode: HTML`. Responses run through a small markdown→HTML converter (`src/lib/format.ts`) that handles fenced code blocks, inline `code`, `**bold**`, and `*italic*`; everything else is HTML-escaped for safety. MarkdownV2 was rejected as a footgun (one unescaped `.` blows up the whole send). Setting `parse_mode: none` in config falls back to raw text without conversion.
 - **Per-chat serialization:** see §10.
+- **Image input:** Telegram photos and image documents are downloaded, capped at 4 images and 10 MB each, and passed to the model alongside the message text/caption.
+- **Progress commands:** `/thinking` and `/verbose` toggle coarse/verbose progress messages for future turns.
+- **Background commands:** `/bg`, `/tasks`, `/task`, `/answer`, and `/cancelbg` manage detached worker tasks.
 - **Bot token security:** Token in `~/.jarvis/.env`, never committed. The user-ID allowlist is the real defense.
 
 ---
@@ -529,7 +474,7 @@ Searchable history of past sessions. "What did we decide about X two weeks ago?"
 ### Initial install (one-time)
 
 ```bash
-# As jarvis user on M710q:
+# As the target service user on the host:
 git clone <repo> ~/jarvis
 cd ~/jarvis
 ./scripts/setup-host.sh
@@ -540,28 +485,23 @@ cd ~/jarvis
 ./scripts/install-systemd.sh
 ```
 
-`setup-host.sh` creates `~/.jarvis/`, copies all four templates with "only if not exists" semantics, runs `npm install && npm run build`. Re-running setup never overwrites live configs.
+`setup-host.sh` creates `~/.jarvis/`, copies templates with "only if not exists" semantics, runs `pnpm install && pnpm run build`. Re-running setup never overwrites live configs.
 
 ### Updates
 
 ```bash
 cd ~/jarvis
-git pull
-npm install
-npm run build
-sudo systemctl restart jarvis
+scripts/safe-deploy.sh
 ```
 
-That's it. Nothing in `~/.jarvis/` is touched.
-
-A `scripts/safe-deploy.sh` wraps these for installed hosts. It refuses dirty working trees, fast-forwards, installs dependencies, builds, sends a Telegram restart notice, writes a pending marker, and schedules a short delayed systemd restart so the launching chat response can complete. On startup, JARVIS consumes the marker and sends a back-online notice. `scripts/update.sh` is a compatibility alias.
+`safe-deploy.sh` is the normal installed-host update path. It refuses dirty working trees, fast-forwards, installs dependencies, builds, sends a Telegram restart notice, writes a pending marker, and schedules a short delayed systemd restart so the launching chat response can complete. On startup, JARVIS consumes the marker and sends a back-online notice. `scripts/update.sh` is a compatibility alias. Nothing in `~/.jarvis/` is touched. Raw `sudo systemctl restart jarvis` is reserved for deliberate manual service/config operations.
 
 ### Config / template drift on updates
 
 If a new version adds a config key, `config.yaml.example` will have it but the live `~/.jarvis/config.yaml` won't. Strategy:
 
 - v1: missing required keys cause startup to fail with a clear error. Jack diffs and adds.
-- v1.5: `scripts/check-config.sh` diffs the example against the live file and prints what's missing.
+- No auto-merge: diff the example against the live file and add required keys manually. Missing required keys fail fast at startup with a Zod error.
 
 Same for `AGENTS.md.example` and `prompts/system.md.example` — drift expected, no auto-merge.
 
@@ -585,21 +525,17 @@ The audit log is the one safeguard now that confirmation is gone. It must be use
 - **Rotation:** logrotate config installed by `install-systemd.sh`. Daily rotation, keep 30 days, gzip.
 - **What's logged:** timestamp, tool name, redacted/truncated args, exit status / outcome summary, duration.
 
-### Backups (deferred — see open question #12)
+### Backups
 
-Not built in v1. The irreplaceable surface is `~/.jarvis/data/{sessions,notes}` plus `audit.log` and the codex creds — losing them means losing every conversation, JARVIS's accumulated memory, and the OAuth dance. Nothing under `~/jarvis/` (source) needs backup; it's git.
+The irreplaceable surface is `~/.jarvis/` excluding cache: config, prompts, notes, sessions, audit log, `.env`, and OAuth credentials. Nothing under `~/jarvis/` (source) needs backup; it's git.
 
-When this gets built, the rough shape:
-- Nightly tarball of `~/.jarvis/` (excluding `cache/`), optionally encrypted.
-- Pushed off-box (rsync to another host, or rclone to cloud — pick one).
-- Retention: keep last N, prune older.
-- Minecraft world: independent of JARVIS, separate cron.
+`scripts/backup-jarvis-data.sh` creates a local tar.gz archive, verifies it, writes a SHA256 file, maintains `latest` symlinks, and prunes older archives using `JARVIS_BACKUP_KEEP` (default 14). Destination defaults to `~/backups/jarvis`; set `JARVIS_BACKUP_DIR` to move it. Off-box backup policy remains an operational choice.
 
-Until then: don't `rm -rf ~/.jarvis/` casually.
+Don't `rm -rf ~/.jarvis/` casually.
 
 ### Uninstall / reinstall
 
-- Source corrupted: `rm -rf ~/jarvis && git clone ... && cd ~/jarvis && ./scripts/setup-host.sh && sudo systemctl restart jarvis`. Data untouched.
+- Source corrupted: `rm -rf ~/jarvis && git clone ... && cd ~/jarvis && ./scripts/setup-host.sh`, then use `scripts/safe-deploy.sh` or deliberately restart the service. Data untouched.
 - Wipe memory but keep code: edit or remove individual notes files. They're just markdown.
 - Wipe everything: `rm -rf ~/.jarvis/`. Re-run setup to start over.
 
@@ -607,85 +543,22 @@ Until then: don't `rm -rf ~/.jarvis/` casually.
 
 ## 14. Open Questions
 
-1. **Telegram library.** `grammy` vs `node-telegram-bot-api`. Probably `grammy`.
-2. **Session ID format.** `YYYY-MM-DD_HHMM_<short-hash>` vs UUID. Date-prefixed is more grep-friendly.
-3. **First-run experience.** When Jack first messages JARVIS, what does it say? Probably nothing special — just respond.
-4. **Personality calibration.** The starter system prompt will need tuning against real usage. Plan to iterate over the first 1–2 weeks.
-5. **Codex OAuth on a server.** See §15 Phase 0 for explicit spike criteria. **Test this first.**
-6. **Rate limit / cost ceiling.** ChatGPT Plus has rate limits, not hard cost caps. A turn-counter / token-counter alarm would be useful — could be a config value with a Telegram alert when exceeded.
-7. **Crash recovery.** If JARVIS crashes mid-tool-call, replay the JSONL up to the last completed turn (compaction entries are honored — they reload the summary in place of the messages they replaced) and drop any dangling tool calls. Mostly resolved by adopting pi's persisted-`compaction`-entry model.
-8. **Self-update edge cases.** Mostly resolved by `scripts/safe-deploy.sh`: build first, send a restart notice, write a pending marker, schedule a delayed systemd restart, and send a back-online notice on startup. Remaining edge: if `sudo -n systemctl restart jarvis` is not permitted, the delayed restart fails and the restart log must be checked.
-9. **Memory read accuracy.** The risk of retrieval-based memory is JARVIS not reading when it should. Where in conversations does this happen? Surface in Phase 7 tuning.
-10. **Cancellation.** v1 queues messages received during a running agent loop. v1.5 should add `/cancel`.
-11. **Config validation strictness.** Hard-fail on missing keys vs warn-and-default. v1 hard-fails (clearer).
-12. **Backups.** Deferred from Phase 6. The irreplaceable surface is `~/.jarvis/data/` plus `audit.log` and `.codex-creds.json` — covered by source control? No. Need a real backup story before treating this box as anything other than a fast-redeploy scratch host. Sketch in §13. Pick: tar+rclone-to-cloud, rsync-to-second-box, or borg/restic local + offsite copy.
+Current open items are intentionally short; historical decisions remain in §16.
+
+1. **Rate limit / cost ceiling.** ChatGPT Plus has rate limits, not hard cost caps. A turn-counter or token-counter alert may be useful.
+2. **Memory read accuracy.** The risk of retrieval-based memory is JARVIS not reading when it should. Tune prompt triggers based on real misses.
+3. **Backups.** The irreplaceable surface is `~/.jarvis/data/`, `audit.log`, and `.codex-creds.json`. `scripts/backup-jarvis-data.sh` exists, but the off-box backup policy is still an operational decision.
+4. **Cancellation edge cases.** `/cancel` exists; provider/tool calls may still take time to unwind.
 
 ---
 
-## 15. Build Plan (rough)
+## 15. Historical Build Plan
 
-### Phase 0 — Codex OAuth spike
+The original phase plan has served its purpose and is no longer the source of operational truth. Current setup, development, deployment, scheduler, and background-worker behavior are documented in `README.md` and enforced by the scripts/source.
 
-**Before anything else.** Concrete success criteria:
+### Historical Phase 0 — Codex OAuth spike
 
-- **Authentication:** can `pi-ai` complete the OAuth flow when Jack has access to a browser (laptop)?
-- **Credential portability:** can the resulting credential file be copied to the M710q and used there? Or is it bound to the auth machine?
-- **Refresh:** does the credential auto-refresh from the M710q without a browser dance? (OAuth tokens expire — if every refresh requires a laptop, this is dead in the water for an unattended service.)
-- **Quota:** does using OAuth-authed access count against ChatGPT Plus/Pro quota the way it should?
-- **ToS:** verify in writing that this usage is sanctioned by `pi-ai`.
-
-**Failure mode plan:** if any of the above fails badly, fall back to Anthropic API key. Stack still works; cost becomes per-token instead of subscription-flat. Config key `agent.provider` already supports both.
-
-### Phase 1 — Host prep
-- Create `jarvis` user on M710q, set up home dir.
-- Install Node 20+, git, useful CLI tools.
-- Set up Minecraft world backup (independent of JARVIS).
-
-### Phase 2 — Skeleton
-- `package.json`, `tsconfig.json`, basic project structure.
-- `paths.ts`, `config.ts` (YAML + env loading + zod validation), allowlist, logger with redaction.
-- All four `*.example` templates including the system prompt.
-- `setup-host.sh` script that creates `~/.jarvis/` and copies templates.
-- Stub Telegram transport that echoes messages.
-- Stub agent runtime that returns "hello."
-
-### Phase 3 — Agent loop
-- Wire `pi-agent-core` with Codex OAuth.
-- One end-to-end message flow: Telegram → agent → response.
-- System prompt loaded verbatim from file.
-- All four tools (read, write, edit, bash).
-- Per-chat mutex.
-
-### Phase 3.5 — Telegram polish
-- Typing indicator on a 4s re-fire timer, active for the duration of the agent run.
-- Token-by-token streaming of the final response via placeholder + debounced edits, with tool-call messages skipped (the user sees only the final answer, never the internal reasoning).
-- Markdown→HTML conversion for code blocks and basic inline formatting; default `parse_mode: HTML`.
-
-### Phase 4 — Sessions
-- Implement Model C session manager.
-- JSONL persistence to `~/.jarvis/data/sessions/`.
-- Session rotation logic.
-- `/new` command.
-
-### Phase 5 — Memory & summarizer
-- Hand-write initial `about.md`, `preferences.md`, AGENTS.md.
-- Hand-write the full system prompt with the memory protocol (Appendix A).
-- Implement the session-end summarizer (one LLM call, one append to `recent.md`).
-- Verify JARVIS actually reads/writes the other notes per the prompt rules.
-
-### Phase 6 — Hardening
-- systemd service, auto-restart (`scripts/install-systemd.sh`).
-- `scripts/update.sh` — git pull / install / build / restart, with fail-before-restart safety.
-- Logrotate config for `audit.log` (daily, keep 30, gzip via copytruncate) installed alongside the unit.
-- Audit log redaction + truncation already shipped with Phase 3; this phase wires rotation around it.
-- Backup script — **deferred** (open question #12). The data surface is small enough to manually `tar` for now; revisit before promoting the box past "fast-redeploy scratch" status.
-
-### Phase 7 — Tuning
-- Live-fire usage for a week or two.
-- Iterate on system prompt — especially the read triggers in the memory protocol.
-- Tune the summarizer prompt based on what actually gets routed where.
-
-Phases 0–3 are probably one weekend if Codex OAuth cooperates. 4–6 another. Phase 7 is forever.
+Codex OAuth was validated for server use: credentials can live under `~/.jarvis/.codex-creds.json`, refresh on the host, and fall back to Anthropic by changing `agent.provider` plus env secrets if needed.
 
 ---
 
@@ -695,9 +568,9 @@ Phases 0–3 are probably one weekend if Codex OAuth cooperates. 4–6 another. 
 - **2026-05-06** — TypeScript over Python. `pi-mono` is TS-only.
 - **2026-05-06** — Model C (time-windowed sessions, 4h inactivity, silent rotation, summarize on rotation).
 - **2026-05-06** — Markdown files for working memory in v1. SQLite if/when needed.
-- **2026-05-06** — Reactive only in v1. Proactive scheduling deferred.
+- **2026-05-06** — Reactive only in initial v1; proactive scheduling deferred at launch. Scheduler support was added later.
 - **2026-05-06** — JARVIS lives on the M710q as a regular user with full shell access. Dedicated Pi 5 and Docker container both rejected. The box is non-critical and isolation that solves a non-problem is just complexity.
-- **2026-05-06** — Tool surface locked at four: `read`, `write`, `edit`, `bash`. Mirroring `pi-coding-agent`. No web tools, no note tools — `bash` and the filesystem cover them.
+- **2026-05-06** — Initial tool surface locked at four: `read`, `write`, `edit`, `bash`, mirroring `pi-coding-agent`. Later amended with Exa-backed `web_search`; no note tools — the filesystem is the note API.
 - **2026-05-06** — `AGENTS.md` convention adopted from `pi-coding-agent`.
 - **2026-05-06** — SSH-out parked. JARVIS is an inhabitant of one box.
 - **2026-05-06** — Source/data separation: `~/jarvis/` source, `~/.jarvis/` data. Path resolution centralized in `src/paths.ts`. Updates: 4 commands, zero risk to data.
@@ -706,7 +579,7 @@ Phases 0–3 are probably one weekend if Codex OAuth cooperates. 4–6 another. 
 - **2026-05-06** — **System prompt is a static reference document, no dynamic injection.** Loaded verbatim at session start. Notes are read on demand by JARVIS using the `read` tool, governed by rules in the prompt itself. Token budget at session start is fixed and predictable; behavior is fully specified by one editable file.
 - **2026-05-06** — **Memory schema:** six files (`about`, `environment`, `recent`, `decisions`, `todo`, `preferences`) plus `projects/<slug>.md`. Each has a defined purpose, read trigger, write trigger, and format — all specified in the system prompt. The summarizer routes session content into these files mechanically; JARVIS reads them on demand.
 - **2026-05-06** — Audit log gets redaction + truncation + daily rotation. With confirmation gone, the log is the actual safeguard.
-- **2026-05-06** — Telegram default `parse_mode: none`. MarkdownV2 escaping is a footgun.
+- **2026-05-06** — Telegram initially defaulted to `parse_mode: none`; current default is `HTML` with a small markdown-to-HTML formatter. MarkdownV2 escaping remains a footgun.
 - **2026-05-06** — Per-chat mutex on incoming messages. Concurrent agent loops on the same chat would corrupt the session JSONL.
 - **2026-05-06** — **Compaction follows `pi-coding-agent` directly.** One threshold (`reserve_tokens`), one LLM call, summary persisted as a `compaction` entry inline in the session JSONL. No tiered/soft/hard scheme. Crash recovery falls out for free.
 - **2026-05-06** — **Session-end summarizer scope reduced to `recent.md` only.** Multi-file routing dropped. JARVIS writes other notes (decisions, project status, durable facts, todos) inline during conversation via its tools, governed by write triggers in the system prompt. Eliminates schema/validation/dry-run/idempotence/dedup problems wholesale.
@@ -714,235 +587,12 @@ Phases 0–3 are probably one weekend if Codex OAuth cooperates. 4–6 another. 
 
 ---
 
-## Appendix A — Full system prompt
+## Appendix A — System prompt
 
-The canonical version of this prompt lives at `~/.jarvis/prompts/system.md`. The repo template is `prompts/system.md.example`. This appendix mirrors what should be in that file at v1 launch.
-
-```markdown
-# JARVIS
-
-You are JARVIS, Jack's personal assistant. You run on a Linux box Jack owns,
-with full shell access via the bash tool. For host specifics — hostname, OS,
-the user you run as, services, paths — read `~/.jarvis/AGENTS.md`. It's
-hand-curated by Jack and authoritative.
-
-You are reachable via Telegram. Your responses go to Jack as chat messages.
-
-## Persona
-
-You are competent, calm, concise, and dry.
-
-- Match length to the question. Short questions get short answers.
-- Direct. No filler. No "great question," no "I'd be happy to help."
-- Honest. Push back when Jack is wrong, unclear, or about to do something
-  silly. Say "I don't know" when you don't.
-- Dry humor when warranted, never forced.
-- Address Jack by name occasionally. Never "sir" or "boss."
-- After tool calls, summarize what you did, not what you're about to do.
-- One clear question when clarification is needed, not three.
-
-## Tools
-
-You have four tools.
-
-- **read(path)** — read a file's contents.
-- **write(path, content)** — create or overwrite a file.
-- **edit(path, old, new)** — surgical string-replace edit. The `old` string
-  must appear exactly once in the file.
-- **bash(command, timeout?)** — run a shell command. You have sudo. Use it
-  when needed without asking.
-
-The shell is your universal tool. For anything not covered by read/write/edit,
-use bash: `docker`, `systemctl`, `git`, `curl`, `grep`, etc.
-
-## Environment
-
-Details of the M710q live at `~/.jarvis/AGENTS.md`. Read it when you need to
-know what's running, what services exist, where things are installed, or how
-the system is organized. It's hand-curated by Jack — treat it as authoritative.
-
-## Source code
-
-Your source code is at `~/jarvis/`. You may read and edit it. Changes do not
-take effect until JARVIS is rebuilt and restarted. For normal self-updates, use
-`scripts/safe-deploy.sh`; it builds first, sends restart/back-online notices,
-and avoids killing the chat response mid-run. Avoid raw
-`sudo systemctl restart jarvis` from chat unless intentionally doing a manual
-restart. The source/data split means your code is at `~/jarvis/`; everything
-you accumulate (notes, sessions, audit log) is at `~/.jarvis/` and survives
-rebuilds.
-
-## Memory protocol
-
-Your persistent memory lives in `~/.jarvis/data/notes/`. It is a structured
-filesystem you read on demand. The structure is fixed; do not invent new files.
-
-### Files
-
-- **`about.md`** — stable identity facts about Jack. Edit when Jack reveals a
-  durable fact about himself.
-- **`environment.md`** — runtime-discovered facts about the M710q. Edit when
-  you learn something the system that AGENTS.md doesn't already document.
-- **`recent.md`** — table of contents of past sessions, maintained
-  automatically. **Do not write to this file.** Read it for "what was I
-  doing earlier" type questions.
-- **`decisions.md`** — append-only log of decisions Jack and you have made.
-  Append a new entry when a decision is made. Never edit prior entries — if
-  a decision is reversed, append the reversal as a new entry.
-- **`todo.md`** — open questions and follow-ups. Append items when something
-  needs revisiting. Remove items (with `edit`) when resolved.
-- **`preferences.md`** — how Jack likes things done. Edit when you observe a
-  stable pattern in Jack's preferences (response style, code conventions, etc.).
-- **`projects/<slug>.md`** — one file per active project. The slug is a
-  short identifier (e.g. `hockey-cv`, `jarvis`, `gladowsky-labs`). Read when
-  Jack mentions a project; edit when work happens on it.
-
-### Read triggers
-
-- **Project mentioned by name** → read `projects/<slug>.md` if it exists. If
-  it doesn't, that's fine — but check first.
-- **"Yesterday," "earlier," "what we discussed"** → read `recent.md` to find
-  the relevant session, then read whatever it points to.
-- **Reference to a past decision** → read `decisions.md`.
-- **"What was I going to do," "anything pending"** → read `todo.md`.
-- **About to recommend something or draft a message** → read `preferences.md`.
-- **Need to know what's on the box** → read `~/.jarvis/AGENTS.md` first;
-  `environment.md` if AGENTS.md doesn't cover it.
-
-When in doubt, read. A redundant read is cheap; a missed read makes you
-look like you have amnesia.
-
-### Write triggers
-
-- **Project work happened** → edit `projects/<slug>.md`. Update the Status,
-  Latest, and Next sections. If the project doesn't have a file yet and the
-  work is non-trivial, create one.
-- **Decision made** → append a new entry to `decisions.md`.
-- **Open question identified** → append to `todo.md`. Remove when resolved.
-- **Durable fact about Jack** → edit `about.md` (identity) or
-  `preferences.md` (style/process).
-- **Durable fact about the system** → edit `environment.md`.
-- **Never write to `recent.md`.** It's maintained by the session manager.
-
-### Formats
-
-Be terse. These are reference notes, not prose.
-
-**`about.md`** — flat bulleted list of facts:
-```
-- Full name: Jack Gladowsky.
-- Currently a 5th-year BS/MS at Northeastern.
-- Girlfriend, lives in Boston, lease at 21 Follen St for fall 2026.
-```
-
-**`environment.md`** — sectioned by topic:
-```
-## Services
-- Minecraft: docker container `minecraft-fabric`, world at /home/jack/gaming/servers/advancements/data/world.
-
-## Installed tools
-- Node 20, Python 3.12, Docker, ...
-```
-
-**`decisions.md`** — reverse-chronological, append-only:
-```
-## 2026-05-06
-- Decided to use `pi-agent-core` over extending `pi-coding-agent`.
-  Reason: Telegram async per-chat-id model doesn't fit pi-coding-agent's CLI/TUI shape.
-```
-
-**`todo.md`** — checkboxes, dated:
-```
-- [ ] (2026-05-06) Test Codex OAuth refresh on the M710q
-- [ ] (2026-05-04) Decide on grammy vs node-telegram-bot-api
-```
-
-**`preferences.md`** — categorized bullets:
-```
-## Communication
-- Concise responses preferred. No filler.
-- Push back when something seems off.
-
-## Code
-- TypeScript: double-quoted strings, 2-space indent.
-```
-
-**`projects/<slug>.md`** — templated:
-```
-# <Project name>
-
-**Status:** active | paused | blocked | done
-**Last touched:** <YYYY-MM-DD>
-
-## Latest
-<2-3 sentence summary of current state>
-
-## Decisions
-- <date>: <decision>
-
-## Open
-- <question or thing to figure out>
-
-## Next
-- <next concrete step>
-```
-
-### Hygiene
-
-- Don't duplicate. If you're about to write something already there, edit instead.
-- If a file is approaching its cap (`about.md` ~1KB, others use judgment), prune
-  redundant entries.
-- Project files that haven't been touched in a long time can be moved to
-  `projects/archive/` — Jack can ask you to do this, or run the periodic
-  archive script.
-
-## Operational
-
-- The audit log records every tool call. It's at `~/.jarvis/data/audit.log`.
-  You can read it when Jack asks "what did you just do" or "what's been
-  happening."
-- For destructive operations (rm -rf, mkfs, dd, mass deletes), think briefly
-  before executing. The system permits you to do them; don't be cavalier.
-- When unsure, say so. Don't fabricate.
-```
-
-End of system prompt.
+The canonical live prompt is `~/.jarvis/prompts/system.md`; the repo template is `prompts/system.md.example`. Older copies embedded in this design doc were removed to avoid drift.
 
 ---
 
-## Appendix B — Initial seed content for note files
+## Appendix B — Note seed content
 
-These are starting points. The summarizer and JARVIS will extend them over time.
-
-**`about.md`:**
-```
-- Full name: Jack Gladowsky.
-- 5th-year Computer Engineering BS/MS at Northeastern, AI/ML concentration.
-- Based in Boston (lease at 21 Follen St for fall 2026).
-- Has a girlfriend.
-- Operates side projects under "Gladowsky Labs."
-```
-
-**`preferences.md`:**
-```
-## Communication
-- Concise. No filler. No "great question," no "I'd be happy to help."
-- Push back when something seems off.
-- Dry humor OK; cinematic butler voice not OK.
-
-## Tools
-- TypeScript over Python where reasonable.
-- Files-as-API over custom abstractions.
-```
-
-**`todo.md`:**
-```
-- [ ] (2026-05-06) Verify Codex OAuth works on M710q
-- [ ] (2026-05-06) Decide grammy vs node-telegram-bot-api
-```
-
-**`environment.md`:** populated at install time by the setup script with `uname`, installed tools, services. Then extended over time.
-
-**`recent.md`:** empty until the first session rotation.
-
-**`decisions.md`:** seeded with the design-doc decisions log entries, then appended to as new decisions are made.
+Initial note examples are historical. The live memory tree is under `~/.jarvis/data/notes/`, and the expected file purposes/formats are documented in the current system prompt template.

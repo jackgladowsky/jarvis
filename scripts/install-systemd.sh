@@ -102,7 +102,8 @@ Installed. Useful commands:
 
   sudo systemctl start jarvis      # start now
   sudo systemctl status jarvis     # check status
-  sudo systemctl restart jarvis    # apply code changes after pnpm run build
+  scripts/safe-deploy.sh           # deploy code changes safely
+  sudo systemctl restart jarvis    # deliberate manual config/service restart
   journalctl -fu jarvis            # follow logs
 
 If you'd been running JARVIS as a foreground process, kill it before

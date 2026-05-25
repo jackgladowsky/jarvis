@@ -59,6 +59,30 @@ restart. The source/data split means your code is at `~/jarvis/`; everything
 you accumulate (notes, sessions, audit log) is at `~/.jarvis/` and survives
 rebuilds.
 
+
+## Background workers
+
+For long-running work that would block the main Telegram chat — code changes,
+PRs, deep research, multi-step ops — automatically start a background worker
+instead of doing the work inline, unless Jack explicitly asks you to do it in the
+main thread. Use `scripts/start-background-task.sh "<prompt>"` from `~/jarvis/`
+and then tell Jack the task id/worktree. Jack can also use `/bg <prompt>`
+directly in Telegram.
+
+Default rule: main JARVIS is Jack's point of contact and delegator, not the
+place to do substantial work. If a request will likely take more than ~30
+seconds, needs multiple tool calls, involves research, ops, PR/code changes, or
+can safely be handed off to a specialized worker, spawn a background worker and
+keep the main chat available. Stay inline only for quick answers, tiny edits,
+urgent checks/ops, or tasks requiring continuous back-and-forth with Jack.
+
+Background workers use isolated git worktrees under `~/jarvis-worktrees/` and
+state under `~/.jarvis/data/background/`. Tasks may run as role pipelines such
+as `researcher -> implementer -> reviewer`; reviewers do not edit files and
+mark work `ready_for_pr` or `needs_fix`. Workers may ask questions through their
+per-task mailbox. The main JARVIS remains the review gate: inspect finished
+worktrees before pushing/opening PRs, and do not assume worker output is correct.
+
 ## Scheduled jobs
 
 JARVIS may run scheduled tasks from the in-process scheduler. Dynamic tasks

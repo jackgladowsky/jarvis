@@ -15,6 +15,18 @@
 import { Bot, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { cancelChatRun, handleMessage, rotateSession, type StatusMode } from "../agent/runtime.js";
+import { renderUsageReport } from "../agent/usage.js";
+import {
+  answerBackgroundTask,
+  cancelBackgroundTask,
+  listBackgroundTasks,
+  readBackgroundMail,
+  readBackgroundTask,
+  renderTask,
+  renderTaskList,
+  resumeBackgroundTask,
+  startBackgroundTask,
+} from "../background/manager.js";
 import { config, env } from "../config.js";
 import { isAllowed } from "../lib/allowlist.js";
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "../lib/format.js";
@@ -137,6 +149,103 @@ async function readImages(ctx: Context): Promise<ImageContent[]> {
   return Promise.all(candidates.map((candidate) => downloadTelegramImage(ctx, candidate)));
 }
 
+function commandName(text: string): string {
+  return text.trim().split(/\s+/, 1)[0]?.replace(/^\//, "").split("@")[0] ?? "";
+}
+
+function commandRest(text: string): string {
+  const trimmed = text.trim();
+  const firstSpace = trimmed.search(/\s/);
+  return firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
+}
+
+async function handleBackgroundCommand(ctx: Context, text: string): Promise<boolean> {
+  const trimmed = text.trim();
+  const command = commandName(trimmed);
+  const rest = commandRest(trimmed);
+  const chatId = ctx.chat!.id;
+
+  try {
+    if (command === "bg") {
+      if (!rest) {
+        await safe("reply (/bg usage)", ctx.reply("Usage: /bg <long-running task prompt>"));
+        return true;
+      }
+      const task = await startBackgroundTask(rest, chatId);
+      await safe(
+        "reply (/bg)",
+        ctx.reply(`Started background task ${task.id}.\nPipeline: ${task.pipeline.map((stage) => stage.role).join(" -> ")}\nWorktree: ${task.worktree}\nBranch: ${task.branch}`),
+      );
+      return true;
+    }
+
+    if (command === "fixbg") {
+      const [id, requestedRole] = rest.split(/\s+/);
+      const role = requestedRole === "reviewer" ? "reviewer" : "fixer";
+      if (!id || (requestedRole && !["fixer", "reviewer"].includes(requestedRole))) {
+        await safe("reply (/fixbg usage)", ctx.reply("Usage: /fixbg <task-id> [fixer|reviewer]"));
+        return true;
+      }
+      const task = await resumeBackgroundTask(id, role);
+      await safe(
+        "reply (/fixbg)",
+        ctx.reply(`Resumed ${task.id}; starting ${role} on existing worktree.\nPipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}\nWorktree: ${task.worktree}`),
+      );
+      return true;
+    }
+
+    if (command === "tasks") {
+      const tasks = await listBackgroundTasks();
+      await safe("reply (/tasks)", ctx.reply(renderTaskList(tasks)));
+      return true;
+    }
+
+    if (command === "task") {
+      const id = rest.split(/\s+/, 1)[0];
+      if (!id) {
+        await safe("reply (/task usage)", ctx.reply("Usage: /task <id>"));
+        return true;
+      }
+      const task = await readBackgroundTask(id);
+      const mail = await readBackgroundMail(id, 8);
+      const mailText = mail.length
+        ? "\n\nRecent mailbox:\n" + mail.map((m) => `- ${m.from}/${m.type}: ${m.body}`).join("\n")
+        : "";
+      await safe("reply (/task)", ctx.reply(`${renderTask(task)}${mailText}`));
+      return true;
+    }
+
+    if (command === "answer") {
+      const [id, ...bodyParts] = rest.split(/\s+/);
+      const body = bodyParts.join(" ").trim();
+      if (!id || !body) {
+        await safe("reply (/answer usage)", ctx.reply("Usage: /answer <task-id> <answer>"));
+        return true;
+      }
+      const task = await answerBackgroundTask(id, body);
+      await safe("reply (/answer)", ctx.reply(`Answered ${task.id}; worker resumed.`));
+      return true;
+    }
+
+    if (command === "cancelbg") {
+      const id = rest.split(/\s+/, 1)[0];
+      if (!id) {
+        await safe("reply (/cancelbg usage)", ctx.reply("Usage: /cancelbg <task-id>"));
+        return true;
+      }
+      const task = await cancelBackgroundTask(id);
+      await safe("reply (/cancelbg)", ctx.reply(`Cancelled ${task.id}.`));
+      return true;
+    }
+  } catch (err) {
+    log.warn("background command failed", { command, err: err instanceof Error ? err.message : err });
+    await safe("reply (background command failed)", ctx.reply(`Background command failed: ${err instanceof Error ? err.message : String(err)}`));
+    return true;
+  }
+
+  return false;
+}
+
 async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   const chatId = ctx.chat!.id;
   const userText = ctx.message?.text ?? ctx.message?.caption ?? "";
@@ -146,6 +255,16 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   if (userText.trim() === "/new") {
     const sessionId = await rotateSession(chatId);
     await safe("reply (/new)", ctx.reply(`Started a new session (${sessionId}).`));
+    return;
+  }
+
+  if (commandName(userText) === "usage") {
+    try {
+      await safe("reply (/usage)", ctx.reply(await renderUsageReport(chatId)));
+    } catch (err) {
+      log.warn("usage command failed", { chatId, err: err instanceof Error ? err.message : err });
+      await safe("reply (/usage failed)", ctx.reply(`Usage report failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
     return;
   }
 
@@ -453,9 +572,10 @@ export async function runTelegram(handle: Handler): Promise<void> {
     const imageCount = imageCandidateFileIds(ctx).length;
     log.info("inbound", { chatId, userId, len: text.length, imageCount });
 
-    // /cancel must bypass the per-chat lock; otherwise it queues behind the
-    // thing it is supposed to stop. Comedy, but not useful comedy.
-    if (text.trim().startsWith("/cancel")) {
+    // Control commands must bypass the per-chat lock; otherwise they queue
+    // behind the long run they are supposed to manage. Comedy, but not useful
+    // comedy.
+    if (commandName(text) === "cancel") {
       const cancelled = cancelChatRun(chatId);
       await safe(
         cancelled ? "reply (/cancel)" : "reply (/cancel idle)",
@@ -463,6 +583,8 @@ export async function runTelegram(handle: Handler): Promise<void> {
       );
       return;
     }
+
+    if (await handleBackgroundCommand(ctx, text)) return;
 
     // Per-chat serialization — see DESIGN.md §10.
     await withLock(chatId, () => processMessage(ctx, handle));
