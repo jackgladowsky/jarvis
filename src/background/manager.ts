@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -213,11 +213,74 @@ export async function cancelBackgroundTask(id: string): Promise<BackgroundTask> 
   return task;
 }
 
+function isPidAlive(pid: number | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isTaskRunning(task: BackgroundTask): boolean {
+  return isPidAlive(task.pid)
+    || task.pipeline.some((stage) => stage.status === "running")
+    || ["queued", "running", "researching", "implementing", "reviewing", "awaiting_review"].includes(task.status);
+}
+
+async function appendTaskNote(id: string, line: string): Promise<void> {
+  await mkdir(paths.backgroundNotes, { recursive: true });
+  await appendFile(join(paths.backgroundNotes, `${id}.md`), line, "utf-8");
+}
+
+export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer" = "fixer"): Promise<BackgroundTask> {
+  const task = await readBackgroundTask(id);
+  if (isTaskRunning(task)) throw new Error(`${id} is currently running or queued`);
+  if (!["needs_fix", "failed", "waiting_on_main"].includes(task.status)) {
+    throw new Error(`${id} cannot be resumed from status ${task.status}; expected needs_fix, failed, or waiting_on_main`);
+  }
+  if (!task.worktree) throw new Error(`${id} has no worktree recorded`);
+  const worktreeStat = await stat(task.worktree).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") throw new Error(`${id} worktree does not exist: ${task.worktree}`);
+    throw err;
+  });
+  if (!worktreeStat.isDirectory()) throw new Error(`${id} worktree is not a directory: ${task.worktree}`);
+
+  const stages: BackgroundStage[] = role === "fixer"
+    ? [{ role: "fixer", status: "queued" }, { role: "reviewer", status: "queued" }]
+    : [{ role: "reviewer", status: "queued" }];
+  task.pipeline.push(...stages);
+  task.current_role = role;
+  task.status = statusForResumeRole(role);
+  task.finished_at = undefined;
+  task.error = undefined;
+  task.pid = undefined;
+  await appendBackgroundMail(task.id, {
+    from: "main",
+    type: "status",
+    body: `Resumed existing task with ${stages.map((stage) => stage.role).join(" -> ")} stage(s) on the existing worktree.`,
+  });
+  await appendTaskNote(task.id, `- ${now()}: resumed existing task; appended ${stages.map((stage) => stage.role).join(" -> ")} and spawned ${role}.\n`);
+  await writeBackgroundTask(task);
+  task.pid = spawnBackgroundWorker(task.id, role);
+  await writeBackgroundTask(task);
+  return task;
+}
+
+function statusForResumeRole(role: "fixer" | "reviewer"): BackgroundTask["status"] {
+  return role === "reviewer" ? "reviewing" : "implementing";
+}
+
+function renderPipeline(task: BackgroundTask): string {
+  return task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ");
+}
+
 export function renderTask(task: BackgroundTask): string {
   return [
     `${task.id} — ${task.status}`,
     `UUID: ${task.uuid}`,
-    `Pipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}`,
+    `Pipeline: ${renderPipeline(task)}`,
     task.current_role ? `Current role: ${task.current_role}` : undefined,
     `Branch: ${task.branch}`,
     `Worktree: ${task.worktree}`,
@@ -230,5 +293,8 @@ export function renderTask(task: BackgroundTask): string {
 
 export function renderTaskList(tasks: BackgroundTask[]): string {
   if (tasks.length === 0) return "No background tasks.";
-  return tasks.slice(0, 10).map((task) => `${task.id} — ${task.status} — ${task.pipeline.map((stage) => stage.role[0]).join("")} — ${basename(task.worktree)}`).join("\n");
+  return tasks.slice(0, 10).map((task) => {
+    const current = task.current_role ? ` current:${task.current_role}` : "";
+    return `${task.id} — ${task.status}${current} — ${renderPipeline(task)} — ${basename(task.worktree)}`;
+  }).join("\n");
 }

@@ -24,6 +24,7 @@ import {
   readBackgroundTask,
   renderTask,
   renderTaskList,
+  resumeBackgroundTask,
   startBackgroundTask,
 } from "../background/manager.js";
 import { config, env } from "../config.js";
@@ -152,15 +153,21 @@ function commandName(text: string): string {
   return text.trim().split(/\s+/, 1)[0]?.replace(/^\//, "").split("@")[0] ?? "";
 }
 
+function commandRest(text: string): string {
+  const trimmed = text.trim();
+  const firstSpace = trimmed.search(/\s/);
+  return firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
+}
+
 async function handleBackgroundCommand(ctx: Context, text: string): Promise<boolean> {
   const trimmed = text.trim();
   const command = commandName(trimmed);
-  const rest = trimmed.slice(trimmed.indexOf(" ") + 1).trim();
+  const rest = commandRest(trimmed);
   const chatId = ctx.chat!.id;
 
   try {
     if (command === "bg") {
-      if (!rest || rest === trimmed) {
+      if (!rest) {
         await safe("reply (/bg usage)", ctx.reply("Usage: /bg <long-running task prompt>"));
         return true;
       }
@@ -168,6 +175,21 @@ async function handleBackgroundCommand(ctx: Context, text: string): Promise<bool
       await safe(
         "reply (/bg)",
         ctx.reply(`Started background task ${task.id}.\nPipeline: ${task.pipeline.map((stage) => stage.role).join(" -> ")}\nWorktree: ${task.worktree}\nBranch: ${task.branch}`),
+      );
+      return true;
+    }
+
+    if (command === "fixbg") {
+      const [id, requestedRole] = rest.split(/\s+/);
+      const role = requestedRole === "reviewer" ? "reviewer" : "fixer";
+      if (!id || (requestedRole && !["fixer", "reviewer"].includes(requestedRole))) {
+        await safe("reply (/fixbg usage)", ctx.reply("Usage: /fixbg <task-id> [fixer|reviewer]"));
+        return true;
+      }
+      const task = await resumeBackgroundTask(id, role);
+      await safe(
+        "reply (/fixbg)",
+        ctx.reply(`Resumed ${task.id}; starting ${role} on existing worktree.\nPipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}\nWorktree: ${task.worktree}`),
       );
       return true;
     }

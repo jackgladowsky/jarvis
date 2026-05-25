@@ -74,10 +74,11 @@ function parseReviewVerdict(output: string): "ready" | "needs_fix" {
 }
 
 function stageForRole(task: BackgroundTask, role: BackgroundRole): BackgroundStage {
-  let stage = task.pipeline.find((candidate) => candidate.role === role && candidate.status !== "done");
+  let stage = task.pipeline.find((candidate) => candidate.role === role && ["queued", "running"].includes(candidate.status));
+  if (!stage) stage = task.pipeline.find((candidate) => candidate.role === role && candidate.status !== "done");
   if (!stage) {
-    stage = task.pipeline.find((candidate) => candidate.role === role) ?? { role, status: "queued" };
-    if (!task.pipeline.includes(stage)) task.pipeline.push(stage);
+    stage = { role, status: "queued" };
+    task.pipeline.push(stage);
   }
   return stage;
 }
