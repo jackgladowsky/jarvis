@@ -228,6 +228,27 @@ Long-running tasks can run outside the main Telegram chat:
 
 Workers use isolated git worktrees under `~/jarvis-worktrees/` and task state under `~/.jarvis/data/background/`. Tasks run as role pipelines such as `researcher -> implementer -> reviewer`; the reviewer does not edit files and marks the task `ready_for_pr` or `needs_fix`. Main JARVIS should still inspect before pushing/opening a PR.
 
+Background worker cleanup is handled by a dry-run-first janitor script:
+
+```bash
+scripts/cleanup-background-worktrees.sh --dry-run
+scripts/cleanup-background-worktrees.sh --apply --age-days 14
+```
+
+The script removes only old terminal task worktrees (`ready_for_pr`, `cancelled`, `failed`, `done`) and keeps task JSON, notes, mail, sessions, and logs. It prunes stale git worktree metadata, reports filesystem orphans under `~/jarvis-worktrees/`, and skips dirty worktrees unless `--force-dirty` is explicitly set. Branch deletion is opt-in with `--delete-branches` and only deletes merged local `worker/*` branches unless `--force-branches` is also set.
+
+Suggested weekly scheduled janitor task:
+
+```json
+{
+  "id": "weekly-janitor",
+  "name": "Weekly Janitor",
+  "schedule": "0 9 * * 1",
+  "notify": "always",
+  "prompt": "Run `cd ~/jarvis && scripts/cleanup-background-worktrees.sh --dry-run --age-days 14`, report what would be cleaned, identify stale todos/docs/notes, and do not delete ambiguous notes or data without Jack's approval."
+}
+```
+
 Useful shell entrypoint:
 
 ```bash
