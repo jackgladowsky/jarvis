@@ -113,13 +113,18 @@ export async function listBackgroundTasks(): Promise<BackgroundTask[]> {
 }
 
 export function spawnBackgroundWorker(id: string, role?: BackgroundRole): number {
-  const script = join(process.cwd(), "dist", "background", "worker.js");
-  const args = role ? [script, id, role] : [script, id];
-  const child = spawn(process.execPath, args, {
-    cwd: process.cwd(),
+  const sourceRoot = process.env.JARVIS_SOURCE_ROOT ?? process.cwd();
+  const workerScript = join(sourceRoot, "dist", "background", "worker.js");
+  const launcher = join(sourceRoot, "scripts", "run-background-worker.sh");
+  const args = role ? [id, workerScript, role] : [id, workerScript];
+  const child = spawn(launcher, args, {
+    cwd: sourceRoot,
     detached: true,
     stdio: "ignore",
-    env: process.env,
+    env: {
+      ...process.env,
+      JARVIS_SOURCE_ROOT: sourceRoot,
+    },
   });
   child.unref();
   log.info("background worker spawned", { id, role, pid: child.pid });
