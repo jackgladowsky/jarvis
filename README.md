@@ -20,6 +20,7 @@ It combines a Telegram chat interface with persistent sessions, filesystem memor
 - **Background workers** for long-running tasks, using isolated git worktrees and role pipelines such as `researcher -> implementer -> reviewer`.
 - **Safe deploy flow** that builds before restart, announces restart/back-online status, and avoids killing an in-flight chat response.
 - **Operational logging** through journald plus an append-only, redacted tool-call audit log.
+- **Destination-link response policy** in the system prompt for maps plus Uber/Lyft web links, without fare scraping.
 
 ## Architecture
 
@@ -151,6 +152,16 @@ Commands handled by the transport layer:
 ```
 
 The user-visible response path is intentionally quiet: Telegram shows typing while work is in progress, then streams the final answer via debounced message edits. Tool-call messages and filler text are hidden.
+
+## Destination recommendations and ride links
+
+The system prompt includes a narrow destination-link policy for place recommendations, destination comparisons, and ride helpers:
+
+- Use web search when current/local options matter.
+- Include Google Maps plus Uber and Lyft **web** deep links when destination coordinates/address are available.
+- Use `m.uber.com/ul/?action=setPickup&pickup=my_location&dropoff[...]` and `lyft.com/ride?id=lyft&destination[...]`; avoid native `uber://` and `lyft://` links in Telegram unless Jack asks.
+- Do not claim live rideshare prices without a supplied screenshot or working price source.
+- For grocery requests in San Diego, prefer Whole Foods, allow comparable closer options, and avoid tiny/convenience-format stores for full food shops.
 
 ## Scheduled jobs
 
