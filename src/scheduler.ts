@@ -7,15 +7,27 @@ import { config, env, type Config } from "./config.js";
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "./lib/format.js";
 import { log } from "./lib/logger.js";
 import { paths } from "./paths.js";
+import { runResaleWatcher, type ResaleWatcherConfig } from "./watchers/resale.js";
 
-type RecurringTask = Config["scheduler"]["tasks"][number];
-type OneTimeTask = {
+type PromptRecurringTask = Config["scheduler"]["tasks"][number] & { kind?: "prompt" };
+type PromptOneTimeTask = {
+  kind?: "prompt";
   id: string;
   name: string;
   run_at: string;
   prompt: string;
   notify: "always" | "on_issue" | "never";
 };
+type ResaleWatcherTask = {
+  kind: "resale_watcher";
+  id: string;
+  name: string;
+  schedule: string;
+  watcher: ResaleWatcherConfig;
+  notify: "always" | "on_issue" | "never";
+};
+type RecurringTask = PromptRecurringTask | ResaleWatcherTask;
+type OneTimeTask = PromptOneTimeTask;
 type SchedulerJob = RecurringTask | OneTimeTask;
 
 interface ActiveScheduledJob {
@@ -27,23 +39,48 @@ interface ActiveScheduledJob {
 const BaseTaskSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
   name: z.string().min(1),
-  prompt: z.string().min(1),
   notify: z.enum(["always", "on_issue", "never"]),
 });
 
-const RecurringTaskSchema = BaseTaskSchema.extend({
+const PromptTaskSchema = BaseTaskSchema.extend({
+  kind: z.literal("prompt").optional(),
+  prompt: z.string().min(1),
+});
+
+const RecurringTaskSchema = PromptTaskSchema.extend({
   schedule: z.string().min(1),
 });
 
-const OneTimeTaskSchema = BaseTaskSchema.extend({
+const OneTimeTaskSchema = PromptTaskSchema.extend({
   run_at: z.string().min(1).refine((value) => !Number.isNaN(Date.parse(value)), {
     message: "run_at must be a valid date/time string",
   }),
 });
 
+const ResaleSourceSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("ebay"),
+    enabled: z.boolean().optional(),
+    query: z.string().min(1).optional(),
+    marketplace: z.literal("US").optional(),
+  }).strict(),
+]);
+
+const ResaleWatcherTaskSchema = BaseTaskSchema.extend({
+  kind: z.literal("resale_watcher"),
+  schedule: z.string().min(1),
+  watcher: z.object({
+    query: z.string().min(1),
+    max_price_usd: z.number().positive(),
+    min_condition: z.enum(["new", "excellent", "very_good", "good"]),
+    sources: z.array(ResaleSourceSchema).min(1),
+  }).strict(),
+}).strict();
+
 const DynamicTaskSchema = z.union([
   RecurringTaskSchema.strict(),
   OneTimeTaskSchema.strict(),
+  ResaleWatcherTaskSchema,
 ]);
 
 const DynamicTasksFileSchema = z.object({
@@ -61,15 +98,27 @@ function isOneTimeTask(task: SchedulerJob): task is OneTimeTask {
 }
 
 function taskSignature(task: SchedulerJob): string {
+  if (task.kind === "resale_watcher") {
+    return JSON.stringify({
+      kind: task.kind,
+      name: task.name,
+      schedule: task.schedule,
+      watcher: task.watcher,
+      notify: task.notify,
+    });
+  }
+
   return JSON.stringify(
     isOneTimeTask(task)
       ? {
+          kind: task.kind,
           name: task.name,
           run_at: task.run_at,
           prompt: task.prompt,
           notify: task.notify,
         }
       : {
+          kind: task.kind,
           name: task.name,
           schedule: task.schedule,
           prompt: task.prompt,
@@ -220,8 +269,12 @@ async function runTask(task: SchedulerJob): Promise<void> {
 
   await schedulerLog(`[${task.id}] starting: ${task.name}`);
   try {
-    const notePath = await ensureTaskNote(task);
-    output = await runScheduledPrompt(task.id, task.name, task.prompt, notePath);
+    if (task.kind === "resale_watcher") {
+      output = await runResaleWatcher(task.id, task.watcher, config.scheduler.telegram_chat_id);
+    } else {
+      const notePath = await ensureTaskNote(task);
+      output = await runScheduledPrompt(task.id, task.name, task.prompt, notePath);
+    }
     await schedulerLog(`[${task.id}] completed (${output.length} chars)`);
   } catch (err) {
     success = false;

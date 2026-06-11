@@ -205,6 +205,32 @@ Recurring tasks use `schedule` with a cron expression. One-time tasks use `run_a
 
 `notify` may be `always`, `on_issue`, or `never`. Each task has its own transcript and note under `~/.jarvis/data/jobs/`, plus scheduler logs at `~/.jarvis/data/jobs/scheduler.log`.
 
+Dynamic scheduled tasks also support deterministic resale watchers. These do not run the AI agent; they fetch configured sources, apply price/condition filters, dedupe alerts in `~/.jarvis/data/jobs/state/`, and send Telegram listing alerts directly.
+
+```json
+{
+  "tasks": [
+    {
+      "kind": "resale_watcher",
+      "id": "fendi-baguette-watch",
+      "name": "Fendi Baguette resale watch",
+      "schedule": "*/30 * * * *",
+      "notify": "on_issue",
+      "watcher": {
+        "query": "Fendi Baguette bag",
+        "max_price_usd": 3500,
+        "min_condition": "good",
+        "sources": [
+          { "type": "ebay", "marketplace": "US" }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Initial source support is eBay. Set `EBAY_APP_ID` in `~/.jarvis/.env` to use eBay's Finding API; without it the watcher falls back to public eBay RSS, which is less reliable. Additional resale sources can be added as new `sources[].type` implementations without changing the scheduler task shape.
+
 ## Background workers
 
 Long-running work can be moved out of the main Telegram chat:

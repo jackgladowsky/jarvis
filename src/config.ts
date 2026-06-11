@@ -80,6 +80,10 @@ const EnvSchema = z.object({
   // through Exa — without this key the tool throws on every call. Treated
   // as load-bearing rather than optional so startup fails fast if missing.
   EXA_API_KEY: z.string().min(1),
+  // Optional: enables deterministic eBay resale watcher searches via the
+  // Finding API. Without it, the watcher falls back to public eBay RSS when
+  // available, which eBay sometimes blocks. Naturally.
+  EBAY_APP_ID: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
