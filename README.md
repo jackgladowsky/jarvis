@@ -20,7 +20,7 @@ It combines a Telegram chat interface with persistent sessions, filesystem memor
 - **Background workers** for long-running tasks, using isolated git worktrees and role pipelines such as `researcher -> implementer -> reviewer`.
 - **Safe deploy flow** that builds before restart, announces restart/back-online status, and avoids killing an in-flight chat response.
 - **Operational logging** through journald plus an append-only, redacted tool-call audit log.
-- **Destination-link response policy** in the system prompt for maps plus Uber/Lyft web links, without fare scraping.
+- **Skills convention** with `SKILLS.md` and `skills/*/SKILL.md` for detailed procedures read on demand.
 
 ## Architecture
 
@@ -46,7 +46,7 @@ Runtime configuration is loaded once at startup from:
 - `~/.jarvis/config.yaml` — non-secret tunables, validated with Zod.
 - `~/.jarvis/.env` — secrets, loaded by systemd via `EnvironmentFile=` or by `node --env-file` in foreground runs.
 
-The system prompt is loaded verbatim from `~/.jarvis/prompts/system.md`. Memory is not injected automatically; JARVIS reads Markdown notes on demand according to the prompt rules.
+The system prompt is loaded verbatim from `~/.jarvis/prompts/system.md`. It stays concise and points JARVIS to repo-local skills in `SKILLS.md` / `skills/*/SKILL.md` for detailed procedures. Memory is not injected automatically; JARVIS reads Markdown notes on demand according to the memory skill.
 
 ## Requirements
 
@@ -153,111 +153,28 @@ Commands handled by the transport layer:
 
 The user-visible response path is intentionally quiet: Telegram shows typing while work is in progress, then streams the final answer via debounced message edits. Tool-call messages and filler text are hidden.
 
+## Skills convention
+
+Procedural instructions live in repo-local skill files so the core system prompt stays small:
+
+```text
+SKILLS.md                    skill index and convention
+skills/<slug>/SKILL.md       one procedural skill per directory
+```
+
+JARVIS reads the relevant skill on demand before work in that area; it does not load every skill by default. Initial skills cover background workers, deploys, scheduler, memory, destinations, GitHub PRs, host ops, web search, and deep research.
+
 ## Destination recommendations and ride links
 
-The system prompt includes a narrow destination-link policy for place recommendations, destination comparisons, and ride helpers:
-
-- Use web search when current/local options matter.
-- Include Google Maps plus Uber and Lyft **web** deep links when destination coordinates/address are available.
-- Use `m.uber.com/ul/?action=setPickup&pickup=my_location&dropoff[...]` and `lyft.com/ride?id=lyft&destination[...]`; avoid native `uber://` and `lyft://` links in Telegram unless Jack asks.
-- Do not claim live rideshare prices without a supplied screenshot or working price source.
-- For grocery requests in San Diego, prefer Whole Foods, allow comparable closer options, and avoid tiny/convenience-format stores for full food shops.
+Detailed destination and rideshare policy lives in `skills/destinations/SKILL.md`. In short: use web search when local/current options matter, recommend the best fit concisely, include Google Maps plus Uber/Lyft web links when coordinates/address are available, and do not claim live rideshare prices without a supplied source.
 
 ## Scheduled jobs
 
-Enable the scheduler in `~/.jarvis/config.yaml`:
-
-```yaml
-scheduler:
-  enabled: true
-  timezone: America/New_York
-  telegram_chat_id: 123456789
-  tasks: []
-```
-
-There are two task sources:
-
-- Static/bootstrap tasks in `scheduler.tasks` inside `config.yaml`.
-- Dynamic tasks in `~/.jarvis/data/jobs/tasks.json`, hot-reloaded roughly every 30 seconds.
-
-Recurring tasks use `schedule` with a cron expression. One-time tasks use `run_at` with an absolute timestamp including timezone/offset, and are removed after they run.
-
-```json
-{
-  "tasks": [
-    {
-      "id": "morning-newsletter",
-      "name": "Morning Newsletter",
-      "schedule": "0 7 * * *",
-      "notify": "always",
-      "prompt": "Write Jack a concise morning newsletter."
-    },
-    {
-      "id": "call-mom",
-      "name": "Call Mom Reminder",
-      "run_at": "2026-05-11T17:00:00-04:00",
-      "notify": "always",
-      "prompt": "Remind Jack to call Mom."
-    }
-  ]
-}
-```
-
-`notify` may be `always`, `on_issue`, or `never`. Each task has its own transcript and note under `~/.jarvis/data/jobs/`, plus scheduler logs at `~/.jarvis/data/jobs/scheduler.log`.
+Detailed scheduler procedure lives in `skills/scheduler/SKILL.md`. The scheduler supports static tasks in `~/.jarvis/config.yaml` and dynamic recurring/one-time tasks in `~/.jarvis/data/jobs/tasks.json`, with per-task sessions, notes, and logs under `~/.jarvis/data/jobs/`.
 
 ## Background workers
 
-Long-running work can be moved out of the main Telegram chat:
-
-```text
-/bg <prompt>
-```
-
-A worker task gets:
-
-- A friendly task id, branch, and git worktree under `~/jarvis-worktrees/<task-id>`.
-- Task JSON under `~/.jarvis/data/background/tasks/`.
-- A task note under `~/.jarvis/data/background/notes/`.
-- A mailbox JSONL under `~/.jarvis/data/background/mail/`.
-- A persistent background session under `~/.jarvis/data/background/sessions/`.
-
-Tasks run as pipelines selected from the prompt. Common shapes are:
-
-```text
-implementer -> reviewer
-researcher -> reviewer
-researcher -> implementer -> reviewer
-```
-
-Reviewers do not edit files. They mark work `ready_for_pr` or `needs_fix`; main JARVIS remains the gate for inspecting, pushing, opening PRs, merging, or deploying.
-
-Shell entrypoints:
-
-```bash
-scripts/start-background-task.sh "Implement the thing"
-scripts/resume-background-task.sh <task-id> [fixer|reviewer]
-```
-
-Background worker cleanup is handled by a dry-run-first janitor script:
-
-```bash
-scripts/cleanup-background-worktrees.sh --dry-run
-scripts/cleanup-background-worktrees.sh --apply --age-days 14
-```
-
-The script removes only old terminal task worktrees (`ready_for_pr`, `cancelled`, `failed`, `done`) and keeps task JSON, notes, mail, sessions, and logs. It prunes stale git worktree metadata, reports filesystem orphans under `~/jarvis-worktrees/`, and skips dirty worktrees unless `--force-dirty` is explicitly set. Branch deletion is opt-in with `--delete-branches` and only deletes merged local `worker/*` branches unless `--force-branches` is also set.
-
-Suggested weekly scheduled janitor task:
-
-```json
-{
-  "id": "weekly-janitor",
-  "name": "Weekly Janitor",
-  "schedule": "0 9 * * 1",
-  "notify": "always",
-  "prompt": "Run `cd ~/jarvis && scripts/cleanup-background-worktrees.sh --dry-run --age-days 14`, report what would be cleaned, identify stale todos/docs/notes, and do not delete ambiguous notes or data without Jack's approval."
-}
-```
+Detailed background-worker procedure lives in `skills/background-workers/SKILL.md`. Long-running work can be delegated with `/bg <prompt>` or `scripts/start-background-task.sh "<prompt>"`; tasks use isolated worktrees under `~/jarvis-worktrees/` and state under `~/.jarvis/data/background/`. Reviewers mark work `ready_for_pr` or `needs_fix`; main JARVIS remains the PR/deploy gate.
 
 ## Data layout
 
@@ -297,7 +214,7 @@ By default, data lives under `~/.jarvis/`. Override with `JARVIS_DATA_DIR` for d
 └── data/deploy/                  safe-deploy markers and restart log
 ```
 
-Everything under `~/.jarvis/` is host-local and should not be committed. Everything under `~/jarvis/` should be replaceable from git.
+Everything under `~/.jarvis/` is host-local and should not be committed. Everything under `~/jarvis/` should be replaceable from git. Repo-local procedural skills live in `~/jarvis/SKILLS.md` and `~/jarvis/skills/`.
 
 ## Development
 
@@ -325,30 +242,7 @@ git diff --check
 
 ## Deploy and update
 
-For an installed host, prefer the safe deploy flow:
-
-```bash
-cd ~/jarvis
-scripts/safe-deploy.sh              # defaults to origin/main
-scripts/safe-deploy.sh origin/main  # explicit target
-```
-
-`safe-deploy.sh`:
-
-1. Refuses to run with a dirty working tree.
-2. Fetches and fast-forwards to the target ref.
-3. Installs dependencies and builds.
-4. Leaves the running service untouched if the build fails.
-5. Sends a Telegram restart notice, writes a pending deploy marker, and schedules a short delayed `systemctl restart` so the chat response can finish.
-6. Sends a back-online notice on startup.
-
-`scripts/update.sh` is a backwards-compatible alias for `safe-deploy.sh`.
-
-Use raw systemd restarts for deliberate manual service/config operations, not as the normal code deploy path:
-
-```bash
-sudo systemctl restart jarvis
-```
+Detailed deploy procedure lives in `skills/deploy/SKILL.md`. For installed hosts, prefer `scripts/safe-deploy.sh`; it refuses dirty trees, fast-forwards, installs dependencies, builds, sends restart/back-online notices, and schedules a delayed service restart so the chat response can complete. Use raw `sudo systemctl restart jarvis` only for deliberate manual service/config operations.
 
 
 ## Operations
