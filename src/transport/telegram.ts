@@ -29,6 +29,14 @@ import {
 } from "../background/manager.js";
 import { config, env } from "../config.js";
 import { isAllowed } from "../lib/allowlist.js";
+import {
+  formatTranscribedPrompt,
+  maxAudioBytes,
+  MissingLocalWhisperSetupError,
+  selectTelegramAudioCandidate,
+  transcribeWithLocalWhisperCpp,
+  type TelegramAudioCandidate,
+} from "../lib/audio-transcription.js";
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "../lib/format.js";
 import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
@@ -147,6 +155,44 @@ async function readImages(ctx: Context): Promise<ImageContent[]> {
   const candidates = imageCandidateFileIds(ctx);
   if (candidates.length === 0) return [];
   return Promise.all(candidates.map((candidate) => downloadTelegramImage(ctx, candidate)));
+}
+
+function sttOptions() {
+  return {
+    provider: config.stt.provider,
+    whisperBinaryPath: config.stt.local_whisper_cpp.whisper_binary_path,
+    modelPath: config.stt.local_whisper_cpp.model_path,
+    ffmpegPath: config.stt.local_whisper_cpp.ffmpeg_path,
+    maxAudioMb: config.stt.local_whisper_cpp.max_audio_mb,
+    timeoutSeconds: config.stt.local_whisper_cpp.timeout_seconds,
+  };
+}
+
+async function downloadTelegramAudio(ctx: Context, candidate: TelegramAudioCandidate): Promise<Buffer> {
+  const limit = maxAudioBytes(config.stt.local_whisper_cpp.max_audio_mb);
+  if (candidate.fileSize && candidate.fileSize > limit) {
+    throw new Error(`audio is too large (${Math.ceil(candidate.fileSize / 1024 / 1024)} MB; max ${config.stt.local_whisper_cpp.max_audio_mb} MB)`);
+  }
+
+  const file = await ctx.api.getFile(candidate.fileId);
+  if (!file.file_path) throw new Error("Telegram did not return a file path");
+
+  const url = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.byteLength > limit) {
+    throw new Error(`audio is too large (${Math.ceil(buffer.byteLength / 1024 / 1024)} MB; max ${config.stt.local_whisper_cpp.max_audio_mb} MB)`);
+  }
+  return buffer;
+}
+
+async function transcribeTelegramAudio(ctx: Context, candidate: TelegramAudioCandidate): Promise<string> {
+  const options = sttOptions();
+  if (options.provider !== "local-whisper-cpp") throw new MissingLocalWhisperSetupError();
+  const audio = await downloadTelegramAudio(ctx, candidate);
+  return transcribeWithLocalWhisperCpp(audio, candidate, options);
 }
 
 function commandName(text: string): string {
@@ -292,6 +338,23 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     return;
   }
 
+  const audioCandidate = selectTelegramAudioCandidate(ctx.message);
+  let transcribedPrompt: string | undefined;
+  if (audioCandidate) {
+    try {
+      await safe("upload_voice", ctx.replyWithChatAction("upload_voice"));
+      const transcript = await transcribeTelegramAudio(ctx, audioCandidate);
+      transcribedPrompt = formatTranscribedPrompt(audioCandidate, transcript, userText);
+    } catch (err) {
+      log.warn("telegram audio transcription failed", { chatId, err: err instanceof Error ? err.message : err });
+      const message = err instanceof MissingLocalWhisperSetupError
+        ? err.message
+        : `Couldn't transcribe that audio: ${err instanceof Error ? err.message : String(err)}`;
+      await safe("reply (audio transcription failed)", ctx.reply(message));
+      return;
+    }
+  }
+
   let images: ImageContent[] = [];
   try {
     images = await readImages(ctx);
@@ -301,11 +364,11 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     return;
   }
 
-  if (!userText.trim() && images.length === 0) {
-    await safe("reply (unsupported message)", ctx.reply("I can read text and images. Whatever that was, Telegram is being coy."));
+  if (!userText.trim() && images.length === 0 && !transcribedPrompt) {
+    await safe("reply (unsupported message)", ctx.reply("I can read text, images, and voice/audio. Whatever that was, Telegram is being coy."));
     return;
   }
-  const promptText = userText.trim() || "Describe the attached image(s).";
+  const promptText = transcribedPrompt ?? (userText.trim() || "Describe the attached image(s).");
 
   // ── Typing indicator ────────────────────────────────────────────────────
   // Fires immediately and then on a 4s loop until the agent run resolves.
@@ -570,7 +633,8 @@ export async function runTelegram(handle: Handler): Promise<void> {
     }
     const text = ctx.message?.text ?? ctx.message?.caption ?? "";
     const imageCount = imageCandidateFileIds(ctx).length;
-    log.info("inbound", { chatId, userId, len: text.length, imageCount });
+    const audioKind = selectTelegramAudioCandidate(ctx.message)?.kind;
+    log.info("inbound", { chatId, userId, len: text.length, imageCount, audioKind });
 
     // Control commands must bypass the per-chat lock; otherwise they queue
     // behind the long run they are supposed to manage. Comedy, but not useful

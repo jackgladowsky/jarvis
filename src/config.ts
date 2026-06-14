@@ -45,6 +45,16 @@ const ConfigSchema = z.object({
     long_tool_call_seconds: z.number().int().positive(),
     parse_mode: z.enum(["none", "MarkdownV2", "HTML"]),
   }),
+  stt: z.object({
+    provider: z.enum(["disabled", "local-whisper-cpp"]),
+    local_whisper_cpp: z.object({
+      whisper_binary_path: z.string().min(1),
+      model_path: z.string().min(1),
+      ffmpeg_path: z.string().min(1).nullable(),
+      max_audio_mb: z.number().int().positive(),
+      timeout_seconds: z.number().int().positive(),
+    }),
+  }),
   scheduler: z.object({
     enabled: z.boolean(),
     timezone: z.string().min(1),
