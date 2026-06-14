@@ -29,6 +29,15 @@ telegram:
                                               # HTML enables fenced code blocks, **bold**, *italic*,
                                               # `inline code`. MarkdownV2 escaping is a footgun.
 
+stt:
+  provider: disabled                          # "disabled" or "local-whisper-cpp"
+  local_whisper_cpp:
+    whisper_binary_path: /usr/local/bin/whisper-cli
+    model_path: /home/jack/.jarvis/models/ggml-base.en.bin
+    ffmpeg_path: /usr/bin/ffmpeg              # set null only if sending WAV files directly
+    max_audio_mb: 25
+    timeout_seconds: 120
+
 scheduler:
   enabled: false
   timezone: America/New_York

@@ -16,6 +16,7 @@ It combines a Telegram chat interface with persistent sessions, filesystem memor
 - **Filesystem memory** in Markdown notes under `~/.jarvis/data/notes/`.
 - **Five built-in tools:** file read/write/edit, shell, and Exa-backed web search/page fetch.
 - **Image input** from Telegram photos or image documents, including captions as prompts.
+- **Voice/audio input** from Telegram, transcribed locally with whisper.cpp when configured.
 - **Scheduled jobs** with cron-style recurring tasks, one-time reminders, independent transcripts, notes, and notifications.
 - **Background workers** for long-running tasks, using isolated git worktrees and role pipelines such as `researcher -> implementer -> reviewer`.
 - **Safe deploy flow** that builds before restart, announces restart/back-online status, and avoids killing an in-flight chat response.
@@ -120,10 +121,43 @@ Important `~/.jarvis/config.yaml` sections:
 - `compaction` — context compaction thresholds.
 - `tools.bash` — default and maximum shell timeouts.
 - `telegram` — typing indicator and parse mode.
+- `stt` — optional local whisper.cpp speech-to-text for Telegram voice/audio.
 - `scheduler` — enablement, timezone, notification chat, bootstrap tasks.
 - `logging` — audit log behavior, redaction, truncation, log level.
 
 See `config.yaml.example` and `.env.example` for the full schema. Config is frozen at startup; restart the service to apply changes.
+
+### Local whisper.cpp speech-to-text
+
+Install whisper.cpp and a local model, then point `~/.jarvis/config.yaml` at them:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential cmake git ffmpeg
+mkdir -p ~/.jarvis/models ~/projects
+cd ~/projects
+git clone https://github.com/ggerganov/whisper.cpp.git
+cd whisper.cpp
+cmake -B build
+cmake --build build --config Release -j"$(nproc)"
+./models/download-ggml-model.sh base.en
+cp models/ggml-base.en.bin ~/.jarvis/models/
+```
+
+Example config:
+
+```yaml
+stt:
+  provider: local-whisper-cpp
+  local_whisper_cpp:
+    whisper_binary_path: /home/jack/projects/whisper.cpp/build/bin/whisper-cli
+    model_path: /home/jack/.jarvis/models/ggml-base.en.bin
+    ffmpeg_path: /usr/bin/ffmpeg
+    max_audio_mb: 25
+    timeout_seconds: 120
+```
+
+Telegram voice notes are usually Ogg/Opus, so keep `ffmpeg_path` set unless you only plan to send WAV files. Restart JARVIS after editing config.
 
 ## Telegram interface
 
@@ -133,6 +167,14 @@ JARVIS responds to normal text messages from allowlisted users. It also accepts 
 - 10 MB maximum per image.
 - Captions are used as the prompt.
 - If an image arrives without text, the default prompt is “Describe the attached image(s).”
+
+It accepts Telegram voice notes and audio files when `stt.provider: local-whisper-cpp` is configured:
+
+- Audio is downloaded transiently, optionally converted to 16 kHz mono WAV with `ffmpeg`, and transcribed with local `whisper-cli`/`whisper.cpp`.
+- No OpenAI API key or hosted transcription service is used.
+- `stt.local_whisper_cpp.max_audio_mb` and `timeout_seconds` cap file size and runtime.
+- The transcript is fed through the normal chat path with a `[Transcribed ...]` prefix. Captions are preserved below `[Caption]`.
+- If setup is missing, JARVIS replies with a clear setup error instead of running the agent.
 
 Commands handled by the transport layer:
 
