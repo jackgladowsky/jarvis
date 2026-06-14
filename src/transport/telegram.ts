@@ -57,6 +57,7 @@ const MAX_TELEGRAM_IMAGES = 4;
 const MAX_TELEGRAM_IMAGE_BYTES = 10 * 1024 * 1024;
 
 const statusModes = new Map<number, Exclude<StatusMode, "off">>();
+const sttBenchmarkNext = new Set<number>();
 
 function statusModeFor(chatId: number): StatusMode {
   return statusModes.get(chatId) ?? "off";
@@ -189,6 +190,40 @@ async function transcribeTelegramAudio(ctx: Context, candidate: TelegramAudioCan
   return transcribeWithLocalWhisperCpp(audio, candidate, options);
 }
 
+function siblingModelPath(currentPath: string, modelName: "base.en" | "small.en"): string {
+  return currentPath.replace(/ggml-[^/]+\.bin$/, `ggml-${modelName}.bin`);
+}
+
+async function benchmarkTelegramAudio(ctx: Context, candidate: TelegramAudioCandidate, startedAtMs: number): Promise<void> {
+  const options = sttOptions();
+  if (options.provider !== "local-whisper-cpp") throw new MissingLocalWhisperSetupError();
+  const audio = await downloadTelegramAudio(ctx, candidate);
+  const models = [
+    { label: "base.en", path: siblingModelPath(options.modelPath, "base.en") },
+    { label: "small.en", path: siblingModelPath(options.modelPath, "small.en") },
+  ];
+  const results = await Promise.all(models.map(async (model) => {
+    const modelStart = Date.now();
+    try {
+      const transcript = await transcribeWithLocalWhisperCpp(audio, candidate, { ...options, modelPath: model.path });
+      return { ...model, ok: true as const, ms: Date.now() - modelStart, transcript };
+    } catch (err) {
+      return { ...model, ok: false as const, ms: Date.now() - modelStart, error: err instanceof Error ? err.message : String(err) };
+    }
+  }));
+  const totalMs = Date.now() - startedAtMs;
+  const body = [
+    `STT benchmark (${candidate.kind})`,
+    `First reply after: ${(totalMs / 1000).toFixed(2)}s`,
+    "",
+    ...results.flatMap((result) => [
+      `${result.label}: ${(result.ms / 1000).toFixed(2)}s`,
+      result.ok ? result.transcript : `ERROR: ${result.error}`,
+      "",
+    ]),
+  ].join("\n").trim();
+  await safe("reply (stt benchmark)", ctx.reply(body));
+}
 
 async function handleBackgroundCommand(ctx: Context, text: string): Promise<boolean> {
   const trimmed = text.trim();
@@ -299,6 +334,12 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     return;
   }
 
+  if (commandName(userText) === "sttbench") {
+    sttBenchmarkNext.add(chatId);
+    await safe("reply (/sttbench)", ctx.reply("Send one voice note/audio file next; I’ll run base.en and small.en in parallel and report transcripts/timings."));
+    return;
+  }
+
   const modeCommand = parseModeCommand(userText);
   if (modeCommand) {
     const current = statusModeFor(chatId);
@@ -323,8 +364,13 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   const audioCandidate = selectTelegramAudioCandidate(ctx.message);
   let transcribedPrompt: string | undefined;
   if (audioCandidate) {
+    const audioStartedAtMs = Date.now();
     try {
       await safe("upload_voice", ctx.replyWithChatAction("upload_voice"));
+      if (sttBenchmarkNext.delete(chatId)) {
+        await benchmarkTelegramAudio(ctx, audioCandidate, audioStartedAtMs);
+        return;
+      }
       const transcript = await transcribeTelegramAudio(ctx, audioCandidate);
       transcribedPrompt = formatTranscribedPrompt(audioCandidate, transcript, userText);
     } catch (err) {
