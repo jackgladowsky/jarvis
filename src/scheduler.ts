@@ -3,20 +3,11 @@ import { join } from "node:path";
 import cron, { type ScheduledTask } from "node-cron";
 import { z } from "zod";
 import { runScheduledPrompt } from "./agent/runtime.js";
-import { config, env, type Config } from "./config.js";
+import { config, env } from "./config.js";
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "./lib/format.js";
+import { isOneTimeTask, shouldNotify, taskSignature, type OneTimeTask, type RecurringTask, type SchedulerJob } from "./scheduler-logic.js";
 import { log } from "./lib/logger.js";
 import { paths } from "./paths.js";
-
-type RecurringTask = Config["scheduler"]["tasks"][number];
-type OneTimeTask = {
-  id: string;
-  name: string;
-  run_at: string;
-  prompt: string;
-  notify: "always" | "on_issue" | "never";
-};
-type SchedulerJob = RecurringTask | OneTimeTask;
 
 interface ActiveScheduledJob {
   cronJob?: ScheduledTask;
@@ -55,28 +46,6 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 const activeJobs = new Map<string, ActiveScheduledJob>();
 
 type DynamicTask = z.infer<typeof DynamicTaskSchema>;
-
-function isOneTimeTask(task: SchedulerJob): task is OneTimeTask {
-  return "run_at" in task;
-}
-
-function taskSignature(task: SchedulerJob): string {
-  return JSON.stringify(
-    isOneTimeTask(task)
-      ? {
-          name: task.name,
-          run_at: task.run_at,
-          prompt: task.prompt,
-          notify: task.notify,
-        }
-      : {
-          name: task.name,
-          schedule: task.schedule,
-          prompt: task.prompt,
-          notify: task.notify,
-        },
-  );
-}
 
 function taskNotePath(task: SchedulerJob): string {
   return join(paths.scheduledJobNotes, `${task.id}.md`);
@@ -201,16 +170,6 @@ async function sendTelegram(chatId: number, text: string): Promise<void> {
       throw new Error(`Telegram sendMessage failed: ${response.status} ${body}`);
     }
   }
-}
-
-function shouldNotify(task: SchedulerJob, success: boolean, output: string): boolean {
-  if (task.notify === "never") return false;
-  if (task.notify === "always") return true;
-  if (!success) return true;
-  const lower = output.toLowerCase();
-  return ["warning", "error", "critical", "down", "fail", "issue", "alert"].some((word) =>
-    lower.includes(word),
-  );
 }
 
 async function runTask(task: SchedulerJob): Promise<void> {

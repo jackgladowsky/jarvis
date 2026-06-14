@@ -40,6 +40,7 @@ import {
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "../lib/format.js";
 import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
+import { commandName, commandRest, nextStatusMode, parseModeCommand } from "./commands.js";
 
 type Handler = typeof handleMessage;
 
@@ -59,13 +60,6 @@ const statusModes = new Map<number, Exclude<StatusMode, "off">>();
 
 function statusModeFor(chatId: number): StatusMode {
   return statusModes.get(chatId) ?? "off";
-}
-
-function parseModeCommand(text: string): { command: "thinking" | "verbose"; arg: string } | undefined {
-  const [rawCommand, rawArg = ""] = text.trim().split(/\s+/, 2);
-  const command = rawCommand.replace(/^\//, "").split("@")[0];
-  if (command !== "thinking" && command !== "verbose") return undefined;
-  return { command, arg: rawArg.toLowerCase() };
 }
 
 function setStatusMode(chatId: number, mode: StatusMode): void {
@@ -195,15 +189,6 @@ async function transcribeTelegramAudio(ctx: Context, candidate: TelegramAudioCan
   return transcribeWithLocalWhisperCpp(audio, candidate, options);
 }
 
-function commandName(text: string): string {
-  return text.trim().split(/\s+/, 1)[0]?.replace(/^\//, "").split("@")[0] ?? "";
-}
-
-function commandRest(text: string): string {
-  const trimmed = text.trim();
-  const firstSpace = trimmed.search(/\s/);
-  return firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
-}
 
 async function handleBackgroundCommand(ctx: Context, text: string): Promise<boolean> {
   const trimmed = text.trim();
@@ -317,11 +302,8 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   const modeCommand = parseModeCommand(userText);
   if (modeCommand) {
     const current = statusModeFor(chatId);
-    let next: StatusMode;
-    if (["off", "false", "0", "stop"].includes(modeCommand.arg)) next = "off";
-    else if (["on", "true", "1", ""].includes(modeCommand.arg)) {
-      next = modeCommand.command === "verbose" ? "verbose" : "thinking";
-    } else {
+    const next = nextStatusMode(modeCommand.command, modeCommand.arg);
+    if (!next) {
       await safe("reply (mode usage)", ctx.reply("Usage: /thinking [on|off] or /verbose [on|off]."));
       return;
     }
