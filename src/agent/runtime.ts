@@ -17,7 +17,7 @@
 // is fine; if it ever shows up in profiling, move to a per-session Agent
 // cache later.
 
-import { appendFile, mkdir, readFile, rename } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import { type ImageContent } from "@mariozechner/pi-ai";
@@ -25,6 +25,12 @@ import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
 import { estimateContextTokens, maybeCompact, maybeCompactLoaded } from "./compaction.js";
+import {
+  appendJobMessages,
+  loadJobSession,
+  rewriteJobSessionWithCompaction,
+  type JobLoadedSession,
+} from "./job-session.js";
 import { model } from "./model.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
@@ -157,84 +163,23 @@ function scheduledSessionFile(taskId: string): string {
   return join(paths.scheduledJobSessions, `${taskId}.jsonl`);
 }
 
-interface ScheduledLoadedSession {
-  previousSummary?: string;
-  tail: AgentMessage[];
-}
-
-function isCompactionEntry(parsed: unknown): parsed is {
-  type: "compaction";
-  summary: string;
-  tokensBefore: number;
-} {
-  return (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    (parsed as { type?: string }).type === "compaction"
-  );
-}
-
-async function loadScheduledMessages(taskId: string): Promise<ScheduledLoadedSession> {
-  let raw: string;
-  try {
-    raw = await readFile(scheduledSessionFile(taskId), "utf-8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { tail: [] };
-    throw err;
-  }
-
-  let previousSummary: string | undefined;
-  let tail: AgentMessage[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    const parsed = JSON.parse(line) as unknown;
-    if (isCompactionEntry(parsed)) {
-      previousSummary = parsed.summary;
-      tail = [];
-    } else {
-      tail.push(parsed as AgentMessage);
-    }
-  }
-
-  return { previousSummary, tail: dropDanglingScheduledToolCalls(tail) };
-}
-
-function dropDanglingScheduledToolCalls(messages: AgentMessage[]): AgentMessage[] {
-  const out = messages.slice();
-  while (out.length > 0) {
-    const last = out[out.length - 1];
-    if (last.role !== "assistant") break;
-    const hasToolCall = (last.content ?? []).some(
-      (c: { type: string }) => c.type === "toolCall",
-    );
-    if (!hasToolCall) break;
-    out.pop();
-  }
-  return out;
+async function loadScheduledMessages(taskId: string): Promise<JobLoadedSession> {
+  return loadJobSession(scheduledSessionFile(taskId));
 }
 
 async function appendScheduledMessages(
   taskId: string,
   messages: AgentMessage[],
 ): Promise<void> {
-  if (messages.length === 0) return;
-  await mkdir(paths.scheduledJobSessions, { recursive: true });
-  const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-  await appendFile(scheduledSessionFile(taskId), lines, "utf-8");
+  await appendJobMessages(scheduledSessionFile(taskId), messages);
 }
 
-async function appendScheduledCompactionEntry(
+async function rewriteScheduledSessionWithCompaction(
   taskId: string,
   entry: { summary: string; tokensBefore: number },
+  keptTail: AgentMessage[],
 ): Promise<void> {
-  await mkdir(paths.scheduledJobSessions, { recursive: true });
-  const line = {
-    type: "compaction",
-    timestamp: Date.now(),
-    summary: entry.summary,
-    tokensBefore: entry.tokensBefore,
-  };
-  await appendFile(scheduledSessionFile(taskId), JSON.stringify(line) + "\n", "utf-8");
+  await rewriteJobSessionWithCompaction(scheduledSessionFile(taskId), entry, keptTail);
 }
 
 async function archiveScheduledSession(taskId: string, reason: string): Promise<string | undefined> {
@@ -257,50 +202,20 @@ function backgroundSessionFile(taskId: string): string {
   return join(paths.backgroundSessions, `${taskId}.jsonl`);
 }
 
-async function loadBackgroundMessages(taskId: string): Promise<ScheduledLoadedSession> {
-  let raw: string;
-  try {
-    raw = await readFile(backgroundSessionFile(taskId), "utf-8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { tail: [] };
-    throw err;
-  }
-
-  let previousSummary: string | undefined;
-  let tail: AgentMessage[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    const parsed = JSON.parse(line) as unknown;
-    if (isCompactionEntry(parsed)) {
-      previousSummary = parsed.summary;
-      tail = [];
-    } else {
-      tail.push(parsed as AgentMessage);
-    }
-  }
-
-  return { previousSummary, tail: dropDanglingScheduledToolCalls(tail) };
+async function loadBackgroundMessages(taskId: string): Promise<JobLoadedSession> {
+  return loadJobSession(backgroundSessionFile(taskId));
 }
 
 async function appendBackgroundMessages(taskId: string, messages: AgentMessage[]): Promise<void> {
-  if (messages.length === 0) return;
-  await mkdir(paths.backgroundSessions, { recursive: true });
-  const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-  await appendFile(backgroundSessionFile(taskId), lines, "utf-8");
+  await appendJobMessages(backgroundSessionFile(taskId), messages);
 }
 
-async function appendBackgroundCompactionEntry(
+async function rewriteBackgroundSessionWithCompaction(
   taskId: string,
   entry: { summary: string; tokensBefore: number },
+  keptTail: AgentMessage[],
 ): Promise<void> {
-  await mkdir(paths.backgroundSessions, { recursive: true });
-  const line = {
-    type: "compaction",
-    timestamp: Date.now(),
-    summary: entry.summary,
-    tokensBefore: entry.tokensBefore,
-  };
-  await appendFile(backgroundSessionFile(taskId), JSON.stringify(line) + "\n", "utf-8");
+  await rewriteJobSessionWithCompaction(backgroundSessionFile(taskId), entry, keptTail);
 }
 
 async function archiveBackgroundSession(taskId: string, reason: string): Promise<string | undefined> {
@@ -469,7 +384,8 @@ export async function runScheduledPrompt(
       model,
       makeSummaryMessage,
       {
-        appendCompactionEntry: (entry) => appendScheduledCompactionEntry(taskId, entry),
+        rewriteWithCompaction: (entry, keptTail) =>
+          rewriteScheduledSessionWithCompaction(taskId, entry, keptTail),
         reload: () => loadScheduledMessages(taskId),
       },
     );
@@ -547,7 +463,8 @@ export async function runBackgroundPrompt(
       model,
       makeSummaryMessage,
       {
-        appendCompactionEntry: (entry) => appendBackgroundCompactionEntry(taskId, entry),
+        rewriteWithCompaction: (entry, keptTail) =>
+          rewriteBackgroundSessionWithCompaction(taskId, entry, keptTail),
         reload: () => loadBackgroundMessages(taskId),
       },
     );
