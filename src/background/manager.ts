@@ -2,37 +2,21 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { paths } from "../paths.js";
 import { log } from "../lib/logger.js";
 import type { BackgroundMailEntry, BackgroundRole, BackgroundStage, BackgroundTask } from "./types.js";
+import { choosePipeline, friendlyIdFromUuid, nextQueuedRole, renderTask, renderTaskList } from "./logic.js";
+
+export { choosePipeline, friendlyIdFromUuid, nextQueuedRole, renderTask, renderTaskList } from "./logic.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_REPO = "/home/jack/jarvis";
 
 function now(): string {
   return new Date().toISOString();
-}
-
-const ID_LEFT = [
-  "ash", "blue", "bold", "calm", "cedar", "clear", "cove", "dawn", "dusk", "fern",
-  "frost", "glow", "gray", "green", "hush", "iron", "jade", "kind", "lake", "lunar",
-  "maple", "mint", "moss", "north", "nova", "onyx", "pine", "quiet", "river", "sage",
-  "solar", "stone", "swift", "tide", "violet", "west", "wild", "young",
-];
-const ID_RIGHT = [
-  "ant", "bear", "bird", "brook", "comet", "crow", "deer", "dove", "drake", "finch",
-  "fox", "frog", "hare", "hawk", "lynx", "mole", "moth", "otter", "owl", "panda",
-  "quail", "raven", "seal", "shark", "snail", "sparrow", "swan", "tiger", "trout", "wolf",
-];
-
-function friendlyIdFromUuid(uuid: string): string {
-  const compact = uuid.replace(/-/g, "");
-  const leftIndex = Number.parseInt(compact.slice(0, 8), 16) % ID_LEFT.length;
-  const rightIndex = Number.parseInt(compact.slice(8, 16), 16) % ID_RIGHT.length;
-  return `${ID_LEFT[leftIndex]}-${ID_RIGHT[rightIndex]}`;
 }
 
 async function createTaskIdentity(): Promise<{ id: string; uuid: string }> {
@@ -129,29 +113,6 @@ export function spawnBackgroundWorker(id: string, role?: BackgroundRole): number
   child.unref();
   log.info("background worker spawned", { id, role, pid: child.pid });
   return child.pid ?? 0;
-}
-
-function choosePipeline(prompt: string): BackgroundStage[] {
-  const lower = prompt.toLowerCase();
-  const wantsResearch = ["research", "investigate", "explore", "look into", "compare", "brainstorm"].some((word) =>
-    lower.includes(word),
-  );
-  const wantsCode = ["implement", "build", "add", "fix", "update", "change", "pr", "code"].some((word) =>
-    lower.includes(word),
-  );
-  if (wantsResearch && !wantsCode) return [{ role: "researcher", status: "queued" }, { role: "reviewer", status: "queued" }];
-  if (wantsResearch && wantsCode) {
-    return [
-      { role: "researcher", status: "queued" },
-      { role: "implementer", status: "queued" },
-      { role: "reviewer", status: "queued" },
-    ];
-  }
-  return [{ role: "implementer", status: "queued" }, { role: "reviewer", status: "queued" }];
-}
-
-export function nextQueuedRole(task: BackgroundTask): BackgroundRole | undefined {
-  return task.pipeline.find((stage) => stage.status === "queued")?.role;
 }
 
 export async function startBackgroundTask(prompt: string, chatId: number, repo = DEFAULT_REPO): Promise<BackgroundTask> {
@@ -270,31 +231,4 @@ export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer
 
 function statusForResumeRole(role: "fixer" | "reviewer"): BackgroundTask["status"] {
   return role === "reviewer" ? "reviewing" : "implementing";
-}
-
-function renderPipeline(task: BackgroundTask): string {
-  return task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ");
-}
-
-export function renderTask(task: BackgroundTask): string {
-  return [
-    `${task.id} — ${task.status}`,
-    `UUID: ${task.uuid}`,
-    `Pipeline: ${renderPipeline(task)}`,
-    task.current_role ? `Current role: ${task.current_role}` : undefined,
-    `Branch: ${task.branch}`,
-    `Worktree: ${task.worktree}`,
-    task.pid ? `PID: ${task.pid}` : undefined,
-    task.summary ? `Summary: ${task.summary}` : undefined,
-    task.review_summary ? `Review: ${task.review_summary}` : undefined,
-    task.error ? `Error: ${task.error}` : undefined,
-  ].filter(Boolean).join("\n");
-}
-
-export function renderTaskList(tasks: BackgroundTask[]): string {
-  if (tasks.length === 0) return "No background tasks.";
-  return tasks.slice(0, 10).map((task) => {
-    const current = task.current_role ? ` current:${task.current_role}` : "";
-    return `${task.id} — ${task.status}${current} — ${renderPipeline(task)} — ${basename(task.worktree)}`;
-  }).join("\n");
 }
