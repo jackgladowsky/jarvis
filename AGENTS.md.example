@@ -46,6 +46,7 @@ it terse and accurate. JARVIS may also edit it at your direction.
 ## Conventions
 - <where projects live, e.g. "Jack's projects: /home/<user>/projects/">
 - Code style for JARVIS source: see DESIGN.md in ~/jarvis/.
+- Procedural skills: see ~/jarvis/SKILLS.md and ~/jarvis/skills/*/SKILL.md.
 
 ## Notes
 <anything else worth documenting that doesn't fit above>

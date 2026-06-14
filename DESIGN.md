@@ -8,7 +8,7 @@ A personal, persistent AI assistant. Lives on Jack's M710q, accessed primarily v
 
 This doc captures the original design rationale plus selected architecture notes. Some later sections remain historical; prefer `README.md`, `AGENTS.md.example`, `config.yaml.example`, and source for current operational detail.
 
-> **A note on length:** this doc is long because every section reflects a real decision. Keep factual drift corrected, but avoid turning it into a second README. The live system prompt is `~/.jarvis/prompts/system.md`; the repo template is `prompts/system.md.example`.
+> **A note on length:** this doc is long because every section reflects a real decision. Keep factual drift corrected, but avoid turning it into a second README. The live system prompt is `~/.jarvis/prompts/system.md`; the repo template is `prompts/system.md.example`; detailed procedures live in `SKILLS.md` and `skills/*/SKILL.md`.
 
 ---
 
@@ -23,7 +23,7 @@ This doc captures the original design rationale plus selected architecture notes
 - Minimal tool surface, maximum capability — borrow `pi-coding-agent`'s "four tools is enough" philosophy.
 - Clean updates: pulling new code never risks accumulated data.
 - Clean configuration: everything tunable lives in one place, edited directly.
-- **Memory through filesystem convention, not through code.** The system prompt is the operating manual; notes are markdown files JARVIS reads on demand.
+- **Memory through filesystem convention, not through code.** The system prompt points to concise procedural skills; notes are markdown files JARVIS reads on demand.
 
 ### Non-Goals (for v1)
 - Multi-user / shared access.
@@ -53,7 +53,7 @@ This doc captures the original design rationale plus selected architecture notes
 - **`~/jarvis/`** — source code, git-managed. Replaceable wholesale.
 - **`~/.jarvis/`** — config, data, logs. Never in source. Survives updates.
 
-This separation is load-bearing — see §7 for the rationale and §13 for the resulting update flow.
+This separation is load-bearing — see §8 for the rationale and §14 for the resulting update flow.
 
 **Networking:**
 - No inbound ports needed — Telegram bot polls Telegram's servers (outbound).
@@ -114,14 +114,14 @@ JARVIS is competent, calm, concise, and dry. Familiar with Jack, not formal. No 
 
 The system prompt lives in its own file at `~/.jarvis/prompts/system.md`. It is loaded verbatim at session start — **no dynamic injection, no content from notes pre-loaded into it**.
 
-The prompt's job is to be the *operating manual*: it describes who JARVIS is, what tools it has, what files exist in its memory directory, what each file is for, when to read each file, when to write each file, and what format each file uses. JARVIS reads memory files on demand using the `read` tool when prompt rules tell it to.
+The prompt's job is to be the small core operating manual: persona, tools, host/source/data anchors, safety rules, and the instruction to read repo-local skills on demand. Detailed procedures live in `SKILLS.md` and `skills/*/SKILL.md`, which JARVIS reads with the normal file tools only when relevant.
 
 This means:
 - The prompt is a single artifact you edit. What you see in the file is exactly what JARVIS gets.
-- Token budget at session start is fixed and predictable. Memory size doesn't bloat the prompt.
-- Behavior is fully specified by one file. No "the prompt says X but the injection logic does Y."
+- Token budget at session start is fixed and predictable. Memory and procedure docs do not bloat the prompt.
+- Behavior is specified by plain files read on demand. No "the prompt says X but the injection logic does Y."
 
-The canonical prompt lives in `~/.jarvis/prompts/system.md`; the repo template is `prompts/system.md.example`. JARVIS itself can edit the live prompt, though changes only take effect after a service restart.
+The canonical prompt lives in `~/.jarvis/prompts/system.md`; the repo template is `prompts/system.md.example`; repo skills live in `SKILLS.md` and `skills/*/SKILL.md`. JARVIS itself can edit the live prompt, though changes only take effect after a service restart.
 
 ---
 
@@ -155,16 +155,34 @@ Notes are markdown files in `~/.jarvis/data/notes/`. JARVIS reads them with `rea
 ### Tool safety posture
 - The M710q is the sandbox. JARVIS can do anything inside it.
 - **No confirmation flow.** JARVIS executes what it decides to execute. If it does something destructive, that's accepted risk.
-- **Audit log is the actual safeguard.** Every tool call hits `~/.jarvis/data/audit.log` with timestamp, redacted args, outcome. Append-only. See §13 for redaction/rotation.
+- **Audit log is the actual safeguard.** Every tool call hits `~/.jarvis/data/audit.log` with timestamp, redacted args, outcome. Append-only. See §14 for redaction/rotation.
 - The Minecraft world backups are independent of JARVIS.
 
 ---
 
-## 6. AGENTS.md Convention
+## 6. Skills Convention
 
-Borrowed from `pi-coding-agent`. A hand-written markdown file at `~/.jarvis/AGENTS.md` documents the environment. The system prompt is intentionally generic and does not name the host, user, or running services — JARVIS reads `AGENTS.md` on demand for that. This keeps the system prompt portable and makes per-host facts editable without a code/prompt change.
+A repo-local `SKILLS.md` index and `skills/<slug>/SKILL.md` files hold procedural instructions that used to make the system prompt bulky. The prompt tells JARVIS to read relevant skills on demand, not to load them all at session start.
 
-This is *not* memory — it's environment documentation, curated by Jack (or by JARVIS at Jack's instruction). Stable. Memory in the accumulating sense lives in `~/.jarvis/data/notes/` (see §11).
+Initial skills:
+
+- `background-workers`
+- `deploy`
+- `scheduler`
+- `memory`
+- `destinations`
+- `github-pr`
+- `host-ops`
+- `web-search`
+- `deep-research`
+
+Skills are source-controlled because they describe behavior and procedures, not host-local facts. Host-specific facts remain in `~/.jarvis/AGENTS.md`; accumulated memory remains in `~/.jarvis/data/notes/`. If a skill conflicts with `AGENTS.md` for host facts, `AGENTS.md` wins.
+
+## 7. AGENTS.md Convention
+
+Borrowed from `pi-coding-agent`. A hand-written markdown file at `~/.jarvis/AGENTS.md` documents the environment. The system prompt and skills are intentionally generic and do not name the host, user, or running services — JARVIS reads `AGENTS.md` on demand for that. This keeps the system prompt portable and makes per-host facts editable without a code/prompt change.
+
+This is *not* memory — it's environment documentation, curated by Jack (or by JARVIS at Jack's instruction). Stable. Memory in the accumulating sense lives in `~/.jarvis/data/notes/` (see §12).
 
 A *template* `AGENTS.md.example` lives in the repo with placeholders. On first install, the setup script copies it to `~/.jarvis/AGENTS.md`; from then on, the live copy is edited freely and updates never overwrite it.
 
@@ -197,13 +215,13 @@ Sketch contents (see `AGENTS.md.example` for the full template):
 
 ---
 
-## 7. Source / Data Separation
+## 8. Source / Data Separation
 
 The single most important structural decision in this design. Source code and data have totally different lifecycles, and the layout reflects that.
 
 ### Source: `~/jarvis/`
 - Git-managed.
-- Contains: TypeScript source, package.json, tsconfig, build scripts, templates (`AGENTS.md.example`, `config.yaml.example`, `prompts/system.md.example`), README.
+- Contains: TypeScript source, package.json, tsconfig, build scripts, templates (`AGENTS.md.example`, `config.yaml.example`, `prompts/system.md.example`), skills, README.
 - Replaceable wholesale: deleting and re-cloning loses nothing.
 - Updated via `scripts/safe-deploy.sh` on installed hosts, or `pnpm install && pnpm run build` for local development.
 
@@ -250,7 +268,7 @@ A `~/.jarvis/data/.schema-version` file is reserved for v2 if/when explicit migr
 
 ---
 
-## 8. Configuration
+## 9. Configuration
 
 Two files, two purposes:
 
@@ -299,7 +317,7 @@ export const config = Object.freeze(ConfigSchema.parse(raw));
 
 ---
 
-## 9. Filesystem Layout (full)
+## 10. Filesystem Layout (full)
 
 ### Source tree (`~/jarvis/`, git-managed)
 
@@ -323,8 +341,10 @@ export const config = Object.freeze(ConfigSchema.parse(raw));
 │   ├── run-background-worker.sh        # worker bootstrap wrapper
 │   └── backup-jarvis-data.sh           # data backup helper
 ├── AGENTS.md.example                   # host facts template
+├── SKILLS.md                           # skill index / convention
+├── skills/                             # procedural skills read on demand
 ├── config.yaml.example                 # non-secret config template
-├── prompts/system.md.example           # system prompt template
+├── prompts/system.md.example           # concise system prompt template
 ├── .env.example                        # secrets template
 ├── package.json
 ├── tsconfig.json
@@ -353,7 +373,7 @@ export const config = Object.freeze(ConfigSchema.parse(raw));
 
 ---
 
-## 10. Session Model (Model C — Time-Windowed)
+## 11. Session Model (Model C — Time-Windowed)
 
 ### Lifecycle
 
@@ -407,7 +427,7 @@ When a session rotates and `session.summarize_on_rotation` is true, run one LLM 
 
 ---
 
-## 11. Memory Architecture
+## 12. Memory Architecture
 
 Memory in JARVIS is *filesystem convention + prompt rules + on-demand retrieval*. There is no dynamic injection, no memory subsystem in code beyond the summarizer.
 
@@ -454,14 +474,14 @@ Searchable history of past sessions. "What did we decide about X two weeks ago?"
 
 ---
 
-## 12. Telegram Transport
+## 13. Telegram Transport
 
 - **Library:** `grammy`.
 - **Auth:** Hard allowlist of Telegram user IDs from `TELEGRAM_ALLOWED_USER_IDS` in `.env`. Messages from non-allowlisted users are silently dropped + logged.
 - **Typing indicator:** while the agent is processing, fire `chat_action: typing` every 4 seconds (Telegram expires the indicator after ~5s, so we re-fire on a timer). Stops the moment the run resolves.
 - **Token streaming for the final response:** subscribe to pi-agent-core events. For each assistant message, examine its content blocks: if any `toolCall` block appears, the message is part of internal reasoning and is **not** shown to the user. Only assistant messages that are pure text (no tool calls) are streamed to Telegram via a placeholder + debounced edits (~1.5s minimum between edits to stay under Telegram's edit rate limit). Net effect: the user sees typing → final answer streaming in. Tool calls and "let me check…" filler messages are invisible.
 - **Markdown:** Default `parse_mode: HTML`. Responses run through a small markdown→HTML converter (`src/lib/format.ts`) that handles fenced code blocks, inline `code`, `**bold**`, and `*italic*`; everything else is HTML-escaped for safety. MarkdownV2 was rejected as a footgun (one unescaped `.` blows up the whole send). Setting `parse_mode: none` in config falls back to raw text without conversion.
-- **Per-chat serialization:** see §10.
+- **Per-chat serialization:** see §11.
 - **Image input:** Telegram photos and image documents are downloaded, capped at 4 images and 10 MB each, and passed to the model alongside the message text/caption.
 - **Progress commands:** `/thinking` and `/verbose` toggle coarse/verbose progress messages for future turns.
 - **Background commands:** `/bg`, `/tasks`, `/task`, `/answer`, and `/cancelbg` manage detached worker tasks.
@@ -469,7 +489,7 @@ Searchable history of past sessions. "What did we decide about X two weeks ago?"
 
 ---
 
-## 13. Deployment & Updates
+## 14. Deployment & Updates
 
 ### Initial install (one-time)
 
@@ -541,9 +561,9 @@ Don't `rm -rf ~/.jarvis/` casually.
 
 ---
 
-## 14. Open Questions
+## 15. Open Questions
 
-Current open items are intentionally short; historical decisions remain in §16.
+Current open items are intentionally short; historical decisions remain in §17.
 
 1. **Rate limit / cost ceiling.** ChatGPT Plus has rate limits, not hard cost caps. A turn-counter or token-counter alert may be useful.
 2. **Memory read accuracy.** The risk of retrieval-based memory is JARVIS not reading when it should. Tune prompt triggers based on real misses.
@@ -552,7 +572,7 @@ Current open items are intentionally short; historical decisions remain in §16.
 
 ---
 
-## 15. Historical Build Plan
+## 16. Historical Build Plan
 
 The original phase plan has served its purpose and is no longer the source of operational truth. Current setup, development, deployment, scheduler, and background-worker behavior are documented in `README.md` and enforced by the scripts/source.
 
@@ -562,7 +582,7 @@ Codex OAuth was validated for server use: credentials can live under `~/.jarvis/
 
 ---
 
-## 16. Decisions Log
+## 17. Decisions Log
 
 - **2026-05-06** — Chose `pi-agent-core` over extending `pi-coding-agent`. The latter's CLI/TUI/per-cwd-session model doesn't fit Telegram.
 - **2026-05-06** — TypeScript over Python. `pi-mono` is TS-only.
@@ -595,4 +615,4 @@ The canonical live prompt is `~/.jarvis/prompts/system.md`; the repo template is
 
 ## Appendix B — Note seed content
 
-Initial note examples are historical. The live memory tree is under `~/.jarvis/data/notes/`, and the expected file purposes/formats are documented in the current system prompt template.
+Initial note examples are historical. The live memory tree is under `~/.jarvis/data/notes/`, and the expected file purposes/formats are documented in `skills/memory/SKILL.md` plus referenced by the current system prompt template.

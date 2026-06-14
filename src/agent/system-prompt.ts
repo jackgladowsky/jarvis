@@ -2,9 +2,9 @@
 // process startup. There is no dynamic injection — what's in the file is
 // exactly what the agent gets as its system message every turn.
 //
-// See DESIGN.md §4 / §11 for the rationale: a static prompt makes the
-// session-start token budget predictable and keeps behavior fully specified
-// by one editable file.
+// See DESIGN.md §4 / §12 for the rationale: a static prompt makes the
+// session-start token budget predictable. Detailed procedures live in
+// repo-local skills that the prompt tells JARVIS to read on demand.
 //
 // JARVIS itself can edit this file via its tools, but changes only take
 // effect after a service restart (the export below is read once at boot).
