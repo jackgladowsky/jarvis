@@ -4,6 +4,7 @@ import cron, { type ScheduledTask } from "node-cron";
 import { z } from "zod";
 import { runScheduledPrompt } from "./agent/runtime.js";
 import { config, env } from "./config.js";
+import { builtInScheduledTasks } from "./scheduled-defaults.js";
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "./lib/format.js";
 import { isOneTimeTask, shouldNotify, taskSignature, type OneTimeTask, type RecurringTask, type SchedulerJob } from "./scheduler-logic.js";
 import { log } from "./lib/logger.js";
@@ -137,6 +138,7 @@ async function removeOneTimeTask(id: string): Promise<void> {
 
 async function loadTasks(): Promise<SchedulerJob[]> {
   const byId = new Map<string, SchedulerJob>();
+  for (const task of builtInScheduledTasks) byId.set(task.id, task);
   for (const task of config.scheduler.tasks) byId.set(task.id, task);
   for (const task of await loadDynamicTasks()) byId.set(task.id, task);
   return [...byId.values()];

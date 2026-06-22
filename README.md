@@ -212,7 +212,9 @@ Detailed destination and rideshare policy lives in `skills/destinations/SKILL.md
 
 ## Scheduled jobs
 
-Detailed scheduler procedure lives in `skills/scheduler/SKILL.md`. The scheduler supports static tasks in `~/.jarvis/config.yaml` and dynamic recurring/one-time tasks in `~/.jarvis/data/jobs/tasks.json`, with per-task sessions, notes, and logs under `~/.jarvis/data/jobs/`.
+Detailed scheduler procedure lives in `skills/scheduler/SKILL.md`. The scheduler supports built-in recurring tasks, static tasks in `~/.jarvis/config.yaml`, and dynamic recurring/one-time tasks in `~/.jarvis/data/jobs/tasks.json`, with per-task sessions, notes, and logs under `~/.jarvis/data/jobs/`.
+
+Built-in task: `nightly-memory-review` runs at `30 2 * * *` in the configured scheduler timezone. It reviews the previous America/New_York day's session summaries/logs and conservatively updates persistent memory notes. It uses `notify: on_issue` and emits an explicit `NOTIFY: yes|no` marker so normal no-op runs stay quiet. Config or dynamic tasks with the same id override the built-in definition.
 
 ## Background workers
 

@@ -36,6 +36,10 @@ export function shouldNotify(task: SchedulerJob, success: boolean, output: strin
   if (task.notify === "never") return false;
   if (task.notify === "always") return true;
   if (!success) return true;
+
+  const explicit = output.match(/^\s*NOTIFY:\s*(yes|no)\s*$/im);
+  if (explicit) return explicit[1].toLowerCase() === "yes";
+
   const lower = output.toLowerCase();
   return ["warning", "error", "critical", "down", "fail", "issue", "alert"].some((word) =>
     lower.includes(word),

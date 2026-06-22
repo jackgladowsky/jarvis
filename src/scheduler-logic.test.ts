@@ -41,4 +41,6 @@ test("shouldNotify honors policy and issue keywords deterministically", () => {
   assert.equal(shouldNotify({ ...recurring, notify: "on_issue" }, false, "all clear"), true);
   assert.equal(shouldNotify({ ...recurring, notify: "on_issue" }, true, "warning: disk is down"), true);
   assert.equal(shouldNotify({ ...recurring, notify: "on_issue" }, true, "all clear"), false);
+  assert.equal(shouldNotify({ ...recurring, notify: "on_issue" }, true, "NOTIFY: no\nNo issues."), false);
+  assert.equal(shouldNotify({ ...recurring, notify: "on_issue" }, true, "NOTIFY: yes\nAll clear."), true);
 });
