@@ -1,13 +1,90 @@
 # JARVIS
 
-Self-hosted Telegram AI assistant for a trusted Linux box. JARVIS combines a chat interface with persistent local state, filesystem memory, scheduled jobs, background workers, shell access, and a deliberately small tool surface.
+JARVIS is a self-hosted Telegram AI assistant for a trusted Linux machine. It gives an allowlisted Telegram user a high-agency assistant with local memory, scheduled jobs, background workers, web search, and real shell/filesystem access on the host.
 
-The load-bearing design choice is separation between disposable source and host-local state:
+If you want a private assistant you can run on your own box, start here. If you want a multi-user SaaS bot or something safe to expose to strangers, this is not that — JARVIS is intentionally powerful and should only run for users you trust.
+
+## Install in one command
+
+Prereqs on the target Linux host:
+
+- `bash`, `git`, and `python3`
+- Node.js 20+; pnpm is installed through Corepack if needed
+- Telegram bot token from [@BotFather](https://t.me/BotFather)
+- Your numeric Telegram user ID for the allowlist
+- Exa API key for web search
+- A model provider credential: Codex OAuth creds or `ANTHROPIC_API_KEY`
+
+Run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash
+```
+
+The installer is interactive and idempotent. It:
+
+1. Clones or reuses `~/jarvis`.
+2. Creates host-local state under `~/.jarvis`.
+3. Prompts for Telegram, Exa, model, and timezone settings via `/dev/tty` so `curl | bash` is still interactive.
+4. Installs dependencies and builds the TypeScript project.
+5. Optionally installs/enables a `jarvis.service` systemd unit.
+
+It does **not** start the service automatically. After it finishes:
+
+```bash
+# sanity-check generated config/secrets
+$EDITOR ~/.jarvis/.env
+$EDITOR ~/.jarvis/config.yaml
+
+# start if you accepted systemd install
+sudo systemctl start jarvis
+sudo systemctl status jarvis
+journalctl -fu jarvis
+```
+
+You should then be able to message your Telegram bot from an allowlisted account.
+
+### Installer variants
+
+```bash
+# Preview actions without writing files
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- --dry-run
+
+# Install without touching systemd
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- --skip-systemd
+
+# Use a fork, branch, custom source dir, or custom data dir
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- \
+  --repo-url https://github.com/<owner>/jarvis.git \
+  --branch main \
+  --install-dir ~/jarvis \
+  --data-dir ~/.jarvis
+```
+
+### Manual install
+
+If you do not want to pipe a script from the network:
+
+```bash
+git clone https://github.com/jackgladowsky/jarvis.git ~/jarvis
+cd ~/jarvis
+scripts/setup-host.sh
+$EDITOR ~/.jarvis/.env
+$EDITOR ~/.jarvis/config.yaml
+scripts/install-systemd.sh     # optional
+sudo systemctl start jarvis    # if systemd was installed
+```
+
+## What gets installed
+
+JARVIS keeps source and private runtime data separate:
 
 ```text
 ~/jarvis/   source code, git-managed, safe to replace
 ~/.jarvis/  host-local config, secrets, prompts, memory, sessions, logs, jobs
 ```
+
+The installer never commits or uploads `~/.jarvis`. Existing host-local files are preserved unless you explicitly edit/overwrite them in the wizard.
 
 ## Features
 
@@ -21,90 +98,6 @@ The load-bearing design choice is separation between disposable source and host-
 - Safe deploy helper that builds before restart and preserves host-local data.
 - Append-only redacted audit log for tool calls.
 - Repo-local procedural skills in `SKILLS.md` and `skills/*/SKILL.md`.
-
-## Requirements
-
-- Linux host with outbound network access.
-- Node.js 20+ and pnpm 10+.
-- Telegram bot token from [@BotFather](https://t.me/BotFather).
-- Numeric Telegram user ID(s) for the allowlist.
-- Exa API key for the `web_search` tool.
-- One model provider:
-  - Codex OAuth credentials for `agent.provider: codex`, or
-  - `ANTHROPIC_API_KEY` for `agent.provider: anthropic`.
-
-## Quick start: one-command install
-
-On a Linux host with `bash`, `git`, `python3`, and Node.js 20+ available:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash
-```
-
-The installer is interactive and idempotent. It clones or reuses `~/jarvis`, bootstraps host-local state under `~/.jarvis`, prompts for Telegram/Exa/model settings through `/dev/tty` so `curl | bash` still works, installs dependencies, builds the project, and optionally installs/enables the systemd unit. It does **not** start the service automatically.
-
-Useful variants:
-
-```bash
-# Preview actions without writing files
-curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- --dry-run
-
-# Install without touching systemd
-curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- --skip-systemd
-
-# Custom fork/path/data dir
-curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- \
-  --repo-url https://github.com/<owner>/jarvis.git \
-  --install-dir ~/jarvis \
-  --data-dir ~/.jarvis
-```
-
-After install:
-
-```bash
-# Review generated host-local config/secrets
-$EDITOR ~/.jarvis/.env
-$EDITOR ~/.jarvis/config.yaml
-
-# Foreground run
-cd ~/jarvis
-node --env-file=$HOME/.jarvis/.env dist/index.js
-
-# If you accepted systemd install
-sudo systemctl start jarvis
-sudo systemctl status jarvis
-journalctl -fu jarvis
-```
-
-The systemd installer writes `/etc/systemd/system/jarvis.service` and `/etc/logrotate.d/jarvis` using the current user, repo path, Node binary, and data directory. It enables the service at boot when requested, but does not start it for you.
-
-## Manual install
-
-If you do not want to pipe a script from the network:
-
-```bash
-git clone https://github.com/jackgladowsky/jarvis.git ~/jarvis
-cd ~/jarvis
-scripts/setup-host.sh
-```
-
-Then edit the host-local files:
-
-```bash
-$EDITOR ~/.jarvis/.env                  # secrets
-$EDITOR ~/.jarvis/config.yaml           # non-secret tunables
-$EDITOR ~/.jarvis/AGENTS.md             # authoritative host notes
-$EDITOR ~/.jarvis/prompts/system.md     # live system prompt
-chmod 600 ~/.jarvis/.env
-```
-
-Install systemd manually if desired:
-
-```bash
-cd ~/jarvis
-scripts/install-systemd.sh
-sudo systemctl start jarvis
-```
 
 ## Configuration
 
@@ -185,7 +178,7 @@ stt:
 
 ## Autonomous goals
 
-`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or Jack pauses/stops it. Child tasks are still forbidden from push/merge/deploy/restart/destructive operations without explicit approval, and all goal transitions append JSONL events for auditability.
+`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or the owner pauses/stops it. Child tasks are still forbidden from push/merge/deploy/restart/destructive operations without explicit approval, and all goal transitions append JSONL events for auditability.
 
 ## Development
 
