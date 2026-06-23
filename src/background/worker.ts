@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { notifyMainOrFallback } from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
+import { advanceGoalAfterBackgroundTask } from "../goals/manager.js";
 import { runBackgroundPrompt } from "../agent/runtime.js";
 import {
   appendBackgroundMail,
@@ -171,6 +172,7 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     latest.finished_at = new Date().toISOString();
     latest.status = verdict === "ready" ? "ready_for_pr" : "needs_fix";
     await writeBackgroundTask(latest);
+    await advanceGoalAfterBackgroundTask(latest.id);
     const prefix = verdict === "ready" ? "ready for PR" : "needs fixes";
     await notify(latest.chat_id, `${latest.id} ${prefix}`, output.slice(0, 2500));
     return;
@@ -193,6 +195,7 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
   latest.finished_at = new Date().toISOString();
   latest.status = "done";
   await writeBackgroundTask(latest);
+  await advanceGoalAfterBackgroundTask(latest.id);
   await notify(latest.chat_id, `${latest.id} done`, output.slice(0, 2500));
 }
 
@@ -217,6 +220,9 @@ async function main(): Promise<void> {
     latest.error = err instanceof Error ? err.message : String(err);
     latest.finished_at = new Date().toISOString();
     await writeBackgroundTask(latest);
+    await advanceGoalAfterBackgroundTask(latest.id).catch((goalErr) =>
+      log.warn("goal advancement after background failure failed", goalErr),
+    );
     await appendBackgroundMail(taskId, { from: "worker", type: "error", body: latest.error });
     await notify(latest.chat_id, `${latest.id} failed`, `Background task ${latest.id} failed: ${latest.error}`).catch(
       (notifyErr) => log.warn("background failure notification failed", notifyErr),

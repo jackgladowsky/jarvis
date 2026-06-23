@@ -37,6 +37,8 @@ export interface BackgroundTask {
   branch: string;
   chat_id: number;
   pipeline: BackgroundStage[];
+  /** Optional parent autonomous goal id; used only for traceability/advancement. */
+  goal_id?: string;
   current_role?: BackgroundRole;
   pid?: number;
   created_at: string;

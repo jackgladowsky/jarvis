@@ -11,6 +11,11 @@ import { log } from "../lib/logger.js";
 import type { BackgroundMailEntry, BackgroundRole, BackgroundStage, BackgroundTask } from "./types.js";
 import { choosePipeline, friendlyIdFromUuid, nextQueuedRole } from "./logic.js";
 
+export interface StartBackgroundTaskOptions {
+  goalId?: string;
+  pipeline?: BackgroundStage[];
+}
+
 export { choosePipeline, friendlyIdFromUuid, nextQueuedRole, renderTask, renderTaskList } from "./logic.js";
 
 const execFileAsync = promisify(execFile);
@@ -132,11 +137,12 @@ export async function startBackgroundTask(
   prompt: string,
   chatId: number,
   repo = DEFAULT_REPO,
+  options: StartBackgroundTaskOptions = {},
 ): Promise<BackgroundTask> {
   const { id, uuid } = await createTaskIdentity();
   const branch = `worker/${id}`;
   const worktree = join(paths.backgroundWorktrees, id);
-  const pipeline = choosePipeline(prompt);
+  const pipeline = options.pipeline ?? choosePipeline(prompt);
   const currentRole = nextQueuedRole({ pipeline } as BackgroundTask);
   const task: BackgroundTask = {
     id,
@@ -149,6 +155,7 @@ export async function startBackgroundTask(
     branch,
     chat_id: chatId,
     pipeline,
+    goal_id: options.goalId,
     current_role: currentRole,
     created_at: now(),
     updated_at: now(),

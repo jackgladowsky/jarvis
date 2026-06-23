@@ -52,6 +52,12 @@ export const paths = {
   backgroundMail: join(DATA_BASE, "data", "background", "mail"),
   backgroundWorktrees: join(homedir(), "jarvis-worktrees"),
 
+  // Autonomous goals — bounded controllers that launch/review background tasks.
+  goals: join(DATA_BASE, "data", "goals"),
+  goalTasks: join(DATA_BASE, "data", "goals", "tasks"),
+  goalEvents: join(DATA_BASE, "data", "goals", "events"),
+  goalNotes: join(DATA_BASE, "data", "goals", "notes"),
+
   // Safe deploy state. `scripts/safe-deploy.sh` writes a marker before the
   // delayed restart; startup consumes it and sends a back-online notice.
   deployPending: join(DATA_BASE, "data", "deploy", "pending.json"),

@@ -130,6 +130,9 @@ Config is loaded once at startup; restart JARVIS to apply changes.
 /answer <id> <text>   answer a worker question and resume it
 /fixbg <id> [role]    resume a needs-fix task on the same worktree
 /cancelbg <id>        cancel a background worker task
+/goal start [opts] <objective>  start a bounded autonomous improvement loop
+/goal list|status|log <id>      inspect goal state/events
+/goal pause|resume|stop|next <id> control a goal loop
 ```
 
 ## Local whisper.cpp speech-to-text
@@ -162,6 +165,10 @@ stt:
     timeout_seconds: 120
 ```
 
+## Autonomous goals
+
+`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or Jack pauses/stops it. Child tasks are still forbidden from push/merge/deploy/restart/destructive operations without explicit approval, and all goal transitions append JSONL events for auditability.
+
 ## Development
 
 ```bash
@@ -193,7 +200,7 @@ Repo updates and setup scripts should never overwrite existing host-local files 
 ## Roadmap notes
 
 - See `docs/open-source-hardening.md` for the remaining productionization backlog.
-- See `docs/goal-command.md` for a bounded future `/goal` command/autonomous improvement loop design.
+- See `docs/goal-command.md` for the bounded `/goal` command/autonomous improvement loop design.
 
 ## License
 
