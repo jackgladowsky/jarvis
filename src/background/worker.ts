@@ -1,6 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { env } from "../config.js";
+import { notifyMainOrFallback } from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
 import { runBackgroundPrompt } from "../agent/runtime.js";
@@ -14,16 +14,15 @@ import {
 } from "./manager.js";
 import type { BackgroundRole, BackgroundStage, BackgroundTask, BackgroundTaskStatus } from "./types.js";
 
-async function notify(chatId: number, text: string): Promise<void> {
-  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+async function notify(chatId: number, title: string, body: string): Promise<void> {
+  await notifyMainOrFallback({
+    source: "background",
+    chat_id: chatId,
+    title,
+    body,
+    prompt: body,
+    fallback_text: `Background task ${title}.\n\n${body}`,
   });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Telegram sendMessage failed: ${response.status} ${body}`);
-  }
 }
 
 function statusForRole(role: BackgroundRole): BackgroundTaskStatus {
@@ -155,7 +154,7 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     latest.status = verdict === "ready" ? "ready_for_pr" : "needs_fix";
     await writeBackgroundTask(latest);
     const prefix = verdict === "ready" ? "ready for PR" : "needs fixes";
-    await notify(latest.chat_id, `Background task ${latest.id} ${prefix}.\n\n${output.slice(0, 2500)}`);
+    await notify(latest.chat_id, `${latest.id} ${prefix}`, output.slice(0, 2500));
     return;
   }
 
@@ -164,7 +163,7 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     latest.status = statusForRole(nextRole);
     latest.pid = spawnBackgroundWorker(latest.id, nextRole);
     await writeBackgroundTask(latest);
-    await notify(latest.chat_id, `Background task ${latest.id}: ${role} finished; starting ${nextRole}.`);
+    await notify(latest.chat_id, `${latest.id}: ${role} finished; starting ${nextRole}`, `Background task ${latest.id}: ${role} finished; starting ${nextRole}.`);
     return;
   }
 
@@ -172,7 +171,7 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
   latest.finished_at = new Date().toISOString();
   latest.status = "done";
   await writeBackgroundTask(latest);
-  await notify(latest.chat_id, `Background task ${latest.id} done.\n\n${output.slice(0, 2500)}`);
+  await notify(latest.chat_id, `${latest.id} done`, output.slice(0, 2500));
 }
 
 async function main(): Promise<void> {
@@ -197,7 +196,7 @@ async function main(): Promise<void> {
     latest.finished_at = new Date().toISOString();
     await writeBackgroundTask(latest);
     await appendBackgroundMail(taskId, { from: "worker", type: "error", body: latest.error });
-    await notify(latest.chat_id, `Background task ${latest.id} failed: ${latest.error}`).catch((notifyErr) =>
+    await notify(latest.chat_id, `${latest.id} failed`, `Background task ${latest.id} failed: ${latest.error}`).catch((notifyErr) =>
       log.warn("background failure notification failed", notifyErr),
     );
     throw err;

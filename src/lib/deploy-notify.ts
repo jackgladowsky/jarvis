@@ -1,6 +1,7 @@
 import { readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { config, env } from "../config.js";
+import { config } from "../config.js";
+import { enqueueInternalNotification } from "./internal-notifications.js";
 import { log } from "./logger.js";
 import { paths } from "../paths.js";
 
@@ -13,19 +14,6 @@ type PendingDeploy = {
 
 function short(rev: string | undefined): string {
   return rev ? rev.slice(0, 7) : "unknown";
-}
-
-async function sendTelegram(text: string): Promise<void> {
-  const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: config.scheduler.telegram_chat_id, text }),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Telegram sendMessage failed: ${response.status} ${body}`);
-  }
 }
 
 export async function notifyPendingDeployComplete(): Promise<void> {
@@ -53,7 +41,14 @@ export async function notifyPendingDeployComplete(): Promise<void> {
   ].filter(Boolean).join("\n");
 
   try {
-    await sendTelegram(message);
+    await enqueueInternalNotification({
+      source: "deploy",
+      chat_id: config.scheduler.telegram_chat_id,
+      title: "JARVIS back online",
+      body: message,
+      prompt: message,
+      fallback_text: message,
+    });
     await rename(marker, join(dirname(marker), `completed-${Date.now()}.json`));
   } catch (err) {
     log.warn("deploy completion notification failed", err);

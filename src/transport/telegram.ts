@@ -38,6 +38,15 @@ import {
   type TelegramAudioCandidate,
 } from "../lib/audio-transcription.js";
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "../lib/format.js";
+import {
+  claimInternalNotification,
+  finishInternalNotification,
+  listPendingInternalNotifications,
+  renderInternalNotificationPrompt,
+  sendTelegramFallback,
+  writeInternalNotificationHeartbeat,
+  type InternalNotification,
+} from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
 import { commandName, commandRest, nextStatusMode, parseModeCommand } from "./commands.js";
@@ -53,6 +62,8 @@ const TYPING_REFIRE_MS = 4000;
 // margin and keeps the UI from stuttering.
 const EDIT_DEBOUNCE_MS = 1500;
 const STATUS_EDIT_DEBOUNCE_MS = 2500;
+const INTERNAL_NOTIFICATION_POLL_MS = 3000;
+const INTERNAL_NOTIFICATION_HEARTBEAT_MS = 5000;
 const MAX_TELEGRAM_IMAGES = 4;
 const MAX_TELEGRAM_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -310,6 +321,83 @@ async function handleBackgroundCommand(ctx: Context, text: string): Promise<bool
   }
 
   return false;
+}
+
+async function sendAgentPromptToTelegram(bot: Bot, chatId: number, prompt: string, handle: Handler): Promise<void> {
+  let sentText = false;
+  await handle(chatId, prompt, {
+    onAssistantEnd: async (text: string) => {
+      for (const part of chunks(text)) {
+        const formatted = format(part);
+        await bot.api.sendMessage(chatId, formatted.text, {
+          parse_mode: formatted.parse_mode,
+          link_preview_options: { is_disabled: true },
+        });
+        sentText = true;
+      }
+    },
+    onError: async (text: string) => {
+      await bot.api.sendMessage(chatId, `Error: ${text}`);
+      sentText = true;
+    },
+  });
+  if (!sentText) throw new Error("agent produced no visible response for internal notification");
+}
+
+function startInternalNotificationPump(bot: Bot, handle: Handler): () => void {
+  let active = true;
+  let processing = false;
+
+  const heartbeat = () => {
+    void writeInternalNotificationHeartbeat().catch((err) =>
+      log.warn("internal notification heartbeat write failed", err),
+    );
+  };
+
+  const processOne = async (notification: InternalNotification): Promise<void> => {
+    const claimed = await claimInternalNotification(notification);
+    if (!claimed) return;
+    try {
+      await withLock(claimed.chat_id, () => sendAgentPromptToTelegram(bot, claimed.chat_id, renderInternalNotificationPrompt(claimed), handle));
+      await finishInternalNotification(claimed, "processed");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await finishInternalNotification(claimed, "failed", message);
+      await sendTelegramFallback(claimed.chat_id, claimed.fallback_text ?? `[${claimed.source}] ${claimed.title}\n\n${claimed.body}`).catch((fallbackErr) =>
+        log.warn("internal notification emergency fallback failed", {
+          id: claimed.id,
+          err: fallbackErr instanceof Error ? fallbackErr.message : fallbackErr,
+        }),
+      );
+    }
+  };
+
+  const poll = () => {
+    if (processing) return;
+    processing = true;
+    heartbeat();
+    void listPendingInternalNotifications()
+      .then(async (notifications) => {
+        for (const notification of notifications) {
+          if (!active) break;
+          await processOne(notification);
+        }
+      })
+      .catch((err) => log.warn("internal notification poll failed", err))
+      .finally(() => {
+        processing = false;
+      });
+  };
+
+  heartbeat();
+  const heartbeatTimer = setInterval(heartbeat, INTERNAL_NOTIFICATION_HEARTBEAT_MS);
+  const pollTimer = setInterval(poll, INTERNAL_NOTIFICATION_POLL_MS);
+  poll();
+  return () => {
+    active = false;
+    clearInterval(heartbeatTimer);
+    clearInterval(pollTimer);
+  };
 }
 
 async function processMessage(ctx: Context, handle: Handler): Promise<void> {
@@ -682,14 +770,20 @@ export async function runTelegram(handle: Handler): Promise<void> {
     await withLock(chatId, () => processMessage(ctx, handle));
   });
 
+  const stopInternalNotificationPump = startInternalNotificationPump(bot, handle);
   const shutdown = (sig: string) => {
     log.info("telegram bot stopping", { sig });
+    stopInternalNotificationPump();
     void bot.stop();
   };
   process.once("SIGINT", () => shutdown("SIGINT"));
   process.once("SIGTERM", () => shutdown("SIGTERM"));
 
   log.info("telegram bot starting (long-poll)");
-  await bot.start();
+  try {
+    await bot.start();
+  } finally {
+    stopInternalNotificationPump();
+  }
   log.info("telegram bot stopped");
 }

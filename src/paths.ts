@@ -56,6 +56,13 @@ export const paths = {
   // delayed restart; startup consumes it and sends a back-online notice.
   deployPending: join(DATA_BASE, "data", "deploy", "pending.json"),
 
+  // Internal notification queue. Background workers, scheduler, and deploy
+  // code write events here; the main Telegram process turns them into normal
+  // main-session prompts when it is alive.
+  internalNotifications: join(DATA_BASE, "data", "notifications"),
+  internalNotificationsArchive: join(DATA_BASE, "data", "notifications", "archive"),
+  internalNotificationsHeartbeat: join(DATA_BASE, "data", "notifications", "heartbeat.json"),
+
   // Append-only audit log of every tool call. See DESIGN.md §13.
   audit: join(DATA_BASE, "data", "audit.log"),
 
