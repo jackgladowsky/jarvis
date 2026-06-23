@@ -22,6 +22,8 @@ Dynamic tasks created from chat live in:
 
 The scheduler hot-reloads dynamic tasks roughly every 30 seconds.
 
+Built-in recurring tasks may also be registered by source code. Config and dynamic tasks with the same `id` override built-ins. Current built-in: `nightly-memory-review` at `30 2 * * *`, using `notify: on_issue`.
+
 ## Dynamic task format
 
 ```json

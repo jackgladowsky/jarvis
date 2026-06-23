@@ -212,7 +212,13 @@ Detailed destination and rideshare policy lives in `skills/destinations/SKILL.md
 
 ## Scheduled jobs
 
-Detailed scheduler procedure lives in `skills/scheduler/SKILL.md`. The scheduler supports static tasks in `~/.jarvis/config.yaml` and dynamic recurring/one-time tasks in `~/.jarvis/data/jobs/tasks.json`, with per-task sessions, notes, and logs under `~/.jarvis/data/jobs/`.
+Detailed scheduler procedure lives in `skills/scheduler/SKILL.md`. The scheduler supports built-in recurring tasks, static tasks in `~/.jarvis/config.yaml`, and dynamic recurring/one-time tasks in `~/.jarvis/data/jobs/tasks.json`, with per-task sessions, notes, and logs under `~/.jarvis/data/jobs/`.
+
+Built-in task: `nightly-memory-review` runs at `30 2 * * *` in the configured scheduler timezone. It reviews the previous America/New_York day's session summaries/logs and conservatively updates persistent memory notes. It uses `notify: on_issue` and emits an explicit `NOTIFY: yes|no` marker so normal no-op runs stay quiet. Config or dynamic tasks with the same id override the built-in definition.
+
+## Internal notifications
+
+Background workers, scheduler jobs, and deploy notices enqueue internal notification JSON under `~/.jarvis/data/notifications/`. The main Telegram process polls that queue and turns each notification into a normal main-session prompt, so Jack receives JARVIS's response in the same conversation and transcript instead of a raw automated bot message. The pump writes `heartbeat.json`; if producers do not see a fresh heartbeat, they fall back to direct Telegram for emergency visibility.
 
 ## Background workers
 
@@ -253,6 +259,8 @@ By default, data lives under `~/.jarvis/`. Override with `JARVIS_DATA_DIR` for d
 │   ├── mail/
 │   ├── bootstrap.log
 │   └── worker-errors.log
+├── data/notifications/           internal notification queue + heartbeat
+│   └── archive/
 └── data/deploy/                  safe-deploy markers and restart log
 ```
 
@@ -284,7 +292,7 @@ git diff --check
 
 ## Deploy and update
 
-Detailed deploy procedure lives in `skills/deploy/SKILL.md`. For installed hosts, prefer `scripts/safe-deploy.sh`; it refuses dirty trees, fast-forwards, installs dependencies, builds, sends restart/back-online notices, and schedules a delayed service restart so the chat response can complete. Use raw `sudo systemctl restart jarvis` only for deliberate manual service/config operations.
+Detailed deploy procedure lives in `skills/deploy/SKILL.md`. For installed hosts, prefer `scripts/safe-deploy.sh`; it refuses dirty trees, fast-forwards, installs dependencies, builds, queues restart/back-online notices through internal notifications with Telegram fallback, and schedules a delayed service restart so the chat response can complete. Use raw `sudo systemctl restart jarvis` only for deliberate manual service/config operations.
 
 
 ## Operations

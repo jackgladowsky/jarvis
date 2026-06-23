@@ -6,7 +6,8 @@
 #   1. Refuse dirty working trees.
 #   2. Fast-forward to the requested ref (default: origin/main).
 #   3. Install deps and build. If this fails, do not restart.
-#   4. Write a pending deploy marker and notify Telegram.
+#   4. Write a pending deploy marker and queue an internal notification
+#      (Telegram fallback if the main notification pump is unavailable).
 #   5. Schedule a short delayed systemd restart in the background, then exit.
 #      On startup, JARVIS consumes the marker and sends a back-online notice.
 set -euo pipefail
@@ -75,22 +76,25 @@ cat > "$MARKER" <<EOF_MARKER
 }
 EOF_MARKER
 
-send_telegram() {
+notify_deploy_built() {
   local text="$1"
   if [[ ! -f "$DATA_BASE/.env" || ! -f "$DATA_BASE/config.yaml" ]]; then
     return 0
   fi
 
-  python3 - "$DATA_BASE/.env" "$DATA_BASE/config.yaml" "$text" <<'PY'
+  python3 - "$DATA_BASE" "$DATA_BASE/.env" "$DATA_BASE/config.yaml" "$text" <<'PY'
 import json
+import os
 import re
 import sys
+import time
+from datetime import datetime, timezone
 import urllib.parse
 import urllib.request
 
-_env_path, config_path, text = sys.argv[1:4]
+base, env_path, config_path, text = sys.argv[1:5]
 env = {}
-with open(_env_path, encoding="utf-8") as f:
+with open(env_path, encoding="utf-8") as f:
     for line in f:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -104,10 +108,42 @@ with open(config_path, encoding="utf-8") as f:
     for line in f:
         match = re.match(r"\s*telegram_chat_id:\s*(-?\d+)\s*$", line)
         if match:
-            chat_id = match.group(1)
+            chat_id = int(match.group(1))
             break
 
-if not token or not chat_id:
+if not chat_id:
+    sys.exit(0)
+
+notifications = os.path.join(base, "data", "notifications")
+os.makedirs(notifications, exist_ok=True)
+notification = {
+    "id": f"{int(time.time() * 1000)}-{os.getpid()}-deploy-built",
+    "source": "deploy",
+    "chat_id": chat_id,
+    "title": "JARVIS deploy built",
+    "body": text,
+    "prompt": text,
+    "fallback_text": text,
+    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "status": "pending",
+}
+notification_path = os.path.join(notifications, notification["id"] + ".json")
+with open(notification_path, "w", encoding="utf-8") as f:
+    json.dump(notification, f, indent=2)
+    f.write("\n")
+
+heartbeat_path = os.path.join(notifications, "heartbeat.json")
+alive = False
+try:
+    with open(heartbeat_path, encoding="utf-8") as f:
+        heartbeat = json.load(f)
+    updated_at = heartbeat.get("updated_at", "")
+    updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    alive = (datetime.now(timezone.utc) - updated).total_seconds() <= 30
+except Exception:
+    alive = False
+
+if alive or not token:
     sys.exit(0)
 
 data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
@@ -115,13 +151,21 @@ request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessa
 try:
     with urllib.request.urlopen(request, timeout=10) as response:
         response.read()
+    notification["status"] = "processed"
+    notification["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    archive = os.path.join(notifications, "archive")
+    os.makedirs(archive, exist_ok=True)
+    with open(notification_path, "w", encoding="utf-8") as f:
+        json.dump(notification, f, indent=2)
+        f.write("\n")
+    os.replace(notification_path, os.path.join(archive, "processed-" + os.path.basename(notification_path)))
 except Exception:
     # Notification failure should not block a deploy that already built.
     pass
 PY
 }
 
-send_telegram "JARVIS deploy built: $OLD_SHORT → $NEW_SHORT. Restarting in ${RESTART_DELAY_SECONDS}s; back-online notice follows."
+notify_deploy_built "JARVIS deploy built: $OLD_SHORT → $NEW_SHORT. Restarting in ${RESTART_DELAY_SECONDS}s; back-online notice follows."
 
 # Detach the restart so this script can return to the running agent before
 # systemd stops it. sudo must be non-interactive; otherwise the log will show it.

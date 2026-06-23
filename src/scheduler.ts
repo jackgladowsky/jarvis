@@ -3,8 +3,9 @@ import { join } from "node:path";
 import cron, { type ScheduledTask } from "node-cron";
 import { z } from "zod";
 import { runScheduledPrompt } from "./agent/runtime.js";
-import { config, env } from "./config.js";
-import { markdownToTelegramHtml, splitTelegramMarkdown } from "./lib/format.js";
+import { config } from "./config.js";
+import { builtInScheduledTasks } from "./scheduled-defaults.js";
+import { notifyMainOrFallback } from "./lib/internal-notifications.js";
 import { isOneTimeTask, shouldNotify, taskSignature, type OneTimeTask, type RecurringTask, type SchedulerJob } from "./scheduler-logic.js";
 import { log } from "./lib/logger.js";
 import { paths } from "./paths.js";
@@ -137,39 +138,10 @@ async function removeOneTimeTask(id: string): Promise<void> {
 
 async function loadTasks(): Promise<SchedulerJob[]> {
   const byId = new Map<string, SchedulerJob>();
+  for (const task of builtInScheduledTasks) byId.set(task.id, task);
   for (const task of config.scheduler.tasks) byId.set(task.id, task);
   for (const task of await loadDynamicTasks()) byId.set(task.id, task);
   return [...byId.values()];
-}
-
-function formatNotification(text: string): { text: string; parse_mode?: "HTML" | "MarkdownV2" } {
-  const mode = config.telegram.parse_mode;
-  if (mode === "HTML") return { text: markdownToTelegramHtml(text), parse_mode: "HTML" };
-  if (mode === "MarkdownV2") return { text, parse_mode: "MarkdownV2" };
-  return { text };
-}
-
-async function sendTelegram(chatId: number, text: string): Promise<void> {
-  for (const chunk of splitTelegramMarkdown(text)) {
-    const formatted = formatNotification(chunk);
-    const response = await fetch(
-      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: formatted.text,
-          parse_mode: formatted.parse_mode,
-          link_preview_options: { is_disabled: true },
-        }),
-      },
-    );
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Telegram sendMessage failed: ${response.status} ${body}`);
-    }
-  }
 }
 
 async function runTask(task: SchedulerJob): Promise<void> {
@@ -195,11 +167,18 @@ async function runTask(task: SchedulerJob): Promise<void> {
       : `[Scheduler] ${task.name} — FAILED`;
     const message = `${header}\n\n${output}\n\n(${durationSec}s)`;
     try {
-      await sendTelegram(config.scheduler.telegram_chat_id, message);
-      await schedulerLog(`[${task.id}] notification sent`);
+      await notifyMainOrFallback({
+        source: "scheduler",
+        chat_id: config.scheduler.telegram_chat_id,
+        title: task.name,
+        body: message,
+        prompt: message,
+        fallback_text: message,
+      });
+      await schedulerLog(`[${task.id}] notification queued`);
     } catch (err) {
       await schedulerLog(
-        `[${task.id}] notification failed: ${err instanceof Error ? err.message : String(err)}`,
+        `[${task.id}] notification queue failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
