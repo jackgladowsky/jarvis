@@ -33,17 +33,62 @@ The load-bearing design choice is separation between disposable source and host-
   - Codex OAuth credentials for `agent.provider: codex`, or
   - `ANTHROPIC_API_KEY` for `agent.provider: anthropic`.
 
-## Quick start
+## Quick start: one-command install
+
+On a Linux host with `bash`, `git`, `python3`, and Node.js 20+ available:
 
 ```bash
-git clone https://github.com/<owner>/jarvis.git ~/jarvis
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash
+```
+
+The installer is interactive and idempotent. It clones or reuses `~/jarvis`, bootstraps host-local state under `~/.jarvis`, prompts for Telegram/Exa/model settings through `/dev/tty` so `curl | bash` still works, installs dependencies, builds the project, and optionally installs/enables the systemd unit. It does **not** start the service automatically.
+
+Useful variants:
+
+```bash
+# Preview actions without writing files
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- --dry-run
+
+# Install without touching systemd
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- --skip-systemd
+
+# Custom fork/path/data dir
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash -s -- \
+  --repo-url https://github.com/<owner>/jarvis.git \
+  --install-dir ~/jarvis \
+  --data-dir ~/.jarvis
+```
+
+After install:
+
+```bash
+# Review generated host-local config/secrets
+$EDITOR ~/.jarvis/.env
+$EDITOR ~/.jarvis/config.yaml
+
+# Foreground run
+cd ~/jarvis
+node --env-file=$HOME/.jarvis/.env dist/index.js
+
+# If you accepted systemd install
+sudo systemctl start jarvis
+sudo systemctl status jarvis
+journalctl -fu jarvis
+```
+
+The systemd installer writes `/etc/systemd/system/jarvis.service` and `/etc/logrotate.d/jarvis` using the current user, repo path, Node binary, and data directory. It enables the service at boot when requested, but does not start it for you.
+
+## Manual install
+
+If you do not want to pipe a script from the network:
+
+```bash
+git clone https://github.com/jackgladowsky/jarvis.git ~/jarvis
 cd ~/jarvis
 scripts/setup-host.sh
 ```
 
-`setup-host.sh` is idempotent. It creates `~/.jarvis/`, copies templates only when missing, installs dependencies, builds the TypeScript project, and tightens permissions on `~/.jarvis/.env`.
-
-Edit the host-local files:
+Then edit the host-local files:
 
 ```bash
 $EDITOR ~/.jarvis/.env                  # secrets
@@ -53,42 +98,13 @@ $EDITOR ~/.jarvis/prompts/system.md     # live system prompt
 chmod 600 ~/.jarvis/.env
 ```
 
-Run in the foreground:
-
-```bash
-cd ~/jarvis
-node --env-file=$HOME/.jarvis/.env dist/index.js
-```
-
-Install as a systemd service:
+Install systemd manually if desired:
 
 ```bash
 cd ~/jarvis
 scripts/install-systemd.sh
 sudo systemctl start jarvis
-sudo systemctl status jarvis
-journalctl -fu jarvis
 ```
-
-The systemd installer writes `/etc/systemd/system/jarvis.service` and `/etc/logrotate.d/jarvis` using the current user, repo path, Node binary, and data directory. It enables the service at boot but does not start it for you.
-
-## One-command installer preview
-
-This repo includes an interactive first-run installer intended for curl-based onboarding:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash
-```
-
-For local testing, forks, or automation:
-
-```bash
-JARVIS_REPO_URL=https://github.com/<owner>/jarvis.git bash scripts/install.sh
-scripts/install.sh --dry-run --skip-systemd
-scripts/install.sh --install-dir ~/jarvis --data-dir ~/.jarvis --skip-systemd
-```
-
-The installer clones or reuses the repo, bootstraps `~/.jarvis`, prompts for required secrets/config values via `/dev/tty` so `curl | bash` can still be interactive, builds the project, and optionally installs the systemd unit. It does **not** start the service automatically. Use `--dry-run` to preview and `--skip-systemd` to leave service installation for later.
 
 ## Configuration
 
