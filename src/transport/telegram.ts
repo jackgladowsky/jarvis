@@ -28,6 +28,19 @@ import {
   startBackgroundTask,
 } from "../background/manager.js";
 import { config, env } from "../config.js";
+import {
+  listGoals,
+  readGoal,
+  readGoalEvents,
+  renderGoal,
+  renderGoalEvents,
+  renderGoalList,
+  resumeGoal,
+  setGoalStatus,
+  startGoal,
+  startNextGoalTask,
+} from "../goals/manager.js";
+import { parseGoalStartArgs } from "../goals/logic.js";
 import { isAllowed } from "../lib/allowlist.js";
 import {
   formatTranscribedPrompt,
@@ -234,6 +247,91 @@ async function benchmarkTelegramAudio(ctx: Context, candidate: TelegramAudioCand
     ]),
   ].join("\n").trim();
   await safe("reply (stt benchmark)", ctx.reply(body));
+}
+
+async function handleGoalCommand(ctx: Context, text: string): Promise<boolean> {
+  const trimmed = text.trim();
+  if (commandName(trimmed) !== "goal") return false;
+  const rest = commandRest(trimmed);
+  const [sub = "help", ...parts] = rest.split(/\s+/);
+  const arg = parts.join(" ").trim();
+  const chatId = ctx.chat!.id;
+
+  try {
+    if (["help", ""].includes(sub)) {
+      await safe("reply (/goal help)", ctx.reply("Usage: /goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>\n/goal list\n/goal status <id>\n/goal pause|resume|stop|next <id>\n/goal log <id>"));
+      return true;
+    }
+
+    if (sub === "start") {
+      const parsed = parseGoalStartArgs(arg);
+      if (!parsed) {
+        await safe("reply (/goal start usage)", ctx.reply("Usage: /goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>"));
+        return true;
+      }
+      const goal = await startGoal(parsed.objective, chatId, parsed.options);
+      await safe("reply (/goal start)", ctx.reply(`Started ${goal.id}.\n${renderGoal(goal)}`));
+      return true;
+    }
+
+    if (sub === "list") {
+      await safe("reply (/goal list)", ctx.reply(renderGoalList(await listGoals())));
+      return true;
+    }
+
+    if (sub === "status") {
+      if (!arg) {
+        await safe("reply (/goal status usage)", ctx.reply("Usage: /goal status <id>"));
+        return true;
+      }
+      await safe("reply (/goal status)", ctx.reply(renderGoal(await readGoal(arg))));
+      return true;
+    }
+
+    if (sub === "pause" || sub === "stop") {
+      if (!arg) {
+        await safe("reply (/goal state usage)", ctx.reply(`Usage: /goal ${sub} <id>`));
+        return true;
+      }
+      const goal = await setGoalStatus(arg, sub === "pause" ? "paused" : "stopped", `${sub} requested from Telegram`);
+      await safe(`reply (/goal ${sub})`, ctx.reply(renderGoal(goal)));
+      return true;
+    }
+
+    if (sub === "resume") {
+      if (!arg) {
+        await safe("reply (/goal resume usage)", ctx.reply("Usage: /goal resume <id>"));
+        return true;
+      }
+      await safe("reply (/goal resume)", ctx.reply(renderGoal(await resumeGoal(arg))));
+      return true;
+    }
+
+    if (sub === "next") {
+      if (!arg) {
+        await safe("reply (/goal next usage)", ctx.reply("Usage: /goal next <id>"));
+        return true;
+      }
+      await safe("reply (/goal next)", ctx.reply(renderGoal(await startNextGoalTask(arg, "manual /goal next"))));
+      return true;
+    }
+
+    if (sub === "log") {
+      if (!arg) {
+        await safe("reply (/goal log usage)", ctx.reply("Usage: /goal log <id>"));
+        return true;
+      }
+      await safe("reply (/goal log)", ctx.reply(renderGoalEvents(await readGoalEvents(arg, 20))));
+      return true;
+    }
+
+    await safe("reply (/goal unknown)", ctx.reply("Unknown /goal command. Try /goal help."));
+    return true;
+  } catch (err) {
+    log.warn("goal command failed", { command: sub, err: err instanceof Error ? err.message : err });
+    await safe("reply (goal command failed)", ctx.reply(`Goal command failed: ${err instanceof Error ? err.message : String(err)}`));
+    return true;
+  }
 }
 
 async function handleBackgroundCommand(ctx: Context, text: string): Promise<boolean> {
@@ -764,6 +862,7 @@ export async function runTelegram(handle: Handler): Promise<void> {
       return;
     }
 
+    if (await handleGoalCommand(ctx, text)) return;
     if (await handleBackgroundCommand(ctx, text)) return;
 
     // Per-chat serialization — see DESIGN.md §10.

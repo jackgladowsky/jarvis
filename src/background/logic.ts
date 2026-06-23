@@ -55,6 +55,7 @@ export function renderTask(task: BackgroundTask): string {
     task.current_role ? `Current role: ${task.current_role}` : undefined,
     `Branch: ${task.branch}`,
     `Worktree: ${task.worktree}`,
+    task.goal_id ? `Goal: ${task.goal_id}` : undefined,
     task.pid ? `PID: ${task.pid}` : undefined,
     task.summary ? `Summary: ${task.summary}` : undefined,
     task.review_summary ? `Review: ${task.review_summary}` : undefined,

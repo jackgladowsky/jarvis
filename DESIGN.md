@@ -485,6 +485,7 @@ Searchable history of past sessions. "What did we decide about X two weeks ago?"
 - **Image input:** Telegram photos and image documents are downloaded, capped at 4 images and 10 MB each, and passed to the model alongside the message text/caption.
 - **Progress commands:** `/thinking` and `/verbose` toggle coarse/verbose progress messages for future turns.
 - **Background commands:** `/bg`, `/tasks`, `/task`, `/answer`, and `/cancelbg` manage detached worker tasks.
+- **Autonomous goal commands:** `/goal start|list|status|pause|resume|stop|next|log` run a bounded controller over background workers. Goals persist under `~/.jarvis/data/goals/`, launch at most one child task at a time, enforce task/time/failure budgets, append JSONL events, and stop/wait on approvals, failures, or exhausted budgets. They do not grant push/merge/deploy/destructive authority; main JARVIS remains the review/deploy gate.
 - **Bot token security:** Token in `~/.jarvis/.env`, never committed. The user-ID allowlist is the real defense.
 
 ---

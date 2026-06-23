@@ -191,6 +191,9 @@ Commands handled by the transport layer:
 /answer <id> <text>   answer a worker question and resume it
 /fixbg <id> [role]    resume a needs-fix task on the same worktree
 /cancelbg <id>        cancel a background worker task
+/goal start [opts] <objective>  start a bounded autonomous improvement loop
+/goal list|status|log <id>      inspect goal state/events
+/goal pause|resume|stop|next <id> control a goal loop
 ```
 
 The user-visible response path is intentionally quiet: Telegram shows typing while work is in progress, then streams the final answer via debounced message edits. Tool-call messages and filler text are hidden.
@@ -223,6 +226,10 @@ Background workers, scheduler jobs, and deploy notices enqueue internal notifica
 ## Background workers
 
 Detailed background-worker procedure lives in `skills/background-workers/SKILL.md`. Long-running work can be delegated with `/bg <prompt>` or `scripts/start-background-task.sh "<prompt>"`; tasks use isolated worktrees under `~/jarvis-worktrees/` and state under `~/.jarvis/data/background/`. Reviewers mark work `ready_for_pr` or `needs_fix`; main JARVIS remains the PR/deploy gate.
+
+## Autonomous goals
+
+`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or Jack pauses/stops it. Child tasks are still forbidden from push/merge/deploy/restart/destructive operations without explicit approval, and all goal transitions append JSONL events for auditability.
 
 ## Data layout
 
@@ -259,6 +266,10 @@ By default, data lives under `~/.jarvis/`. Override with `JARVIS_DATA_DIR` for d
 │   ├── mail/
 │   ├── bootstrap.log
 │   └── worker-errors.log
+├── data/goals/                   autonomous goal state and event logs
+│   ├── tasks/
+│   ├── events/
+│   └── notes/
 ├── data/notifications/           internal notification queue + heartbeat
 │   └── archive/
 └── data/deploy/                  safe-deploy markers and restart log
