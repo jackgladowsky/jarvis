@@ -10,6 +10,29 @@
 # and then `sudo systemctl start jarvis`.
 set -euo pipefail
 
+DRY_RUN=0
+ENABLE_SERVICE=1
+
+usage() {
+  cat <<EOF
+Usage: scripts/install-systemd.sh [options]
+
+Options:
+  --dry-run     Print the rendered unit/logrotate config and commands without writing /etc.
+  --no-enable   Install files and reload systemd, but do not enable jarvis.service at boot.
+  -h, --help    Show this help.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --no-enable) ENABLE_SERVICE=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_BASE="${JARVIS_DATA_DIR:-$HOME/.jarvis}"
 USER_NAME="$(whoami)"
@@ -42,13 +65,7 @@ fi
 UNIT="/etc/systemd/system/jarvis.service"
 LOGROTATE="/etc/logrotate.d/jarvis"
 
-echo "Installing systemd unit at $UNIT"
-echo "  User:                $USER_NAME"
-echo "  WorkingDirectory:    $REPO_ROOT"
-echo "  EnvironmentFile:     $DATA_BASE/.env"
-echo "  ExecStart:           $NODE_BIN $REPO_ROOT/dist/index.js"
-
-sudo tee "$UNIT" > /dev/null <<EOF
+UNIT_CONTENT="$(cat <<EOF
 [Unit]
 Description=JARVIS personal assistant
 After=network-online.target
@@ -74,12 +91,9 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
+)"
 
-echo "Installing logrotate config at $LOGROTATE"
-# copytruncate matters: Node's appendFile holds an open fd, so a plain
-# rotation (rename + create) would leave JARVIS writing to the rotated
-# file. copytruncate copies then truncates the original in place.
-sudo tee "$LOGROTATE" > /dev/null <<EOF
+LOGROTATE_CONTENT="$(cat <<EOF
 $DATA_BASE/data/audit.log {
     daily
     rotate 30
@@ -89,12 +103,51 @@ $DATA_BASE/data/audit.log {
     copytruncate
 }
 EOF
+)"
+
+write_root_file() {
+  local path="$1"
+  local content="$2"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[dry-run] would write $path:"
+    printf '%s\n' "$content"
+  else
+    sudo tee "$path" > /dev/null <<< "$content"
+  fi
+}
+
+run_root() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf '[dry-run]'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+echo "Installing systemd unit at $UNIT"
+echo "  User:                $USER_NAME"
+echo "  WorkingDirectory:    $REPO_ROOT"
+echo "  EnvironmentFile:     $DATA_BASE/.env"
+echo "  ExecStart:           $NODE_BIN $REPO_ROOT/dist/index.js"
+write_root_file "$UNIT" "$UNIT_CONTENT"
+
+echo "Installing logrotate config at $LOGROTATE"
+# copytruncate matters: Node's appendFile holds an open fd, so a plain
+# rotation (rename + create) would leave JARVIS writing to the rotated
+# file. copytruncate copies then truncates the original in place.
+write_root_file "$LOGROTATE" "$LOGROTATE_CONTENT"
 
 echo "Reloading systemd..."
-sudo systemctl daemon-reload
+run_root sudo systemctl daemon-reload
 
-echo "Enabling jarvis.service (start at boot)..."
-sudo systemctl enable jarvis.service
+if [[ "$ENABLE_SERVICE" -eq 1 ]]; then
+  echo "Enabling jarvis.service (start at boot)..."
+  run_root sudo systemctl enable jarvis.service
+else
+  echo "Skipping enable (--no-enable)."
+fi
 
 cat <<EOF
 

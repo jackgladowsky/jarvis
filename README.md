@@ -77,16 +77,18 @@ The systemd installer writes `/etc/systemd/system/jarvis.service` and `/etc/logr
 This repo includes an interactive first-run installer intended for curl-based onboarding:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/jarvis/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash
 ```
 
-For local testing or forks:
+For local testing, forks, or automation:
 
 ```bash
 JARVIS_REPO_URL=https://github.com/<owner>/jarvis.git bash scripts/install.sh
+scripts/install.sh --dry-run --skip-systemd
+scripts/install.sh --install-dir ~/jarvis --data-dir ~/.jarvis --skip-systemd
 ```
 
-The installer clones or reuses the repo, bootstraps `~/.jarvis`, prompts for required secrets/config values, builds the project, and optionally installs the systemd unit. It does **not** start the service automatically.
+The installer clones or reuses the repo, bootstraps `~/.jarvis`, prompts for required secrets/config values via `/dev/tty` so `curl | bash` can still be interactive, builds the project, and optionally installs the systemd unit. It does **not** start the service automatically. Use `--dry-run` to preview and `--skip-systemd` to leave service installation for later.
 
 ## Configuration
 
