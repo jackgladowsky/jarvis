@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canStartGoalTask, classifyChildResult, goalDeadline, normalizeGoalBudgets, parseGoalStartArgs } from "./logic.js";
+import { canStartGoalTask, classifyChildResult, normalizeGoalBudgets, parseGoalStartArgs } from "./logic.js";
 import type { GoalState } from "./types.js";
 
 function goal(overrides: Partial<GoalState> = {}): GoalState {
@@ -28,7 +28,7 @@ test("parseGoalStartArgs extracts budgets and objective", () => {
     objective: "tighten tests",
     options: { maxTasks: 3, maxMinutes: 45, maxFailures: 1, autoContinue: true },
   });
-  assert.deepEqual(parseGoalStartArgs("\"ship a small thing\""), {
+  assert.deepEqual(parseGoalStartArgs('"ship a small thing"'), {
     objective: "ship a small thing",
     options: {},
   });
@@ -52,17 +52,23 @@ test("normalizeGoalBudgets applies safe defaults and bounds", () => {
 
 test("canStartGoalTask enforces one active task and budgets", () => {
   assert.deepEqual(canStartGoalTask(goal()), { ok: true });
-  assert.match((canStartGoalTask(goal({ active_task_id: "fern-sparrow" })) as { ok: false; reason: string }).reason, /already active/);
+  assert.match(
+    (canStartGoalTask(goal({ active_task_id: "fern-sparrow" })) as { ok: false; reason: string }).reason,
+    /already active/,
+  );
   assert.deepEqual(canStartGoalTask(goal({ tasks_started: 2 })), {
     ok: false,
     reason: "task budget exhausted (2/2)",
     done: true,
   });
-  assert.deepEqual(canStartGoalTask(goal({ deadline_at: "2025-01-01T00:00:00.000Z" }), new Date("2026-01-01T00:00:00.000Z")), {
-    ok: false,
-    reason: "time budget exhausted",
-    done: true,
-  });
+  assert.deepEqual(
+    canStartGoalTask(goal({ deadline_at: "2025-01-01T00:00:00.000Z" }), new Date("2026-01-01T00:00:00.000Z")),
+    {
+      ok: false,
+      reason: "time budget exhausted",
+      done: true,
+    },
+  );
 });
 
 test("classifyChildResult maps terminal background statuses", () => {

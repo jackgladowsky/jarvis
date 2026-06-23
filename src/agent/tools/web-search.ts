@@ -57,11 +57,7 @@ interface ExaContentsResult {
   text?: string;
 }
 
-async function exaPost<T>(
-  path: "/search" | "/contents",
-  body: unknown,
-  signal: AbortSignal | undefined,
-): Promise<T> {
+async function exaPost<T>(path: "/search" | "/contents", body: unknown, signal: AbortSignal | undefined): Promise<T> {
   const res = await fetch(`https://api.exa.ai${path}`, {
     method: "POST",
     headers: {
@@ -76,9 +72,7 @@ async function exaPost<T>(
     // dumping a giant HTML error page into the model's context.
     const errBody = await res.text().catch(() => "");
     throw new Error(
-      `Exa ${path} failed: HTTP ${res.status} ${res.statusText}${
-        errBody ? `: ${errBody.slice(0, 500)}` : ""
-      }`,
+      `Exa ${path} failed: HTTP ${res.status} ${res.statusText}${errBody ? `: ${errBody.slice(0, 500)}` : ""}`,
     );
   }
   return (await res.json()) as T;

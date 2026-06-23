@@ -21,9 +21,7 @@ function resolveModel(): Model<any> {
   }
   const m = getModel(providerKey as any, config.agent.model as any);
   if (!m) {
-    throw new Error(
-      `model "${config.agent.model}" not found in provider "${providerKey}"`,
-    );
+    throw new Error(`model "${config.agent.model}" not found in provider "${providerKey}"`);
   }
   return m;
 }

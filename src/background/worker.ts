@@ -74,7 +74,9 @@ function parseReviewVerdict(output: string): "ready" | "needs_fix" {
 }
 
 function stageForRole(task: BackgroundTask, role: BackgroundRole): BackgroundStage {
-  let stage = task.pipeline.find((candidate) => candidate.role === role && ["queued", "running"].includes(candidate.status));
+  let stage = task.pipeline.find(
+    (candidate) => candidate.role === role && ["queued", "running"].includes(candidate.status),
+  );
   if (!stage) stage = task.pipeline.find((candidate) => candidate.role === role && candidate.status !== "done");
   if (!stage) {
     stage = { role, status: "queued" };
@@ -83,11 +85,18 @@ function stageForRole(task: BackgroundTask, role: BackgroundRole): BackgroundSta
   return stage;
 }
 
-function buildPrompt(task: BackgroundTask, role: BackgroundRole, notePath: string, mailboxPath: string, mailText: string): string {
-  const prior = task.pipeline
-    .filter((stage) => stage.status === "done" && stage.summary)
-    .map((stage) => `## ${stage.role} summary\n${stage.summary}`)
-    .join("\n\n") || "(no prior stage summaries)";
+function buildPrompt(
+  task: BackgroundTask,
+  role: BackgroundRole,
+  notePath: string,
+  mailboxPath: string,
+  mailText: string,
+): string {
+  const prior =
+    task.pipeline
+      .filter((stage) => stage.status === "done" && stage.summary)
+      .map((stage) => `## ${stage.role} summary\n${stage.summary}`)
+      .join("\n\n") || "(no prior stage summaries)";
 
   return [
     `Original request:\n${task.prompt}`,
@@ -137,14 +146,23 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     ? mail.map((m) => `${m.ts} ${m.from}/${m.type}: ${m.body}`).join("\n")
     : "(no mailbox messages yet)";
 
-  const output = await runBackgroundPrompt(task.id, `${task.name} (${role})`, buildPrompt(task, role, notePath, mailboxPath, mailText), notePath);
+  const output = await runBackgroundPrompt(
+    task.id,
+    `${task.name} (${role})`,
+    buildPrompt(task, role, notePath, mailboxPath, mailText),
+    notePath,
+  );
   const latest = await readBackgroundTask(task.id);
   const latestStage = stageForRole(latest, role);
   latestStage.status = "done";
   latestStage.finished_at = new Date().toISOString();
   latestStage.summary = output;
   latest.summary = output;
-  await appendBackgroundMail(task.id, { from: "worker", type: role === "reviewer" ? "review" : "handoff", body: `${role}:\n${output}` });
+  await appendBackgroundMail(task.id, {
+    from: "worker",
+    type: role === "reviewer" ? "review" : "handoff",
+    body: `${role}:\n${output}`,
+  });
 
   const nextRole = nextQueuedRole(latest);
   if (role === "reviewer") {
@@ -165,7 +183,11 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     latest.status = statusForRole(nextRole);
     latest.pid = spawnBackgroundWorker(latest.id, nextRole);
     await writeBackgroundTask(latest);
-    await notify(latest.chat_id, `${latest.id}: ${role} finished; starting ${nextRole}`, `Background task ${latest.id}: ${role} finished; starting ${nextRole}.`);
+    await notify(
+      latest.chat_id,
+      `${latest.id}: ${role} finished; starting ${nextRole}`,
+      `Background task ${latest.id}: ${role} finished; starting ${nextRole}.`,
+    );
     return;
   }
 
@@ -202,8 +224,8 @@ async function main(): Promise<void> {
       log.warn("goal advancement after background failure failed", goalErr),
     );
     await appendBackgroundMail(taskId, { from: "worker", type: "error", body: latest.error });
-    await notify(latest.chat_id, `${latest.id} failed`, `Background task ${latest.id} failed: ${latest.error}`).catch((notifyErr) =>
-      log.warn("background failure notification failed", notifyErr),
+    await notify(latest.chat_id, `${latest.id} failed`, `Background task ${latest.id} failed: ${latest.error}`).catch(
+      (notifyErr) => log.warn("background failure notification failed", notifyErr),
     );
     throw err;
   }
@@ -213,7 +235,11 @@ main().catch(async (err) => {
   log.error("background worker fatal", { err: err instanceof Error ? err.message : err });
   try {
     await mkdir(paths.background, { recursive: true });
-    await appendFile(join(paths.background, "worker-errors.log"), `${new Date().toISOString()} ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`, "utf-8");
+    await appendFile(
+      join(paths.background, "worker-errors.log"),
+      `${new Date().toISOString()} ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+      "utf-8",
+    );
   } catch {
     // nothing useful left to do
   }

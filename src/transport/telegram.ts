@@ -99,7 +99,7 @@ function modeLabel(mode: StatusMode): string {
 
 // Convert agent text to whatever Telegram expects, depending on parse_mode.
 // Skipping the conversion when parse_mode === "none" keeps the bot strictly
-// equivalent to Phase 3's behavior if Jack ever wants to bisect a regression.
+// equivalent to Phase 3's behavior if the owner ever wants to bisect a regression.
 function format(text: string): { text: string; parse_mode?: "HTML" | "MarkdownV2" } {
   const mode = config.telegram.parse_mode;
   if (mode === "HTML") return { text: markdownToTelegramHtml(text), parse_mode: "HTML" };
@@ -108,9 +108,7 @@ function format(text: string): { text: string; parse_mode?: "HTML" | "MarkdownV2
 }
 
 function chunks(text: string): string[] {
-  return config.telegram.parse_mode === "HTML"
-    ? splitTelegramMarkdown(text)
-    : splitTelegramMarkdown(text);
+  return config.telegram.parse_mode === "HTML" ? splitTelegramMarkdown(text) : splitTelegramMarkdown(text);
 }
 
 // Wraps grammy's reply/edit calls so failures (rate limits, network) don't
@@ -165,7 +163,8 @@ async function downloadTelegramImage(
 
   const responseMimeType = response.headers.get("content-type")?.split(";")[0];
   const mimeType = responseMimeType?.startsWith("image/") ? responseMimeType : candidate.mimeType;
-  if (!mimeType.startsWith("image/")) throw new Error(`Telegram file was not an image (${responseMimeType ?? mimeType})`);
+  if (!mimeType.startsWith("image/"))
+    throw new Error(`Telegram file was not an image (${responseMimeType ?? mimeType})`);
 
   return { type: "image", data: buffer.toString("base64"), mimeType };
 }
@@ -190,7 +189,9 @@ function sttOptions() {
 async function downloadTelegramAudio(ctx: Context, candidate: TelegramAudioCandidate): Promise<Buffer> {
   const limit = maxAudioBytes(config.stt.local_whisper_cpp.max_audio_mb);
   if (candidate.fileSize && candidate.fileSize > limit) {
-    throw new Error(`audio is too large (${Math.ceil(candidate.fileSize / 1024 / 1024)} MB; max ${config.stt.local_whisper_cpp.max_audio_mb} MB)`);
+    throw new Error(
+      `audio is too large (${Math.ceil(candidate.fileSize / 1024 / 1024)} MB; max ${config.stt.local_whisper_cpp.max_audio_mb} MB)`,
+    );
   }
 
   const file = await ctx.api.getFile(candidate.fileId);
@@ -202,7 +203,9 @@ async function downloadTelegramAudio(ctx: Context, candidate: TelegramAudioCandi
 
   const buffer = Buffer.from(await response.arrayBuffer());
   if (buffer.byteLength > limit) {
-    throw new Error(`audio is too large (${Math.ceil(buffer.byteLength / 1024 / 1024)} MB; max ${config.stt.local_whisper_cpp.max_audio_mb} MB)`);
+    throw new Error(
+      `audio is too large (${Math.ceil(buffer.byteLength / 1024 / 1024)} MB; max ${config.stt.local_whisper_cpp.max_audio_mb} MB)`,
+    );
   }
   return buffer;
 }
@@ -218,7 +221,11 @@ function siblingModelPath(currentPath: string, modelName: "base.en" | "small.en"
   return currentPath.replace(/ggml-[^/]+\.bin$/, `ggml-${modelName}.bin`);
 }
 
-async function benchmarkTelegramAudio(ctx: Context, candidate: TelegramAudioCandidate, startedAtMs: number): Promise<void> {
+async function benchmarkTelegramAudio(
+  ctx: Context,
+  candidate: TelegramAudioCandidate,
+  startedAtMs: number,
+): Promise<void> {
   const options = sttOptions();
   if (options.provider !== "local-whisper-cpp") throw new MissingLocalWhisperSetupError();
   const audio = await downloadTelegramAudio(ctx, candidate);
@@ -226,15 +233,22 @@ async function benchmarkTelegramAudio(ctx: Context, candidate: TelegramAudioCand
     { label: "base.en", path: siblingModelPath(options.modelPath, "base.en") },
     { label: "small.en", path: siblingModelPath(options.modelPath, "small.en") },
   ];
-  const results = await Promise.all(models.map(async (model) => {
-    const modelStart = Date.now();
-    try {
-      const transcript = await transcribeWithLocalWhisperCpp(audio, candidate, { ...options, modelPath: model.path });
-      return { ...model, ok: true as const, ms: Date.now() - modelStart, transcript };
-    } catch (err) {
-      return { ...model, ok: false as const, ms: Date.now() - modelStart, error: err instanceof Error ? err.message : String(err) };
-    }
-  }));
+  const results = await Promise.all(
+    models.map(async (model) => {
+      const modelStart = Date.now();
+      try {
+        const transcript = await transcribeWithLocalWhisperCpp(audio, candidate, { ...options, modelPath: model.path });
+        return { ...model, ok: true as const, ms: Date.now() - modelStart, transcript };
+      } catch (err) {
+        return {
+          ...model,
+          ok: false as const,
+          ms: Date.now() - modelStart,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }),
+  );
   const totalMs = Date.now() - startedAtMs;
   const body = [
     `STT benchmark (${candidate.kind})`,
@@ -245,7 +259,9 @@ async function benchmarkTelegramAudio(ctx: Context, candidate: TelegramAudioCand
       result.ok ? result.transcript : `ERROR: ${result.error}`,
       "",
     ]),
-  ].join("\n").trim();
+  ]
+    .join("\n")
+    .trim();
   await safe("reply (stt benchmark)", ctx.reply(body));
 }
 
@@ -259,14 +275,22 @@ async function handleGoalCommand(ctx: Context, text: string): Promise<boolean> {
 
   try {
     if (["help", ""].includes(sub)) {
-      await safe("reply (/goal help)", ctx.reply("Usage: /goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>\n/goal list\n/goal status <id>\n/goal pause|resume|stop|next <id>\n/goal log <id>"));
+      await safe(
+        "reply (/goal help)",
+        ctx.reply(
+          "Usage: /goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>\n/goal list\n/goal status <id>\n/goal pause|resume|stop|next <id>\n/goal log <id>",
+        ),
+      );
       return true;
     }
 
     if (sub === "start") {
       const parsed = parseGoalStartArgs(arg);
       if (!parsed) {
-        await safe("reply (/goal start usage)", ctx.reply("Usage: /goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>"));
+        await safe(
+          "reply (/goal start usage)",
+          ctx.reply("Usage: /goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>"),
+        );
         return true;
       }
       const goal = await startGoal(parsed.objective, chatId, parsed.options);
@@ -329,7 +353,10 @@ async function handleGoalCommand(ctx: Context, text: string): Promise<boolean> {
     return true;
   } catch (err) {
     log.warn("goal command failed", { command: sub, err: err instanceof Error ? err.message : err });
-    await safe("reply (goal command failed)", ctx.reply(`Goal command failed: ${err instanceof Error ? err.message : String(err)}`));
+    await safe(
+      "reply (goal command failed)",
+      ctx.reply(`Goal command failed: ${err instanceof Error ? err.message : String(err)}`),
+    );
     return true;
   }
 }
@@ -349,7 +376,9 @@ async function handleBackgroundCommand(ctx: Context, text: string): Promise<bool
       const task = await startBackgroundTask(rest, chatId);
       await safe(
         "reply (/bg)",
-        ctx.reply(`Started background task ${task.id}.\nPipeline: ${task.pipeline.map((stage) => stage.role).join(" -> ")}\nWorktree: ${task.worktree}\nBranch: ${task.branch}`),
+        ctx.reply(
+          `Started background task ${task.id}.\nPipeline: ${task.pipeline.map((stage) => stage.role).join(" -> ")}\nWorktree: ${task.worktree}\nBranch: ${task.branch}`,
+        ),
       );
       return true;
     }
@@ -364,7 +393,9 @@ async function handleBackgroundCommand(ctx: Context, text: string): Promise<bool
       const task = await resumeBackgroundTask(id, role);
       await safe(
         "reply (/fixbg)",
-        ctx.reply(`Resumed ${task.id}; starting ${role} on existing worktree.\nPipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}\nWorktree: ${task.worktree}`),
+        ctx.reply(
+          `Resumed ${task.id}; starting ${role} on existing worktree.\nPipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}\nWorktree: ${task.worktree}`,
+        ),
       );
       return true;
     }
@@ -414,7 +445,10 @@ async function handleBackgroundCommand(ctx: Context, text: string): Promise<bool
     }
   } catch (err) {
     log.warn("background command failed", { command, err: err instanceof Error ? err.message : err });
-    await safe("reply (background command failed)", ctx.reply(`Background command failed: ${err instanceof Error ? err.message : String(err)}`));
+    await safe(
+      "reply (background command failed)",
+      ctx.reply(`Background command failed: ${err instanceof Error ? err.message : String(err)}`),
+    );
     return true;
   }
 
@@ -456,12 +490,17 @@ function startInternalNotificationPump(bot: Bot, handle: Handler): () => void {
     const claimed = await claimInternalNotification(notification);
     if (!claimed) return;
     try {
-      await withLock(claimed.chat_id, () => sendAgentPromptToTelegram(bot, claimed.chat_id, renderInternalNotificationPrompt(claimed), handle));
+      await withLock(claimed.chat_id, () =>
+        sendAgentPromptToTelegram(bot, claimed.chat_id, renderInternalNotificationPrompt(claimed), handle),
+      );
       await finishInternalNotification(claimed, "processed");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await finishInternalNotification(claimed, "failed", message);
-      await sendTelegramFallback(claimed.chat_id, claimed.fallback_text ?? `[${claimed.source}] ${claimed.title}\n\n${claimed.body}`).catch((fallbackErr) =>
+      await sendTelegramFallback(
+        claimed.chat_id,
+        claimed.fallback_text ?? `[${claimed.source}] ${claimed.title}\n\n${claimed.body}`,
+      ).catch((fallbackErr) =>
         log.warn("internal notification emergency fallback failed", {
           id: claimed.id,
           err: fallbackErr instanceof Error ? fallbackErr.message : fallbackErr,
@@ -515,14 +554,22 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
       await safe("reply (/usage)", ctx.reply(await renderUsageReport(chatId)));
     } catch (err) {
       log.warn("usage command failed", { chatId, err: err instanceof Error ? err.message : err });
-      await safe("reply (/usage failed)", ctx.reply(`Usage report failed: ${err instanceof Error ? err.message : String(err)}`));
+      await safe(
+        "reply (/usage failed)",
+        ctx.reply(`Usage report failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
     }
     return;
   }
 
   if (commandName(userText) === "sttbench") {
     sttBenchmarkNext.add(chatId);
-    await safe("reply (/sttbench)", ctx.reply("Send one voice note/audio file next; I’ll run base.en and small.en in parallel and report transcripts/timings."));
+    await safe(
+      "reply (/sttbench)",
+      ctx.reply(
+        "Send one voice note/audio file next; I’ll run base.en and small.en in parallel and report transcripts/timings.",
+      ),
+    );
     return;
   }
 
@@ -535,10 +582,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
       return;
     }
     setStatusMode(chatId, next);
-    await safe(
-      "reply (mode)",
-      ctx.reply(`Progress updates: ${modeLabel(current)} → ${modeLabel(next)}.`),
-    );
+    await safe("reply (mode)", ctx.reply(`Progress updates: ${modeLabel(current)} → ${modeLabel(next)}.`));
     return;
   }
 
@@ -561,9 +605,10 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
       transcribedPrompt = formatTranscribedPrompt(audioCandidate, transcript, userText);
     } catch (err) {
       log.warn("telegram audio transcription failed", { chatId, err: err instanceof Error ? err.message : err });
-      const message = err instanceof MissingLocalWhisperSetupError
-        ? err.message
-        : `Couldn't transcribe that audio: ${err instanceof Error ? err.message : String(err)}`;
+      const message =
+        err instanceof MissingLocalWhisperSetupError
+          ? err.message
+          : `Couldn't transcribe that audio: ${err instanceof Error ? err.message : String(err)}`;
       await safe("reply (audio transcription failed)", ctx.reply(message));
       return;
     }
@@ -574,12 +619,18 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     images = await readImages(ctx);
   } catch (err) {
     log.warn("telegram image read failed", { chatId, err: err instanceof Error ? err.message : err });
-    await safe("reply (image read failed)", ctx.reply(`Couldn't read that image: ${err instanceof Error ? err.message : String(err)}`));
+    await safe(
+      "reply (image read failed)",
+      ctx.reply(`Couldn't read that image: ${err instanceof Error ? err.message : String(err)}`),
+    );
     return;
   }
 
   if (!userText.trim() && images.length === 0 && !transcribedPrompt) {
-    await safe("reply (unsupported message)", ctx.reply("I can read text, images, and voice/audio. Whatever that was, Telegram is being coy."));
+    await safe(
+      "reply (unsupported message)",
+      ctx.reply("I can read text, images, and voice/audio. Whatever that was, Telegram is being coy."),
+    );
     return;
   }
   const promptText = transcribedPrompt ?? (userText.trim() || "Describe the attached image(s).");
@@ -736,92 +787,94 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 
   // ── Run the agent with streaming callbacks ──────────────────────────────
   try {
-    await handle(chatId, promptText, {
-      // Streaming text update for an in-progress text-only assistant message.
-      // Either send the placeholder if we don't have one yet, or schedule a
-      // debounced edit to the existing one.
-      onAssistantUpdate: async (text: string) => {
-        if (!placeholder && !sending) {
-          sending = true;
-          const formatted = format(chunks(text)[0] ?? text);
-          const sent = await safe(
-            "reply (placeholder)",
-            ctx.reply(formatted.text, {
-              parse_mode: formatted.parse_mode,
-              link_preview_options: { is_disabled: true },
-            }),
-          );
-          sending = false;
-          if (sent) {
-            placeholder = {
-              messageId: sent.message_id,
-              lastSentText: chunks(text)[0] ?? text,
-              lastEditAt: Date.now(),
-            };
+    await handle(
+      chatId,
+      promptText,
+      {
+        // Streaming text update for an in-progress text-only assistant message.
+        // Either send the placeholder if we don't have one yet, or schedule a
+        // debounced edit to the existing one.
+        onAssistantUpdate: async (text: string) => {
+          if (!placeholder && !sending) {
+            sending = true;
+            const formatted = format(chunks(text)[0] ?? text);
+            const sent = await safe(
+              "reply (placeholder)",
+              ctx.reply(formatted.text, {
+                parse_mode: formatted.parse_mode,
+                link_preview_options: { is_disabled: true },
+              }),
+            );
+            sending = false;
+            if (sent) {
+              placeholder = {
+                messageId: sent.message_id,
+                lastSentText: chunks(text)[0] ?? text,
+                lastEditAt: Date.now(),
+              };
+            }
+            return;
           }
-          return;
-        }
-        if (!placeholder) return; // still mid-send; next update will catch it
+          if (!placeholder) return; // still mid-send; next update will catch it
 
-        const elapsed = Date.now() - placeholder.lastEditAt;
-        if (elapsed >= EDIT_DEBOUNCE_MS) {
+          const elapsed = Date.now() - placeholder.lastEditAt;
+          if (elapsed >= EDIT_DEBOUNCE_MS) {
+            cancelPendingEdit();
+            await flushEdit(text);
+          } else {
+            // Schedule (or replace) a deferred edit so the latest text lands
+            // even if no further updates arrive within the debounce window.
+            pendingEditText = text;
+            if (!pendingEditTimer) {
+              pendingEditTimer = setTimeout(() => {
+                pendingEditTimer = undefined;
+                void flushEdit(pendingEditText);
+              }, EDIT_DEBOUNCE_MS - elapsed);
+            }
+          }
+        },
+
+        // The text-only assistant message finished. Final flush, then reset
+        // local state so a subsequent message in the same turn (rare with the
+        // skip-tool-call rule) starts with a fresh placeholder.
+        onAssistantEnd: async (text: string) => {
           cancelPendingEdit();
-          await flushEdit(text);
-        } else {
-          // Schedule (or replace) a deferred edit so the latest text lands
-          // even if no further updates arrive within the debounce window.
-          pendingEditText = text;
-          if (!pendingEditTimer) {
-            pendingEditTimer = setTimeout(() => {
-              pendingEditTimer = undefined;
-              void flushEdit(pendingEditText);
-            }, EDIT_DEBOUNCE_MS - elapsed);
+          await clearStatus();
+          await sendFinalChunks(text);
+        },
+
+        // A streaming text message just sprouted a tool call — discard our
+        // placeholder so the user doesn't see the "let me check…" filler.
+        onAbandon: async () => {
+          cancelPendingEdit();
+          if (placeholder) {
+            const id = placeholder.messageId;
+            placeholder = undefined;
+            await safe("deleteMessage", ctx.api.deleteMessage(chatId, id));
           }
-        }
-      },
+        },
 
-      // The text-only assistant message finished. Final flush, then reset
-      // local state so a subsequent message in the same turn (rare with the
-      // skip-tool-call rule) starts with a fresh placeholder.
-      onAssistantEnd: async (text: string) => {
-        cancelPendingEdit();
-        await clearStatus();
-        await sendFinalChunks(text);
-      },
+        // The agent terminated this turn with stopReason "error" / "aborted".
+        // Without this the user sees nothing — silent failures are the worst
+        // kind of failure for a chat bot.
+        onError: async (text: string) => {
+          cancelPendingEdit();
+          await clearStatus();
+          const body = text === "Run aborted." ? "Cancelled." : `Error: ${text}`;
+          if (placeholder) {
+            const id = placeholder.messageId;
+            placeholder = undefined;
+            await safe("editMessageText (error)", ctx.api.editMessageText(chatId, id, body));
+          } else if (!sending) {
+            await safe("reply (agent error)", ctx.reply(body));
+          }
+        },
 
-      // A streaming text message just sprouted a tool call — discard our
-      // placeholder so the user doesn't see the "let me check…" filler.
-      onAbandon: async () => {
-        cancelPendingEdit();
-        if (placeholder) {
-          const id = placeholder.messageId;
-          placeholder = undefined;
-          await safe("deleteMessage", ctx.api.deleteMessage(chatId, id));
-        }
+        onStatus: pushStatus,
+        statusMode: runStatusMode,
       },
-
-      // The agent terminated this turn with stopReason "error" / "aborted".
-      // Without this the user sees nothing — silent failures are the worst
-      // kind of failure for a chat bot.
-      onError: async (text: string) => {
-        cancelPendingEdit();
-        await clearStatus();
-        const body = text === "Run aborted." ? "Cancelled." : `Error: ${text}`;
-        if (placeholder) {
-          const id = placeholder.messageId;
-          placeholder = undefined;
-          await safe(
-            "editMessageText (error)",
-            ctx.api.editMessageText(chatId, id, body),
-          );
-        } else if (!sending) {
-          await safe("reply (agent error)", ctx.reply(body));
-        }
-      },
-
-      onStatus: pushStatus,
-      statusMode: runStatusMode,
-    }, images);
+      images,
+    );
   } catch (err) {
     log.error("handler error", { err: err instanceof Error ? err.message : err });
     cancelPendingEdit();

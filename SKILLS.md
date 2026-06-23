@@ -19,6 +19,6 @@ Skills are repo-local procedural references for JARVIS. They keep the core syste
 - `memory` — filesystem memory under `~/.jarvis/data/notes/`, read/write triggers, and formats.
 - `destinations` — place recommendations, destination comparisons, and Uber/Lyft/Maps links.
 - `github-pr` — preparing branches, review gates, pushing, and opening PRs.
-- `host-ops` — host/service operations on Jack's Linux box.
+- `host-ops` — host/service operations on the owner's Linux box.
 - `web-search` — using the Exa-backed `web_search` tool effectively.
 - `deep-research` — longer research workflow, source handling, and synthesis.

@@ -2,15 +2,76 @@ import { basename } from "node:path";
 import type { BackgroundRole, BackgroundStage, BackgroundTask } from "./types.js";
 
 const ID_LEFT = [
-  "ash", "blue", "bold", "calm", "cedar", "clear", "cove", "dawn", "dusk", "fern",
-  "frost", "glow", "gray", "green", "hush", "iron", "jade", "kind", "lake", "lunar",
-  "maple", "mint", "moss", "north", "nova", "onyx", "pine", "quiet", "river", "sage",
-  "solar", "stone", "swift", "tide", "violet", "west", "wild", "young",
+  "ash",
+  "blue",
+  "bold",
+  "calm",
+  "cedar",
+  "clear",
+  "cove",
+  "dawn",
+  "dusk",
+  "fern",
+  "frost",
+  "glow",
+  "gray",
+  "green",
+  "hush",
+  "iron",
+  "jade",
+  "kind",
+  "lake",
+  "lunar",
+  "maple",
+  "mint",
+  "moss",
+  "north",
+  "nova",
+  "onyx",
+  "pine",
+  "quiet",
+  "river",
+  "sage",
+  "solar",
+  "stone",
+  "swift",
+  "tide",
+  "violet",
+  "west",
+  "wild",
+  "young",
 ];
 const ID_RIGHT = [
-  "ant", "bear", "bird", "brook", "comet", "crow", "deer", "dove", "drake", "finch",
-  "fox", "frog", "hare", "hawk", "lynx", "mole", "moth", "otter", "owl", "panda",
-  "quail", "raven", "seal", "shark", "snail", "sparrow", "swan", "tiger", "trout", "wolf",
+  "ant",
+  "bear",
+  "bird",
+  "brook",
+  "comet",
+  "crow",
+  "deer",
+  "dove",
+  "drake",
+  "finch",
+  "fox",
+  "frog",
+  "hare",
+  "hawk",
+  "lynx",
+  "mole",
+  "moth",
+  "otter",
+  "owl",
+  "panda",
+  "quail",
+  "raven",
+  "seal",
+  "shark",
+  "snail",
+  "sparrow",
+  "swan",
+  "tiger",
+  "trout",
+  "wolf",
 ];
 
 export function friendlyIdFromUuid(uuid: string): string {
@@ -28,7 +89,11 @@ export function choosePipeline(prompt: string): BackgroundStage[] {
   const wantsCode = ["implement", "build", "add", "fix", "update", "change", "pr", "code"].some((word) =>
     lower.includes(word),
   );
-  if (wantsResearch && !wantsCode) return [{ role: "researcher", status: "queued" }, { role: "reviewer", status: "queued" }];
+  if (wantsResearch && !wantsCode)
+    return [
+      { role: "researcher", status: "queued" },
+      { role: "reviewer", status: "queued" },
+    ];
   if (wantsResearch && wantsCode) {
     return [
       { role: "researcher", status: "queued" },
@@ -36,7 +101,10 @@ export function choosePipeline(prompt: string): BackgroundStage[] {
       { role: "reviewer", status: "queued" },
     ];
   }
-  return [{ role: "implementer", status: "queued" }, { role: "reviewer", status: "queued" }];
+  return [
+    { role: "implementer", status: "queued" },
+    { role: "reviewer", status: "queued" },
+  ];
 }
 
 export function nextQueuedRole(task: Pick<BackgroundTask, "pipeline">): BackgroundRole | undefined {
@@ -60,13 +128,18 @@ export function renderTask(task: BackgroundTask): string {
     task.summary ? `Summary: ${task.summary}` : undefined,
     task.review_summary ? `Review: ${task.review_summary}` : undefined,
     task.error ? `Error: ${task.error}` : undefined,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function renderTaskList(tasks: BackgroundTask[]): string {
   if (tasks.length === 0) return "No background tasks.";
-  return tasks.slice(0, 10).map((task) => {
-    const current = task.current_role ? ` current:${task.current_role}` : "";
-    return `${task.id} — ${task.status}${current} — ${renderPipeline(task)} — ${basename(task.worktree)}`;
-  }).join("\n");
+  return tasks
+    .slice(0, 10)
+    .map((task) => {
+      const current = task.current_role ? ` current:${task.current_role}` : "";
+      return `${task.id} — ${task.status}${current} — ${renderPipeline(task)} — ${basename(task.worktree)}`;
+    })
+    .join("\n");
 }

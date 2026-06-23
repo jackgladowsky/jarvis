@@ -25,7 +25,16 @@ export interface GoalState {
   deadline_at: string;
 }
 
-export type GoalEventType = "created" | "task_started" | "task_finished" | "paused" | "resumed" | "stopped" | "done" | "failed" | "waiting_on_approval";
+export type GoalEventType =
+  | "created"
+  | "task_started"
+  | "task_finished"
+  | "paused"
+  | "resumed"
+  | "stopped"
+  | "done"
+  | "failed"
+  | "waiting_on_approval";
 
 export interface GoalEvent {
   ts: string;

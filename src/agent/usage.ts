@@ -44,7 +44,8 @@ function addUsage(total: UsageTotals, usage: Usage): void {
   total.output += usage.output ?? 0;
   total.cacheRead += usage.cacheRead ?? 0;
   total.cacheWrite += usage.cacheWrite ?? 0;
-  total.totalTokens += usage.totalTokens ?? ((usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0));
+  total.totalTokens +=
+    usage.totalTokens ?? (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
   total.cost += usage.cost?.total ?? 0;
 }
 
@@ -102,7 +103,7 @@ async function listJsonlFiles(dir: string): Promise<string[]> {
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await listJsonlFiles(fullPath));
+      files.push(...(await listJsonlFiles(fullPath)));
     } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
       files.push(fullPath);
     }
@@ -200,9 +201,10 @@ export async function renderUsageReport(chatId: number): Promise<string> {
   const threshold = contextWindow > 0 ? Math.max(0, contextWindow - config.compaction.reserve_tokens) : 0;
   const sessionUsage = await readJsonlUsage(join(paths.sessions, `${active.sessionId}.jsonl`));
 
-  const contextLine = contextWindow > 0
-    ? `Context: ~${formatInt(contextTokens)} / ${formatInt(contextWindow)} tokens (${formatPercent((contextTokens / contextWindow) * 100)}), ~${formatInt(Math.max(0, contextWindow - contextTokens))} remaining`
-    : `Context: ~${formatInt(contextTokens)} tokens used; model context window unavailable`;
+  const contextLine =
+    contextWindow > 0
+      ? `Context: ~${formatInt(contextTokens)} / ${formatInt(contextWindow)} tokens (${formatPercent((contextTokens / contextWindow) * 100)}), ~${formatInt(Math.max(0, contextWindow - contextTokens))} remaining`
+      : `Context: ~${formatInt(contextTokens)} tokens used; model context window unavailable`;
 
   const lines = [
     "Usage for this chat",

@@ -41,8 +41,7 @@ function tokensForString(s: string): number {
 export function estimateMessageTokens(message: AgentMessage): number {
   const role = (message as { role?: string }).role;
   if (role === "user") {
-    const content = (message as { content: string | Array<{ type: string; text?: string }> })
-      .content;
+    const content = (message as { content: string | Array<{ type: string; text?: string }> }).content;
     if (typeof content === "string") return tokensForString(content);
     let chars = 0;
     for (const block of content) {
@@ -66,9 +65,11 @@ export function estimateMessageTokens(message: AgentMessage): number {
     return Math.ceil(chars / CHARS_PER_TOKEN);
   }
   if (role === "toolResult") {
-    const content = (message as {
-      content: string | Array<{ type: string; text?: string }>;
-    }).content;
+    const content = (
+      message as {
+        content: string | Array<{ type: string; text?: string }>;
+      }
+    ).content;
     if (typeof content === "string") return tokensForString(content);
     let chars = 0;
     for (const block of content) {
@@ -191,9 +192,13 @@ function serializeForSummary(messages: AgentMessage[]): string {
     const role = (m as { role?: string }).role;
     if (role === "user") {
       const c = (m as { content: string | Array<{ type: string; text?: string }> }).content;
-      const text = typeof c === "string"
-        ? c
-        : c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+      const text =
+        typeof c === "string"
+          ? c
+          : c
+              .filter((b) => b.type === "text")
+              .map((b) => b.text ?? "")
+              .join("\n");
       parts.push(`USER: ${text}`);
     } else if (role === "assistant") {
       const blocks = (m as unknown as { content: Array<Record<string, unknown>> }).content;
@@ -207,9 +212,13 @@ function serializeForSummary(messages: AgentMessage[]): string {
       parts.push(`ASSISTANT: ${lines.join("\n")}`);
     } else if (role === "toolResult") {
       const c = (m as { content: string | Array<{ type: string; text?: string }> }).content;
-      const text = typeof c === "string"
-        ? c
-        : c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+      const text =
+        typeof c === "string"
+          ? c
+          : c
+              .filter((b) => b.type === "text")
+              .map((b) => b.text ?? "")
+              .join("\n");
       parts.push(`TOOL_RESULT: ${text}`);
     }
   }
@@ -278,10 +287,7 @@ export interface MaybeCompactResult {
 // full compaction pipeline and returns the freshly compacted message list.
 export interface CompactionStore {
   appendCompactionEntry?: (entry: { summary: string; tokensBefore: number }) => Promise<void>;
-  rewriteWithCompaction?: (
-    entry: { summary: string; tokensBefore: number },
-    keptTail: AgentMessage[],
-  ) => Promise<void>;
+  rewriteWithCompaction?: (entry: { summary: string; tokensBefore: number }, keptTail: AgentMessage[]) => Promise<void>;
   reload: () => Promise<LoadedSession>;
 }
 

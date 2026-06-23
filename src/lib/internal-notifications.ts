@@ -29,7 +29,12 @@ function now(): string {
 }
 
 function idPart(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "notification";
+  return (
+    value
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "notification"
+  );
 }
 
 function notificationPath(id: string): string {
@@ -40,7 +45,7 @@ export function renderInternalNotificationPrompt(notification: InternalNotificat
   return [
     `Internal ${notification.source} notification: ${notification.title}`,
     "",
-    "Handle this as main JARVIS in the current Telegram conversation. Respond to Jack normally; do not mention internal routing unless it matters.",
+    "Handle this as main JARVIS in the current Telegram conversation. Respond to the owner normally; do not mention internal routing unless it matters.",
     "",
     notification.prompt ?? notification.body,
   ].join("\n");
@@ -48,7 +53,11 @@ export function renderInternalNotificationPrompt(notification: InternalNotificat
 
 export async function writeInternalNotificationHeartbeat(): Promise<void> {
   await mkdir(paths.internalNotifications, { recursive: true });
-  await writeFile(paths.internalNotificationsHeartbeat, JSON.stringify({ pid: process.pid, updated_at: now() }, null, 2) + "\n", "utf-8");
+  await writeFile(
+    paths.internalNotificationsHeartbeat,
+    JSON.stringify({ pid: process.pid, updated_at: now() }, null, 2) + "\n",
+    "utf-8",
+  );
 }
 
 export async function mainNotificationPumpLooksAlive(maxAgeMs = HEARTBEAT_MAX_AGE_MS): Promise<boolean> {
@@ -65,7 +74,9 @@ export async function mainNotificationPumpLooksAlive(maxAgeMs = HEARTBEAT_MAX_AG
   }
 }
 
-export async function enqueueInternalNotification(input: Omit<InternalNotification, "id" | "created_at" | "status"> & { id?: string }): Promise<InternalNotification> {
+export async function enqueueInternalNotification(
+  input: Omit<InternalNotification, "id" | "created_at" | "status"> & { id?: string },
+): Promise<InternalNotification> {
   await mkdir(paths.internalNotifications, { recursive: true });
   const notification: InternalNotification = {
     ...input,
@@ -77,7 +88,10 @@ export async function enqueueInternalNotification(input: Omit<InternalNotificati
   return notification;
 }
 
-function isStaleRunningNotification(notification: InternalNotification, maxAgeMs = RUNNING_NOTIFICATION_MAX_AGE_MS): boolean {
+function isStaleRunningNotification(
+  notification: InternalNotification,
+  maxAgeMs = RUNNING_NOTIFICATION_MAX_AGE_MS,
+): boolean {
   if (notification.status !== "running") return false;
   const updated = Date.parse(notification.updated_at ?? notification.created_at);
   return !Number.isFinite(updated) || Date.now() - updated > maxAgeMs;
@@ -86,11 +100,15 @@ function isStaleRunningNotification(notification: InternalNotification, maxAgeMs
 export async function listPendingInternalNotifications(): Promise<InternalNotification[]> {
   await mkdir(paths.internalNotifications, { recursive: true });
   const { readdir } = await import("node:fs/promises");
-  const names = (await readdir(paths.internalNotifications)).filter((name) => name.endsWith(".json") && name !== "heartbeat.json").sort();
+  const names = (await readdir(paths.internalNotifications))
+    .filter((name) => name.endsWith(".json") && name !== "heartbeat.json")
+    .sort();
   const notifications: InternalNotification[] = [];
   for (const name of names) {
     try {
-      const parsed = JSON.parse(await readFile(join(paths.internalNotifications, name), "utf-8")) as InternalNotification;
+      const parsed = JSON.parse(
+        await readFile(join(paths.internalNotifications, name), "utf-8"),
+      ) as InternalNotification;
       if (parsed.status === "pending" || isStaleRunningNotification(parsed)) notifications.push(parsed);
     } catch (err) {
       log.warn("internal notification read failed", { file: name, err: err instanceof Error ? err.message : err });
@@ -99,25 +117,37 @@ export async function listPendingInternalNotifications(): Promise<InternalNotifi
   return notifications.sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
-export async function claimInternalNotification(notification: InternalNotification): Promise<InternalNotification | undefined> {
+export async function claimInternalNotification(
+  notification: InternalNotification,
+): Promise<InternalNotification | undefined> {
   const claimed: InternalNotification = { ...notification, status: "running", updated_at: now() };
   try {
     await writeFile(notificationPath(notification.id), JSON.stringify(claimed, null, 2) + "\n", "utf-8");
     return claimed;
   } catch (err) {
-    log.warn("internal notification claim failed", { id: notification.id, err: err instanceof Error ? err.message : err });
+    log.warn("internal notification claim failed", {
+      id: notification.id,
+      err: err instanceof Error ? err.message : err,
+    });
     return undefined;
   }
 }
 
-export async function finishInternalNotification(notification: InternalNotification, status: "processed" | "failed", error?: string): Promise<void> {
+export async function finishInternalNotification(
+  notification: InternalNotification,
+  status: "processed" | "failed",
+  error?: string,
+): Promise<void> {
   const finished: InternalNotification = { ...notification, status, updated_at: now(), error };
   const current = notificationPath(notification.id);
   const target = join(paths.internalNotificationsArchive, `${status}-${basename(current)}`);
   await mkdir(paths.internalNotificationsArchive, { recursive: true });
   await writeFile(current, JSON.stringify(finished, null, 2) + "\n", "utf-8");
   await rename(current, target).catch(async (err) => {
-    log.warn("internal notification archive failed", { id: notification.id, err: err instanceof Error ? err.message : err });
+    log.warn("internal notification archive failed", {
+      id: notification.id,
+      err: err instanceof Error ? err.message : err,
+    });
   });
 }
 
@@ -148,7 +178,9 @@ export async function sendTelegramFallback(chatId: number, text: string): Promis
   }
 }
 
-export async function notifyMainOrFallback(input: Omit<InternalNotification, "id" | "created_at" | "status"> & { id?: string }): Promise<InternalNotification> {
+export async function notifyMainOrFallback(
+  input: Omit<InternalNotification, "id" | "created_at" | "status"> & { id?: string },
+): Promise<InternalNotification> {
   const notification = await enqueueInternalNotification(input);
   if (await mainNotificationPumpLooksAlive()) return notification;
 
@@ -156,9 +188,16 @@ export async function notifyMainOrFallback(input: Omit<InternalNotification, "id
   try {
     await sendTelegramFallback(input.chat_id, fallback);
     await finishInternalNotification(notification, "processed");
-    log.warn("internal notification used Telegram fallback", { id: notification.id, source: input.source, title: input.title });
+    log.warn("internal notification used Telegram fallback", {
+      id: notification.id,
+      source: input.source,
+      title: input.title,
+    });
   } catch (err) {
-    log.warn("internal notification fallback failed", { id: notification.id, err: err instanceof Error ? err.message : err });
+    log.warn("internal notification fallback failed", {
+      id: notification.id,
+      err: err instanceof Error ? err.message : err,
+    });
   }
   return notification;
 }

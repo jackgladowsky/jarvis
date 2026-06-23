@@ -43,13 +43,10 @@ export const editTool: AgentTool<typeof schema> = {
       // hit was intended.
       const second = original.indexOf(oldText, first + 1);
       if (second !== -1) {
-        throw new Error(
-          `oldText appears multiple times in ${path}; include more surrounding context so it's unique`,
-        );
+        throw new Error(`oldText appears multiple times in ${path}; include more surrounding context so it's unique`);
       }
 
-      const updated =
-        original.slice(0, first) + newText + original.slice(first + oldText.length);
+      const updated = original.slice(0, first) + newText + original.slice(first + oldText.length);
       await writeFile(path, updated, "utf-8");
 
       const bytes = Buffer.byteLength(updated, "utf-8");

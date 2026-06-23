@@ -26,12 +26,19 @@ export function goalDeadline(createdAt: string, maxMinutes: number): string {
   return new Date(new Date(createdAt).getTime() + maxMinutes * 60_000).toISOString();
 }
 
-export function canStartGoalTask(goal: GoalState, now = new Date()): { ok: true } | { ok: false; reason: string; done?: boolean } {
-  if (!goal.status || !["active", "waiting_on_approval"].includes(goal.status)) return { ok: false, reason: `goal is ${goal.status}` };
+export function canStartGoalTask(
+  goal: GoalState,
+  now = new Date(),
+): { ok: true } | { ok: false; reason: string; done?: boolean } {
+  if (!goal.status || !["active", "waiting_on_approval"].includes(goal.status))
+    return { ok: false, reason: `goal is ${goal.status}` };
   if (goal.active_task_id) return { ok: false, reason: `task ${goal.active_task_id} is already active` };
-  if (goal.tasks_started >= goal.budgets.max_tasks) return { ok: false, reason: `task budget exhausted (${goal.tasks_started}/${goal.budgets.max_tasks})`, done: true };
-  if (now.getTime() >= new Date(goal.deadline_at).getTime()) return { ok: false, reason: "time budget exhausted", done: true };
-  if (goal.failures > goal.budgets.max_failures) return { ok: false, reason: `failure budget exhausted (${goal.failures}/${goal.budgets.max_failures})` };
+  if (goal.tasks_started >= goal.budgets.max_tasks)
+    return { ok: false, reason: `task budget exhausted (${goal.tasks_started}/${goal.budgets.max_tasks})`, done: true };
+  if (now.getTime() >= new Date(goal.deadline_at).getTime())
+    return { ok: false, reason: "time budget exhausted", done: true };
+  if (goal.failures > goal.budgets.max_failures)
+    return { ok: false, reason: `failure budget exhausted (${goal.failures}/${goal.budgets.max_failures})` };
   return { ok: true };
 }
 

@@ -4,7 +4,12 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { appendJobMessages, loadJobSession, loadJobSessionLines, rewriteJobSessionWithCompaction } from "./job-session.js";
+import {
+  appendJobMessages,
+  loadJobSession,
+  loadJobSessionLines,
+  rewriteJobSessionWithCompaction,
+} from "./job-session.js";
 
 function user(text: string): AgentMessage {
   return {
@@ -43,16 +48,19 @@ test("loadJobSessionLines keeps only the latest compacted summary and tail", () 
   ]);
 
   assert.equal(loaded.previousSummary, "new");
-  assert.deepEqual(loaded.tail.map((m) => m.role), ["user", "assistant"]);
+  assert.deepEqual(
+    loaded.tail.map((m) => m.role),
+    ["user", "assistant"],
+  );
 });
 
 test("loadJobSessionLines drops dangling assistant tool calls", () => {
-  const loaded = loadJobSessionLines([
-    JSON.stringify(user("kept")),
-    JSON.stringify(assistantToolCall()),
-  ]);
+  const loaded = loadJobSessionLines([JSON.stringify(user("kept")), JSON.stringify(assistantToolCall())]);
 
-  assert.deepEqual(loaded.tail.map((m) => m.role), ["user"]);
+  assert.deepEqual(
+    loaded.tail.map((m) => m.role),
+    ["user"],
+  );
 });
 
 test("rewriteJobSessionWithCompaction bounds the transcript to summary plus kept tail", async () => {
@@ -71,7 +79,10 @@ test("rewriteJobSessionWithCompaction bounds the transcript to summary plus kept
 
     const loaded = await loadJobSession(file);
     assert.equal(loaded.previousSummary, "summary");
-    assert.deepEqual(loaded.tail.map((m) => (m.content as Array<{ text?: string }>)[0]?.text), ["keep"]);
+    assert.deepEqual(
+      loaded.tail.map((m) => (m.content as Array<{ text?: string }>)[0]?.text),
+      ["keep"],
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

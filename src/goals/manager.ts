@@ -62,14 +62,20 @@ export async function readGoalEvents(id: string, limit = 20): Promise<GoalEvent[
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   }
-  return raw.split("\n").filter(Boolean).slice(-limit).map((line) => JSON.parse(line) as GoalEvent);
+  return raw
+    .split("\n")
+    .filter(Boolean)
+    .slice(-limit)
+    .map((line) => JSON.parse(line) as GoalEvent);
 }
 
 export async function listGoals(): Promise<GoalState[]> {
   await mkdir(paths.goalTasks, { recursive: true });
   const { readdir } = await import("node:fs/promises");
   const files = (await readdir(paths.goalTasks)).filter((name) => name.endsWith(".json")).sort();
-  const goals = await Promise.all(files.map(async (file) => JSON.parse(await readFile(join(paths.goalTasks, file), "utf-8")) as GoalState));
+  const goals = await Promise.all(
+    files.map(async (file) => JSON.parse(await readFile(join(paths.goalTasks, file), "utf-8")) as GoalState),
+  );
   return goals.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
@@ -128,11 +134,19 @@ export async function startNextGoalTask(goalOrId: GoalState | string, reason = "
   goal.active_task_id = task.id;
   goal.stop_reason = undefined;
   await writeGoal(goal);
-  await appendGoalEvent(goal.id, { type: "task_started", task_id: task.id, body: `${reason}; started ${task.id} (${iteration}/${goal.budgets.max_tasks})` });
+  await appendGoalEvent(goal.id, {
+    type: "task_started",
+    task_id: task.id,
+    body: `${reason}; started ${task.id} (${iteration}/${goal.budgets.max_tasks})`,
+  });
   return goal;
 }
 
-export async function setGoalStatus(id: string, status: Extract<GoalStatus, "paused" | "stopped">, reason: string): Promise<GoalState> {
+export async function setGoalStatus(
+  id: string,
+  status: Extract<GoalStatus, "paused" | "stopped">,
+  reason: string,
+): Promise<GoalState> {
   const goal = await readGoal(id);
   goal.status = status;
   goal.stop_reason = reason;
@@ -143,12 +157,17 @@ export async function setGoalStatus(id: string, status: Extract<GoalStatus, "pau
 
 export async function resumeGoal(id: string): Promise<GoalState> {
   const goal = await readGoal(id);
-  if (!["paused", "waiting_on_approval"].includes(goal.status)) throw new Error(`${id} is ${goal.status}, not paused/waiting`);
+  if (!["paused", "waiting_on_approval"].includes(goal.status))
+    throw new Error(`${id} is ${goal.status}, not paused/waiting`);
   if (goal.active_task_id) {
     goal.status = "active";
     goal.stop_reason = undefined;
     await writeGoal(goal);
-    await appendGoalEvent(id, { type: "resumed", body: `resumed with active task ${goal.active_task_id}`, task_id: goal.active_task_id });
+    await appendGoalEvent(id, {
+      type: "resumed",
+      body: `resumed with active task ${goal.active_task_id}`,
+      task_id: goal.active_task_id,
+    });
     return goal;
   }
   await appendGoalEvent(id, { type: "resumed", body: "resumed and starting next task" });
@@ -164,7 +183,11 @@ export async function advanceGoalAfterBackgroundTask(taskId: string): Promise<Go
 
   goal.active_task_id = undefined;
   const result = classifyChildResult(task);
-  await appendGoalEvent(goal.id, { type: "task_finished", task_id: taskId, body: `${taskId} finished with ${task.status}` });
+  await appendGoalEvent(goal.id, {
+    type: "task_finished",
+    task_id: taskId,
+    body: `${taskId} finished with ${task.status}`,
+  });
 
   if (goal.status === "stopped") {
     await writeGoal(goal);
@@ -224,17 +247,27 @@ export function renderGoal(goal: GoalState): string {
     goal.task_ids.length ? `Task IDs: ${goal.task_ids.join(", ")}` : undefined,
     goal.stop_reason ? `Stop reason: ${goal.stop_reason}` : undefined,
     `Deadline: ${goal.deadline_at}`,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function renderGoalList(goals: GoalState[]): string {
   if (goals.length === 0) return "No goals.";
-  return goals.slice(0, 10).map((goal) => `${goal.id} — ${goal.status} — ${goal.tasks_started}/${goal.budgets.max_tasks}${goal.active_task_id ? ` active:${goal.active_task_id}` : ""} — ${goal.name}`).join("\n");
+  return goals
+    .slice(0, 10)
+    .map(
+      (goal) =>
+        `${goal.id} — ${goal.status} — ${goal.tasks_started}/${goal.budgets.max_tasks}${goal.active_task_id ? ` active:${goal.active_task_id}` : ""} — ${goal.name}`,
+    )
+    .join("\n");
 }
 
 export function renderGoalEvents(events: GoalEvent[]): string {
   if (events.length === 0) return "No goal events.";
-  return events.map((event) => `- ${event.ts} ${event.type}${event.task_id ? `/${event.task_id}` : ""}: ${event.body}`).join("\n");
+  return events
+    .map((event) => `- ${event.ts} ${event.type}${event.task_id ? `/${event.task_id}` : ""}: ${event.body}`)
+    .join("\n");
 }
 
 function budgetLabel(goal: GoalState): string {
