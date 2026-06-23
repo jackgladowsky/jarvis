@@ -22,7 +22,7 @@ RESTART_LOG="$DATA_BASE/data/deploy/restart.log"
 cd "$REPO_ROOT"
 mkdir -p "$(dirname "$MARKER")"
 
-# Telegram-launched shell commands do not necessarily inherit Jack's interactive
+# Telegram-launched shell commands do not necessarily inherit the owner's interactive
 # nvm PATH. Prefer any installed nvm Node so `pnpm`'s /usr/bin/env node shim
 # works from both terminals and JARVIS tool calls.
 if ! command -v node >/dev/null 2>&1 && compgen -G "$HOME/.nvm/versions/node/*/bin" >/dev/null; then

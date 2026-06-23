@@ -29,8 +29,8 @@ import { paths } from "../paths.js";
 // JSON object keys are always strings).
 export interface ActiveSessionEntry {
   sessionId: string;
-  startedAt: number;       // ms epoch
-  lastMessageAt: number;   // ms epoch
+  startedAt: number; // ms epoch
+  lastMessageAt: number; // ms epoch
 }
 
 type ActiveSessions = Record<string, ActiveSessionEntry>;
@@ -209,11 +209,7 @@ export interface LoadedSession {
 }
 
 function isCompactionEntry(parsed: unknown): parsed is CompactionEntry {
-  return (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    (parsed as { type?: string }).type === "compaction"
-  );
+  return typeof parsed === "object" && parsed !== null && (parsed as { type?: string }).type === "compaction";
 }
 
 // Read the active session's JSONL, applying any compaction entries. Walk
@@ -246,9 +242,7 @@ function dropDanglingToolCalls(messages: AgentMessage[]): AgentMessage[] {
   while (out.length > 0) {
     const last = out[out.length - 1];
     if (last.role !== "assistant") break;
-    const hasToolCall = (last.content ?? []).some(
-      (c: { type: string }) => c.type === "toolCall",
-    );
+    const hasToolCall = (last.content ?? []).some((c: { type: string }) => c.type === "toolCall");
     if (!hasToolCall) break;
     out.pop();
   }
@@ -257,10 +251,7 @@ function dropDanglingToolCalls(messages: AgentMessage[]): AgentMessage[] {
 
 // Append a batch of new messages to the session's JSONL. Single fs call
 // to keep the write atomic at typical sizes (well under PIPE_BUF).
-export async function appendMessages(
-  sessionId: string,
-  messages: AgentMessage[],
-): Promise<void> {
+export async function appendMessages(sessionId: string, messages: AgentMessage[]): Promise<void> {
   if (messages.length === 0) return;
   const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
   await appendFile(sessionFile(sessionId), lines, "utf-8");

@@ -24,14 +24,8 @@ test("isOneTimeTask distinguishes dynamic reminders from recurring cron jobs", (
 });
 
 test("taskSignature ignores id and includes scheduling fields", () => {
-  assert.equal(
-    taskSignature({ ...recurring, id: "renamed" }),
-    taskSignature(recurring),
-  );
-  assert.notEqual(
-    taskSignature({ ...recurring, schedule: "5 9 * * *" }),
-    taskSignature(recurring),
-  );
+  assert.equal(taskSignature({ ...recurring, id: "renamed" }), taskSignature(recurring));
+  assert.notEqual(taskSignature({ ...recurring, schedule: "5 9 * * *" }), taskSignature(recurring));
   assert.match(taskSignature(oneTime), /run_at/);
 });
 

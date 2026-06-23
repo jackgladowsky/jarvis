@@ -124,9 +124,7 @@ function formatStatus(event: AgentEvent, mode: StatusMode): string | undefined {
     case "turn_start":
       return "Thinking";
     case "tool_execution_start":
-      return mode === "verbose"
-        ? `Running ${event.toolName}: ${compactJson(event.args)}`
-        : `Running ${event.toolName}`;
+      return mode === "verbose" ? `Running ${event.toolName}: ${compactJson(event.args)}` : `Running ${event.toolName}`;
     case "tool_execution_update":
       return mode === "verbose"
         ? `${event.toolName} update: ${compactJson(event.partialResult)}`
@@ -167,10 +165,7 @@ async function loadScheduledMessages(taskId: string): Promise<JobLoadedSession> 
   return loadJobSession(scheduledSessionFile(taskId));
 }
 
-async function appendScheduledMessages(
-  taskId: string,
-  messages: AgentMessage[],
-): Promise<void> {
+async function appendScheduledMessages(taskId: string, messages: AgentMessage[]): Promise<void> {
   await appendJobMessages(scheduledSessionFile(taskId), messages);
 }
 
@@ -378,17 +373,10 @@ export async function runScheduledPrompt(
   const loaded = await loadScheduledMessages(taskId);
   let initialMessages: AgentMessage[];
   try {
-    const compaction = await maybeCompactLoaded(
-      `scheduled:${taskId}`,
-      loaded,
-      model,
-      makeSummaryMessage,
-      {
-        rewriteWithCompaction: (entry, keptTail) =>
-          rewriteScheduledSessionWithCompaction(taskId, entry, keptTail),
-        reload: () => loadScheduledMessages(taskId),
-      },
-    );
+    const compaction = await maybeCompactLoaded(`scheduled:${taskId}`, loaded, model, makeSummaryMessage, {
+      rewriteWithCompaction: (entry, keptTail) => rewriteScheduledSessionWithCompaction(taskId, entry, keptTail),
+      reload: () => loadScheduledMessages(taskId),
+    });
     if (compaction.didCompact) {
       log.info("scheduled compaction applied", {
         taskId,
@@ -425,7 +413,7 @@ export async function runScheduledPrompt(
 
   const taskPrompt = [
     "You are running as a scheduled JARVIS task.",
-    "Your output may be sent to Jack as a Telegram notification, so be concise and focus on what is actionable.",
+    "Your output may be sent to the owner as a Telegram notification, so be concise and focus on what is actionable.",
     "Compare against previous runs when relevant.",
     "",
     `Task: ${taskName} (${taskId})`,
@@ -457,17 +445,10 @@ export async function runBackgroundPrompt(
   const loaded = await loadBackgroundMessages(taskId);
   let initialMessages: AgentMessage[];
   try {
-    const compaction = await maybeCompactLoaded(
-      `background:${taskId}`,
-      loaded,
-      model,
-      makeSummaryMessage,
-      {
-        rewriteWithCompaction: (entry, keptTail) =>
-          rewriteBackgroundSessionWithCompaction(taskId, entry, keptTail),
-        reload: () => loadBackgroundMessages(taskId),
-      },
-    );
+    const compaction = await maybeCompactLoaded(`background:${taskId}`, loaded, model, makeSummaryMessage, {
+      rewriteWithCompaction: (entry, keptTail) => rewriteBackgroundSessionWithCompaction(taskId, entry, keptTail),
+      reload: () => loadBackgroundMessages(taskId),
+    });
     if (compaction.didCompact) {
       log.info("background compaction applied", {
         taskId,

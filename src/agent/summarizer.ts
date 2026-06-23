@@ -77,7 +77,10 @@ function serialize(loaded: sessions.LoadedSession): string {
       const text =
         typeof c === "string"
           ? c
-          : c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+          : c
+              .filter((b) => b.type === "text")
+              .map((b) => b.text ?? "")
+              .join("\n");
       parts.push(`USER: ${text}`);
     } else if (role === "assistant") {
       const blocks = (m as unknown as { content: Array<Record<string, unknown>> }).content;
@@ -94,7 +97,10 @@ function serialize(loaded: sessions.LoadedSession): string {
       const text =
         typeof c === "string"
           ? c
-          : c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+          : c
+              .filter((b) => b.type === "text")
+              .map((b) => b.text ?? "")
+              .join("\n");
       parts.push(`TOOL_RESULT: ${text}`);
     }
   }
@@ -122,9 +128,7 @@ async function generateLine(
     model,
     {
       systemPrompt: SUMMARIZER_SYSTEM_PROMPT,
-      messages: [
-        { role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() },
-      ],
+      messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
     },
     { apiKey, maxTokens: 200 },
   );
@@ -168,9 +172,7 @@ async function writeRecentLine(line: string): Promise<void> {
   // monthly archive file. Lines starting with "- " are entries; blank lines
   // and other content are preserved as headers.
   const lines = updated.split("\n");
-  const entryIndices = lines
-    .map((l, i) => (l.startsWith("- ") ? i : -1))
-    .filter((i) => i >= 0);
+  const entryIndices = lines.map((l, i) => (l.startsWith("- ") ? i : -1)).filter((i) => i >= 0);
 
   if (entryIndices.length > RECENT_CAP) {
     const overflowStart = entryIndices[RECENT_CAP];

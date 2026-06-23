@@ -1,13 +1,13 @@
 # GitHub PRs
 
-Use this skill when preparing, reviewing, pushing, or opening GitHub pull requests for JARVIS or Jack's repos.
+Use this skill when preparing, reviewing, pushing, or opening GitHub pull requests for JARVIS or the owner's repos.
 
 ## Defaults
 
 - Work in the assigned repo/worktree, not a different checkout.
 - Inspect `git status`, branch, and diff before making claims.
 - Run appropriate checks before handoff.
-- Do not push, merge, or deploy unless Jack explicitly asked or the task stage allows it.
+- Do not push, merge, or deploy unless the owner explicitly asked or the task stage allows it.
 - For background tasks, main JARVIS is the gate after reviewer approval.
 
 ## Before opening a PR
@@ -44,10 +44,12 @@ If `gh` is unavailable or unauthenticated, report that and provide the branch/su
 
 ```markdown
 ## Summary
+
 - <change>
 - <change>
 
 ## Tests
+
 - `<command>`
 ```
 

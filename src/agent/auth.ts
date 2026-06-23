@@ -10,7 +10,7 @@
 //
 // The token typically lives ~1 hour; the refresh token is long-lived and
 // only requires a browser dance again on revoke. See DESIGN.md §15 Phase 0
-// for the empirical validation that confirmed this works on the M710q.
+// for the empirical validation that confirmed this works on a long-lived Linux host.
 //
 // The Anthropic path is straightforward — just hand back the env-stored API key.
 

@@ -9,7 +9,7 @@ Scheduler config lives in `~/.jarvis/config.yaml`:
 ```yaml
 scheduler:
   enabled: true
-  timezone: America/New_York
+  timezone: UTC
   telegram_chat_id: 123456789
   tasks: []
 ```
@@ -41,7 +41,7 @@ Built-in recurring tasks may also be registered by source code. Config and dynam
       "name": "One-time reminder",
       "run_at": "2026-05-11T14:30:00-04:00",
       "notify": "always",
-      "prompt": "Remind Jack to do the thing."
+      "prompt": "Remind the owner to do the thing."
     }
   ]
 }

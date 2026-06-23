@@ -52,7 +52,7 @@ if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
   exit 1
 fi
 
-NVM_DIR="${NVM_DIR:-/home/jack/.nvm}"
+NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 NVM_SH="$NVM_DIR/nvm.sh"
 if [[ ! -s "$NVM_SH" ]]; then
   echo "nvm.sh not found: $NVM_SH" >&2
@@ -60,7 +60,7 @@ if [[ ! -s "$NVM_SH" ]]; then
 fi
 
 export NVM_DIR
-# shellcheck source=/home/jack/.nvm/nvm.sh
+# shellcheck source=/dev/null
 . "$NVM_SH"
 
 cd "$WORKTREE"

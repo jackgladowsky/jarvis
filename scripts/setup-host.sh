@@ -29,7 +29,7 @@ copy_if_missing "$REPO_ROOT/config.yaml.example"        "$DATA_BASE/config.yaml"
 copy_if_missing "$REPO_ROOT/AGENTS.md.example"          "$DATA_BASE/AGENTS.md"
 copy_if_missing "$REPO_ROOT/prompts/system.md.example"  "$DATA_BASE/prompts/system.md"
 
-# .env holds secrets after Jack edits it; tighten perms unconditionally.
+# .env holds secrets after you edit it; tighten perms unconditionally.
 chmod 600 "$DATA_BASE/.env"
 
 echo "Installing deps..."
