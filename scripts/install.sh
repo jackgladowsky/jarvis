@@ -1,179 +1,330 @@
 #!/usr/bin/env bash
-# Interactive first-run installer for JARVIS.
+# One-command installer and first-run onboarding for JARVIS.
+#
 # Curl usage:
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/jarvis/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jackgladowsky/jarvis/main/scripts/install.sh | bash
+#
+# Safe/idempotent by default: existing config/secrets are not overwritten unless
+# you confirm an edit in the wizard. Use --dry-run to preview actions.
 set -euo pipefail
 
-REPO_URL="${JARVIS_REPO_URL:-https://github.com/<owner>/jarvis.git}"
-REPO_DIR="${JARVIS_REPO_DIR:-$HOME/jarvis}"
-DATA_DIR="${JARVIS_DATA_DIR:-$HOME/.jarvis}"
+DEFAULT_REPO_URL="https://github.com/jackgladowsky/jarvis.git"
+REPO_URL="${JARVIS_REPO_URL:-$DEFAULT_REPO_URL}"
 BRANCH="${JARVIS_BRANCH:-main}"
+INSTALL_DIR="${JARVIS_INSTALL_DIR:-$HOME/jarvis}"
+DATA_DIR="${JARVIS_DATA_DIR:-$HOME/.jarvis}"
+SKIP_SYSTEMD=0
+DRY_RUN=0
+YES=0
 
-color() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
-info() { color 36 "$*"; }
-warn() { color 33 "$*"; }
-fatal() { color 31 "ERROR: $*" >&2; exit 1; }
+usage() {
+  cat <<EOF
+JARVIS installer/onboarding wizard
 
-have() { command -v "$1" >/dev/null 2>&1; }
+Usage: scripts/install.sh [options]
+       curl -fsSL <raw-url>/scripts/install.sh | bash -s -- [options]
 
-prompt() {
-  local label="$1" default="${2:-}" value
-  if [[ -n "$default" ]]; then
-    read -r -p "$label [$default]: " value || true
-    printf '%s' "${value:-$default}"
+Options:
+  --repo-url URL       Git repo to clone (default: $DEFAULT_REPO_URL)
+  --branch NAME        Branch/ref to checkout when cloning (default: main)
+  --install-dir DIR    Source checkout path (default: ~/jarvis)
+  --data-dir DIR       Host-local data/config path (default: ~/.jarvis)
+  --skip-systemd       Do not install/enable the systemd service
+  --dry-run            Print planned actions without changing files
+  -y, --yes            Accept safe defaults for prompts (non-secret values stay blank)
+  -h, --help           Show this help
+
+Environment overrides: JARVIS_REPO_URL, JARVIS_BRANCH, JARVIS_INSTALL_DIR, JARVIS_DATA_DIR.
+EOF
+}
+
+log() { printf '%s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo-url) REPO_URL="${2:-}"; shift 2 ;;
+    --branch) BRANCH="${2:-}"; shift 2 ;;
+    --install-dir) INSTALL_DIR="${2:-}"; shift 2 ;;
+    --data-dir) DATA_DIR="${2:-}"; shift 2 ;;
+    --skip-systemd) SKIP_SYSTEMD=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -y|--yes) YES=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown option: $1" ;;
+  esac
+done
+
+expand_path() {
+  local path="$1"
+  case "$path" in
+    ~) printf '%s\n' "$HOME" ;;
+    ~/*) printf '%s/%s\n' "$HOME" "${path#~/}" ;;
+    /*) printf '%s\n' "$path" ;;
+    *) printf '%s/%s\n' "$(pwd)" "$path" ;;
+  esac
+}
+
+INSTALL_DIR="$(expand_path "$INSTALL_DIR")"
+DATA_DIR="$(expand_path "$DATA_DIR")"
+
+run() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf '[dry-run]'
+    printf ' %q' "$@"
+    printf '\n'
   else
-    read -r -p "$label: " value || true
-    printf '%s' "$value"
+    "$@"
   fi
 }
 
-prompt_secret() {
-  local label="$1" value
-  read -r -s -p "$label: " value || true
-  printf '\n' >&2
-  printf '%s' "$value"
+run_shell() {
+  local cmd="$1"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf '[dry-run] %s\n' "$cmd"
+  else
+    bash -c "$cmd"
+  fi
 }
 
-replace_env_value() {
-  local key="$1" value="$2" file="$3"
-  python3 - "$key" "$value" "$file" <<'PY'
-import sys
+can_prompt() { [[ -e /dev/tty ]] && { : <> /dev/tty; } 2>/dev/null; }
+
+require_prompt_or_yes() {
+  if [[ "$YES" -eq 1 || "$DRY_RUN" -eq 1 ]]; then
+    return
+  fi
+  can_prompt && return
+  fail "interactive onboarding needs a terminal. Re-run from an interactive shell, or pass --yes to accept defaults/non-interactive behavior."
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local default="$2"
+  local reply suffix
+  if [[ "$YES" -eq 1 || "$DRY_RUN" -eq 1 ]]; then
+    [[ "$default" == "yes" ]]
+    return
+  fi
+  require_prompt_or_yes
+  if [[ "$default" == "yes" ]]; then suffix='[Y/n]'; else suffix='[y/N]'; fi
+  while true; do
+    read -r -p "$prompt $suffix " reply < /dev/tty
+    reply="${reply:-$default}"
+    case "${reply,,}" in
+      y|yes) return 0 ;;
+      n|no) return 1 ;;
+      *) log "Please answer yes or no." ;;
+    esac
+  done
+}
+
+prompt_value() {
+  local prompt="$1"
+  local current="$2"
+  local secret="${3:-0}"
+  local reply display
+  if [[ "$YES" -eq 1 || "$DRY_RUN" -eq 1 ]]; then
+    printf '%s\n' "$current"
+    return
+  fi
+  require_prompt_or_yes
+  display="$current"
+  if [[ "$secret" -eq 1 && -n "$current" ]]; then display='********'; fi
+  if [[ "$secret" -eq 1 ]]; then
+    read -r -s -p "$prompt [$display]: " reply < /dev/tty
+    printf '\n' > /dev/tty
+  else
+    read -r -p "$prompt [$display]: " reply < /dev/tty
+  fi
+  printf '%s\n' "${reply:-$current}"
+}
+
+require_cmd() {
+  local cmd="$1"
+  local hint="$2"
+  command -v "$cmd" >/dev/null 2>&1 || fail "missing required command '$cmd'. $hint"
+}
+
+current_env_value() {
+  local file="$1"
+  local key="$2"
+  [[ -f "$file" ]] || return 0
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; found=1 } END { exit found ? 0 : 0 }' "$file" | tail -n 1
+}
+
+write_env_file() {
+  local env_file="$1"
+  local token="$2"
+  local allowed="$3"
+  local exa="$4"
+  local anthropic="$5"
+  local tmp
+
+  log "Writing secrets file: $env_file"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "[dry-run] would create/update $env_file with chmod 600 (values redacted)"
+    return
+  fi
+
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+# JARVIS secrets. Loaded by systemd via EnvironmentFile=.
+# Edited by scripts/install.sh onboarding wizard.
+
+TELEGRAM_BOT_TOKEN=$token
+TELEGRAM_ALLOWED_USER_IDS=$allowed
+
+# Optional override; defaults to <data_dir>/.codex-creds.json.
+# CODEX_OAUTH_CREDS_PATH=
+
+ANTHROPIC_API_KEY=$anthropic
+EXA_API_KEY=$exa
+EOF
+  install -m 600 "$tmp" "$env_file"
+  rm -f "$tmp"
+}
+
+patch_config() {
+  local config_file="$1"
+  local provider="$2"
+  local model="$3"
+  local timezone="$4"
+  [[ -f "$config_file" ]] || return 0
+  log "Updating onboarding choices in: $config_file"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "[dry-run] would set agent.provider=$provider, agent.model=$model, scheduler.timezone=$timezone"
+    return
+  fi
+  python3 - "$config_file" "$provider" "$model" "$timezone" <<'PY'
 from pathlib import Path
-key, value, file = sys.argv[1:4]
-path = Path(file)
-lines = path.read_text(encoding="utf-8").splitlines()
-out = []
-written = False
-for line in lines:
-    if line.startswith(f"{key}="):
-        out.append(f"{key}={value}")
-        written = True
-    else:
-        out.append(line)
-if not written:
-    out.append(f"{key}={value}")
-path.write_text("\n".join(out) + "\n", encoding="utf-8")
+import re
+import sys
+path = Path(sys.argv[1])
+provider, model, timezone = sys.argv[2:5]
+text = path.read_text()
+
+def replace_first(text: str, key: str, value: str) -> str:
+    pattern = re.compile(rf'(?m)^(\s*{re.escape(key)}:\s*)([^#\n]*)(\s*(#.*)?)$')
+    def repl(match: re.Match[str]) -> str:
+        comment = match.group(4)
+        suffix = f'  {comment}' if comment else ''
+        return f'{match.group(1)}{value}{suffix}'
+    return pattern.sub(repl, text, count=1)
+
+text = replace_first(text, 'provider', provider)
+text = replace_first(text, 'model', model)
+text = replace_first(text, 'timezone', timezone)
+path.write_text(text)
 PY
 }
 
-replace_yaml_scalar() {
-  local dotted_key="$1" value="$2" file="$3"
-  node --input-type=module - "$dotted_key" "$value" "$file" <<'NODE'
-import { readFileSync, writeFileSync } from "node:fs";
-
-const [key, value, file] = process.argv.slice(2);
-const lines = readFileSync(file, "utf-8").split(/\r?\n/);
-const [section, leaf] = key.split(".");
-let inSection = false;
-let replaced = false;
-const out = lines.map((line) => {
-  if (line.match(new RegExp(`^${section}:\\s*$`))) {
-    inSection = true;
-    return line;
-  }
-  if (inSection && line.match(/^\S/)) inSection = false;
-  if (inSection && line.match(new RegExp(`^\\s+${leaf}:`))) {
-    replaced = true;
-    return `  ${leaf}: ${value}`;
-  }
-  return line;
-});
-if (!replaced) throw new Error(`Could not find ${key} in ${file}`);
-writeFileSync(file, out.join("\n"), "utf-8");
-NODE
+clone_or_update_repo() {
+  require_cmd git "Install git and re-run."
+  if [[ -e "$INSTALL_DIR/.git" ]]; then
+    log "Using existing checkout: $INSTALL_DIR"
+    return
+  fi
+  if [[ -e "$INSTALL_DIR" ]]; then
+    fail "$INSTALL_DIR exists but is not a git checkout. Pick --install-dir or move it aside."
+  fi
+  log "Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
+  run git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
 }
 
-cat <<'EOF'
+bootstrap_repo() {
+  require_cmd node "Install Node.js 20+ first: https://nodejs.org/"
+  if ! command -v pnpm >/dev/null 2>&1; then
+    require_cmd corepack "Install pnpm first: corepack enable && corepack prepare pnpm@latest --activate"
+    log "pnpm not found; enabling it through corepack"
+    run corepack enable
+    run corepack prepare pnpm@latest --activate
+  fi
+  require_cmd python3 "Install python3 and re-run."
 
-JARVIS installer
-================
-This will clone/update the repo, create ~/.jarvis if needed, collect basic
-Telegram/model config, build the project, and optionally install systemd.
-Existing host-local files are preserved unless you choose to update values.
+  log "Bootstrapping host-local data tree and building JARVIS"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "[dry-run] would run: JARVIS_DATA_DIR=$DATA_DIR $INSTALL_DIR/scripts/setup-host.sh"
+  else
+    JARVIS_DATA_DIR="$DATA_DIR" "$INSTALL_DIR/scripts/setup-host.sh"
+  fi
+}
 
-EOF
+onboard() {
+  local env_file="$DATA_DIR/.env"
+  local config_file="$DATA_DIR/config.yaml"
+  local token allowed exa anthropic provider model timezone
 
-if [[ "$REPO_URL" == "https://github.com/<owner>/jarvis.git" ]]; then
-  warn "JARVIS_REPO_URL is still the placeholder. Set it for curl installs from your fork."
-  REPO_URL="$(prompt "Git repo URL" "$REPO_URL")"
-fi
+  log ""
+  log "Onboarding JARVIS"
+  log "  Source: $INSTALL_DIR"
+  log "  Data:   $DATA_DIR"
 
-have git || fatal "git is required"
-have node || fatal "Node.js 20+ is required"
-have pnpm || fatal "pnpm 10+ is required (try: corepack enable)"
-have python3 || fatal "python3 is required"
+  token="$(current_env_value "$env_file" TELEGRAM_BOT_TOKEN)"
+  allowed="$(current_env_value "$env_file" TELEGRAM_ALLOWED_USER_IDS)"
+  exa="$(current_env_value "$env_file" EXA_API_KEY)"
+  anthropic="$(current_env_value "$env_file" ANTHROPIC_API_KEY)"
 
-NODE_MAJOR="$(node -p 'Number(process.versions.node.split(`.`)[0])')"
-[[ "$NODE_MAJOR" -ge 20 ]] || fatal "Node.js 20+ is required; found $(node --version)"
-
-if [[ -d "$REPO_DIR/.git" ]]; then
-  info "Using existing repo: $REPO_DIR"
-  git -C "$REPO_DIR" fetch --all --prune
-  git -C "$REPO_DIR" checkout "$BRANCH"
-  git -C "$REPO_DIR" pull --ff-only
-elif [[ -e "$REPO_DIR" ]]; then
-  fatal "$REPO_DIR exists but is not a git repo"
-else
-  info "Cloning $REPO_URL -> $REPO_DIR"
-  git clone --branch "$BRANCH" "$REPO_URL" "$REPO_DIR"
-fi
-
-info "Bootstrapping host-local data in $DATA_DIR"
-JARVIS_DATA_DIR="$DATA_DIR" "$REPO_DIR/scripts/setup-host.sh"
-
-ENV_FILE="$DATA_DIR/.env"
-CONFIG_FILE="$DATA_DIR/config.yaml"
-
-update_env="$(prompt "Update .env values now? (y/n)" "y")"
-if [[ "$update_env" =~ ^[Yy]$ ]]; then
-  token="$(prompt_secret "Telegram bot token")"
-  allowed="$(prompt "Allowed Telegram user IDs (comma-separated)")"
-  exa="$(prompt_secret "Exa API key")"
-  [[ -n "$token" ]] && replace_env_value TELEGRAM_BOT_TOKEN "$token" "$ENV_FILE"
-  [[ -n "$allowed" ]] && replace_env_value TELEGRAM_ALLOWED_USER_IDS "$allowed" "$ENV_FILE"
-  [[ -n "$exa" ]] && replace_env_value EXA_API_KEY "$exa" "$ENV_FILE"
-
-  provider="$(prompt "Model provider (codex/anthropic)" "codex")"
-  replace_yaml_scalar agent.provider "$provider" "$CONFIG_FILE"
-  model_default="gpt-5.1"
-  [[ "$provider" == "anthropic" ]] && model_default="claude-sonnet-4-6"
-  model="$(prompt "Model" "$model_default")"
-  replace_yaml_scalar agent.model "$model" "$CONFIG_FILE"
-
-  if [[ "$provider" == "anthropic" ]]; then
-    anthropic="$(prompt_secret "Anthropic API key")"
-    [[ -n "$anthropic" ]] && replace_env_value ANTHROPIC_API_KEY "$anthropic" "$ENV_FILE"
+  if prompt_yes_no "Configure Telegram/Exa/API secrets now?" "yes"; then
+    token="$(prompt_value 'Telegram bot token from @BotFather' "$token" 1)"
+    allowed="$(prompt_value 'Allowed Telegram user IDs (comma-separated numeric IDs)' "$allowed" 0)"
+    exa="$(prompt_value 'Exa API key for web_search' "$exa" 1)"
+    anthropic="$(prompt_value 'Anthropic API key (optional; leave blank if using Codex)' "$anthropic" 1)"
+    write_env_file "$env_file" "$token" "$allowed" "$exa" "$anthropic"
+  else
+    log "Leaving $env_file unchanged."
   fi
 
-  timezone="$(prompt "Scheduler timezone" "$(timedatectl show -p Timezone --value 2>/dev/null || printf UTC)")"
-  replace_yaml_scalar scheduler.timezone "$timezone" "$CONFIG_FILE"
-  chmod 600 "$ENV_FILE"
-fi
+  provider="codex"
+  model="gpt-5.1"
+  timezone="$(cat /etc/timezone 2>/dev/null || printf 'America/New_York')"
+  if prompt_yes_no "Configure basic model/timezone settings now?" "yes"; then
+    provider="$(prompt_value 'Agent provider (codex or anthropic)' "$provider" 0)"
+    model="$(prompt_value 'Model name' "$model" 0)"
+    timezone="$(prompt_value 'Scheduler timezone' "$timezone" 0)"
+    patch_config "$config_file" "$provider" "$model" "$timezone"
+  fi
+}
 
-cat <<EOF
+install_systemd() {
+  if [[ "$SKIP_SYSTEMD" -eq 1 ]]; then
+    log "Skipping systemd install (--skip-systemd)."
+    return
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    warn "systemctl not found; skipping systemd install."
+    return
+  fi
+  if prompt_yes_no "Install and enable jarvis.service with systemd?" "yes"; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "[dry-run] would run: JARVIS_DATA_DIR=$DATA_DIR $INSTALL_DIR/scripts/install-systemd.sh"
+    else
+      JARVIS_DATA_DIR="$DATA_DIR" "$INSTALL_DIR/scripts/install-systemd.sh"
+    fi
+  else
+    log "Not installing systemd service."
+  fi
+}
 
-Host-local files:
-  Secrets: $ENV_FILE
-  Config:  $CONFIG_FILE
-  Host:    $DATA_DIR/AGENTS.md
-  Prompt:  $DATA_DIR/prompts/system.md
+main() {
+  log "JARVIS installer"
+  log "----------------"
+  require_prompt_or_yes
+  clone_or_update_repo
+  bootstrap_repo
+  onboard
+  install_systemd
+
+  cat <<EOF
+
+Done. JARVIS is installed/onboarded.
+
+Next steps:
+  - Review secrets/config: $DATA_DIR/.env and $DATA_DIR/config.yaml
+  - Foreground run:       cd $INSTALL_DIR && node --env-file=$DATA_DIR/.env dist/index.js
+  - If systemd installed: sudo systemctl start jarvis && journalctl -fu jarvis
+
 EOF
+}
 
-install_service="$(prompt "Install systemd service? (y/n)" "n")"
-if [[ "$install_service" =~ ^[Yy]$ ]]; then
-  "$REPO_DIR/scripts/install-systemd.sh"
-  warn "Service installed but not started. Start with: sudo systemctl start jarvis"
-fi
-
-cat <<EOF
-
-Done.
-
-Next:
-  cd $REPO_DIR
-  node --env-file=$ENV_FILE dist/index.js
-
-Or, if systemd was installed:
-  sudo systemctl start jarvis
-  journalctl -fu jarvis
-EOF
+main "$@"
