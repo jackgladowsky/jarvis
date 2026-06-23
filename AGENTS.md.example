@@ -11,7 +11,7 @@ it terse and accurate. JARVIS may also edit it at your direction.
 
 ## Host
 - Hostname: <hostname>
-- Hardware: <make/model, e.g. "Lenovo ThinkCentre M710q">
+- Hardware: <make/model, CPU/RAM if useful>
 - OS: <distro + version + kernel, e.g. "Ubuntu 24.04 LTS, kernel 6.8">
 - Disk / RAM: <quick capacity notes>
 - Network: <SSH port, VPN/Tailscale, anything inbound>
@@ -44,7 +44,7 @@ it terse and accurate. JARVIS may also edit it at your direction.
 - <run `systemctl list-units --type=service --state=running` for the live list>
 
 ## Conventions
-- <where projects live, e.g. "Jack's projects: /home/<user>/projects/">
+- <where personal projects live, e.g. "/home/<user>/projects/">
 - Code style for JARVIS source: see DESIGN.md in ~/jarvis/.
 - Procedural skills: see ~/jarvis/SKILLS.md and ~/jarvis/skills/*/SKILL.md.
 

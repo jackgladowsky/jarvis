@@ -50,11 +50,7 @@ function emit(level: Level, args: unknown[]): void {
 
   const last = args.at(-1);
   const isMeta =
-    args.length >= 2 &&
-    last !== null &&
-    typeof last === "object" &&
-    !Array.isArray(last) &&
-    !(last instanceof Error);
+    args.length >= 2 && last !== null && typeof last === "object" && !Array.isArray(last) && !(last instanceof Error);
 
   let body: string;
   if (isMeta) {
@@ -68,9 +64,7 @@ function emit(level: Level, args: unknown[]): void {
     body = args.map((a) => (typeof a === "string" ? a : fmtField(a))).join(" ");
   }
 
-  const prefix = inJournald
-    ? level.padEnd(5)
-    : `${new Date().toISOString()} ${level.padEnd(5)}`;
+  const prefix = inJournald ? level.padEnd(5) : `${new Date().toISOString()} ${level.padEnd(5)}`;
   stream(`${prefix} ${body}`);
 }
 
@@ -104,9 +98,7 @@ function redact(value: string): string {
   for (const p of SECRET_PATTERNS) {
     // For the SHOUTY=value pattern, keep the prefix (so logs stay grep-able)
     // and redact only the value. For everything else, replace the whole match.
-    out = out.replace(p, (match, prefix?: string) =>
-      prefix ? `${prefix}[REDACTED]` : "[REDACTED]",
-    );
+    out = out.replace(p, (match, prefix?: string) => (prefix ? `${prefix}[REDACTED]` : "[REDACTED]"));
   }
   return out;
 }
@@ -141,22 +133,20 @@ export function sanitize(value: unknown): unknown {
 }
 
 export interface AuditEntry {
-  ts: string;          // ISO timestamp
-  tool: string;        // tool name (read / write / edit / bash)
-  args: unknown;       // args after sanitize() — safe to log
+  ts: string; // ISO timestamp
+  tool: string; // tool name (read / write / edit / bash)
+  args: unknown; // args after sanitize() — safe to log
   outcome: "ok" | "error";
   duration_ms: number;
-  exit?: number;       // bash only
-  bytes?: number;      // read / write / edit
-  error?: string;      // populated on outcome="error"
+  exit?: number; // bash only
+  bytes?: number; // read / write / edit
+  error?: string; // populated on outcome="error"
 }
 
 // One JSONL line per call. `appendFile` is atomic up to PIPE_BUF on POSIX
 // (~4KB) — at our typical entry sizes that's more than enough for concurrent
 // tool calls not to interleave mid-line.
-export async function auditToolCall(
-  partial: Omit<AuditEntry, "ts" | "args"> & { args: unknown },
-): Promise<void> {
+export async function auditToolCall(partial: Omit<AuditEntry, "ts" | "args"> & { args: unknown }): Promise<void> {
   if (!config.logging.audit_log_enabled) return;
   const entry: AuditEntry = {
     ts: new Date().toISOString(),

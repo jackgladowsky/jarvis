@@ -1,6 +1,6 @@
 # Host Ops
 
-Use this skill for operations on Jack's Linux host: services, Docker, filesystem layout, logs, and system state.
+Use this skill for operations on the owner's Linux host: services, Docker, filesystem layout, logs, and system state.
 
 ## Host facts
 
@@ -28,7 +28,7 @@ Use `sudo` when needed. Do not ask for permission merely because a command needs
 
 For destructive operations (`rm -rf`, `mkfs`, `dd`, mass deletes, branch/data cleanup), think first. The system permits them; that is not the same as an endorsement from the universe.
 
-Avoid destructive guesses. If product/security/destructive implications are unclear, ask Jack.
+Avoid destructive guesses. If product/security/destructive implications are unclear, ask the owner.
 
 ## JARVIS paths
 

@@ -3,8 +3,8 @@
 
 agent:
   provider: codex                             # "codex" or "anthropic"
-  model: gpt-5.1                              # codex options: gpt-5.1 / gpt-5.1-codex-max / gpt-5.1-codex-mini
-                                              # anthropic options: e.g. claude-sonnet-4-6
+  model: gpt-5.1                              # codex examples: gpt-5.1 / gpt-5.1-codex-max / gpt-5.1-codex-mini
+                                              # anthropic examples: claude-sonnet-4-6
 
 session:
   inactivity_threshold_minutes: 240           # 4 hours
@@ -33,14 +33,14 @@ stt:
   provider: disabled                          # "disabled" or "local-whisper-cpp"
   local_whisper_cpp:
     whisper_binary_path: /usr/local/bin/whisper-cli
-    model_path: /home/jack/.jarvis/models/ggml-base.en.bin
+    model_path: /home/your-user/.jarvis/models/ggml-base.en.bin
     ffmpeg_path: /usr/bin/ffmpeg              # set null only if sending WAV files directly
     max_audio_mb: 25
     timeout_seconds: 120
 
 scheduler:
   enabled: false
-  timezone: America/New_York
+  timezone: UTC
   telegram_chat_id: 0                         # Telegram chat id for scheduled job notifications
   tasks: []                                   # static/bootstrap overrides; built-in nightly-memory-review and chat-created tasks live outside config
 

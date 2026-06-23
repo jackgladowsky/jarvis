@@ -14,7 +14,7 @@ Never treat `~/.jarvis/` as disposable. It contains live state and secrets.
 ## Fresh host setup
 
 ```bash
-git clone git@github.com:jackgladowsky/jarvis.git ~/jarvis
+git clone https://github.com/<owner>/jarvis.git ~/jarvis
 cd ~/jarvis
 scripts/setup-host.sh
 ```
@@ -81,7 +81,7 @@ For doc-only changes, `git diff --check` is usually enough unless the request as
 
 ## Config/template drift
 
-Live files under `~/.jarvis/` are not overwritten by setup or deploy. If templates change, Jack or JARVIS must manually update live copies as needed.
+Live files under `~/.jarvis/` are not overwritten by setup or deploy. If templates change, the owner or JARVIS must manually update live copies as needed.
 
 Important live files:
 

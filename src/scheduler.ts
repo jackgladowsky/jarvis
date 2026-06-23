@@ -6,7 +6,14 @@ import { runScheduledPrompt } from "./agent/runtime.js";
 import { config } from "./config.js";
 import { builtInScheduledTasks } from "./scheduled-defaults.js";
 import { notifyMainOrFallback } from "./lib/internal-notifications.js";
-import { isOneTimeTask, shouldNotify, taskSignature, type OneTimeTask, type RecurringTask, type SchedulerJob } from "./scheduler-logic.js";
+import {
+  isOneTimeTask,
+  shouldNotify,
+  taskSignature,
+  type OneTimeTask,
+  type RecurringTask,
+  type SchedulerJob,
+} from "./scheduler-logic.js";
 import { log } from "./lib/logger.js";
 import { paths } from "./paths.js";
 
@@ -28,15 +35,15 @@ const RecurringTaskSchema = BaseTaskSchema.extend({
 });
 
 const OneTimeTaskSchema = BaseTaskSchema.extend({
-  run_at: z.string().min(1).refine((value) => !Number.isNaN(Date.parse(value)), {
-    message: "run_at must be a valid date/time string",
-  }),
+  run_at: z
+    .string()
+    .min(1)
+    .refine((value) => !Number.isNaN(Date.parse(value)), {
+      message: "run_at must be a valid date/time string",
+    }),
 });
 
-const DynamicTaskSchema = z.union([
-  RecurringTaskSchema.strict(),
-  OneTimeTaskSchema.strict(),
-]);
+const DynamicTaskSchema = z.union([RecurringTaskSchema.strict(), OneTimeTaskSchema.strict()]);
 
 const DynamicTasksFileSchema = z.object({
   tasks: z.array(DynamicTaskSchema),
@@ -101,11 +108,7 @@ async function ensureTasksFile(): Promise<void> {
     await readFile(paths.scheduledJobTasks, "utf-8");
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    await writeFile(
-      paths.scheduledJobTasks,
-      JSON.stringify({ tasks: [] }, null, 2) + "\n",
-      "utf-8",
-    );
+    await writeFile(paths.scheduledJobTasks, JSON.stringify({ tasks: [] }, null, 2) + "\n", "utf-8");
   }
 }
 
@@ -127,11 +130,7 @@ async function removeOneTimeTask(id: string): Promise<void> {
   const file = await readDynamicTasksFile();
   const tasks = file.tasks.filter((task) => !(task.id === id && "run_at" in task));
   if (tasks.length === file.tasks.length) return;
-  await writeFile(
-    paths.scheduledJobTasks,
-    JSON.stringify({ tasks }, null, 2) + "\n",
-    "utf-8",
-  );
+  await writeFile(paths.scheduledJobTasks, JSON.stringify({ tasks }, null, 2) + "\n", "utf-8");
   stopTask(id);
   await schedulerLog(`[${id}] removed one-time task`);
 }
@@ -162,9 +161,7 @@ async function runTask(task: SchedulerJob): Promise<void> {
 
   if (shouldNotify(task, success, output)) {
     const durationSec = Math.round((Date.now() - started) / 1000);
-    const header = success
-      ? `[Scheduler] ${task.name}`
-      : `[Scheduler] ${task.name} — FAILED`;
+    const header = success ? `[Scheduler] ${task.name}` : `[Scheduler] ${task.name} — FAILED`;
     const message = `${header}\n\n${output}\n\n(${durationSec}s)`;
     try {
       await notifyMainOrFallback({
@@ -177,9 +174,7 @@ async function runTask(task: SchedulerJob): Promise<void> {
       });
       await schedulerLog(`[${task.id}] notification queued`);
     } catch (err) {
-      await schedulerLog(
-        `[${task.id}] notification queue failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      await schedulerLog(`[${task.id}] notification queue failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -211,15 +206,11 @@ async function registerRecurringTask(task: RecurringTask): Promise<void> {
   if (existing?.signature === signature) return;
   stopTask(task.id);
 
-  const cronJob = cron.schedule(
-    task.schedule,
-    () => runTask(task),
-    {
-      timezone: config.scheduler.timezone,
-      name: task.id,
-      noOverlap: true,
-    },
-  );
+  const cronJob = cron.schedule(task.schedule, () => runTask(task), {
+    timezone: config.scheduler.timezone,
+    name: task.id,
+    noOverlap: true,
+  });
   activeJobs.set(task.id, { cronJob, signature });
   await schedulerLog(`[${task.id}] registered: ${task.name} @ ${task.schedule}`);
 }

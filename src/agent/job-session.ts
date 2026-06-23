@@ -37,9 +37,7 @@ export function dropDanglingToolCalls(messages: AgentMessage[]): AgentMessage[] 
   while (out.length > 0) {
     const last = out[out.length - 1];
     if (last.role !== "assistant") break;
-    const hasToolCall = (last.content ?? []).some(
-      (c: { type: string }) => c.type === "toolCall",
-    );
+    const hasToolCall = (last.content ?? []).some((c: { type: string }) => c.type === "toolCall");
     if (!hasToolCall) break;
     out.pop();
   }
@@ -92,10 +90,7 @@ function makeCompactionLine(entry: JobCompactionEntry): StoredCompactionEntry {
   };
 }
 
-export async function appendJobCompactionEntry(
-  file: string,
-  entry: JobCompactionEntry,
-): Promise<void> {
+export async function appendJobCompactionEntry(file: string, entry: JobCompactionEntry): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
   await appendFile(file, JSON.stringify(makeCompactionLine(entry)) + "\n", "utf-8");
 }
@@ -106,10 +101,7 @@ export async function rewriteJobSessionWithCompaction(
   keptTail: AgentMessage[],
 ): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
-  const lines = [
-    JSON.stringify(makeCompactionLine(entry)),
-    ...keptTail.map((message) => JSON.stringify(message)),
-  ];
+  const lines = [JSON.stringify(makeCompactionLine(entry)), ...keptTail.map((message) => JSON.stringify(message))];
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, lines.join("\n") + "\n", "utf-8");
   await rename(tmp, file);

@@ -45,9 +45,7 @@ export const readTool: AgentTool<typeof schema> = {
       // exactly which offset to use for the next read. Saves a round-trip.
       const remaining = lines.length - end;
       const suffix =
-        remaining > 0
-          ? `\n\n[showing ${start + 1}-${end} of ${lines.length}; offset=${end + 1} for more]`
-          : "";
+        remaining > 0 ? `\n\n[showing ${start + 1}-${end} of ${lines.length}; offset=${end + 1} for more]` : "";
 
       // Audit log records what was read but NOT the contents — just byte count
       // (DESIGN.md §13 "read/write content: logged as path + byte count, not

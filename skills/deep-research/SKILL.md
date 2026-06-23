@@ -11,7 +11,7 @@ Use this skill for multi-source research, comparisons, investigations, and quest
 5. Track uncertainties and conflicts.
 6. Synthesize into a concise answer with tradeoffs and caveats.
 
-For long research likely to exceed about 30 seconds, spawn a background worker unless Jack asked to keep it inline.
+For long research likely to exceed about 30 seconds, spawn a background worker unless the owner asked to keep it inline.
 
 ## Source handling
 
@@ -27,10 +27,12 @@ For long research likely to exceed about 30 seconds, spawn a background worker u
 Bottom line: <answer>
 
 Evidence:
+
 - <source-backed point>
 - <source-backed point>
 
 Caveats:
+
 - <uncertainty or limitation>
 
 My call: <recommendation, if appropriate>

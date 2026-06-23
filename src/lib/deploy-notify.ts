@@ -38,7 +38,9 @@ export async function notifyPendingDeployComplete(): Promise<void> {
   const message = [
     `JARVIS back online: ${short(deploy.old_rev)} → ${short(deploy.new_rev)}.`,
     deploy.target_ref ? `Target: ${deploy.target_ref}.` : undefined,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   try {
     await enqueueInternalNotification({

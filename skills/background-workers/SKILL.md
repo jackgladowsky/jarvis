@@ -10,7 +10,7 @@ Main JARVIS should delegate when work:
 - Involves repo changes, PRs, reviews, or substantial ops.
 - Can safely proceed asynchronously.
 
-Stay inline only for quick answers, tiny edits, urgent checks/ops, or work needing continuous back-and-forth with Jack.
+Stay inline only for quick answers, tiny edits, urgent checks/ops, or work needing continuous back-and-forth with the owner.
 
 ## Start a task
 
@@ -20,13 +20,13 @@ From `~/jarvis/`:
 scripts/start-background-task.sh "<prompt>"
 ```
 
-Jack can also use:
+The owner can also use:
 
 ```text
 /bg <prompt>
 ```
 
-Tell Jack the task id, worktree, branch, and pipeline.
+Tell the owner the task id, worktree, branch, and pipeline.
 
 ## Worker layout
 
@@ -70,7 +70,7 @@ scripts/resume-background-task.sh <task-id> [fixer|reviewer]
 - Main JARVIS is the review gate.
 - Inspect finished worktrees before pushing or opening PRs.
 - Do not assume worker output is correct.
-- Do not deploy worker changes unless Jack explicitly asks.
+- Do not deploy worker changes unless the owner explicitly asks.
 
 ## Cleanup
 
@@ -91,6 +91,6 @@ Suggested weekly scheduled janitor task:
   "name": "Weekly Janitor",
   "schedule": "0 9 * * 1",
   "notify": "always",
-  "prompt": "Run `cd ~/jarvis && scripts/cleanup-background-worktrees.sh --dry-run --age-days 14`, report what would be cleaned, identify stale todos/docs/notes, and do not delete ambiguous notes or data without Jack's approval."
+  "prompt": "Run `cd ~/jarvis && scripts/cleanup-background-worktrees.sh --dry-run --age-days 14`, report what would be cleaned, identify stale todos/docs/notes, and do not delete ambiguous notes or data without the owner's approval."
 }
 ```

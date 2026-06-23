@@ -54,7 +54,9 @@ interface TelegramAudioLikeMessage {
 }
 
 export class MissingLocalWhisperSetupError extends Error {
-  constructor(message = "Local speech-to-text is not configured. Set stt.provider to local-whisper-cpp, install whisper.cpp, set the whisper binary/model paths in ~/.jarvis/config.yaml, and restart JARVIS.") {
+  constructor(
+    message = "Local speech-to-text is not configured. Set stt.provider to local-whisper-cpp, install whisper.cpp, set the whisper binary/model paths in ~/.jarvis/config.yaml, and restart JARVIS.",
+  ) {
     super(message);
     this.name = "MissingLocalWhisperSetupError";
   }
@@ -90,7 +92,9 @@ function fileNameFor(kind: TelegramAudioCandidate["kind"], mimeType: string, pro
   return `${kind}.${ext}`;
 }
 
-export function selectTelegramAudioCandidate(message: TelegramAudioLikeMessage | undefined): TelegramAudioCandidate | undefined {
+export function selectTelegramAudioCandidate(
+  message: TelegramAudioLikeMessage | undefined,
+): TelegramAudioCandidate | undefined {
   if (!message) return undefined;
 
   if (message.voice) {
@@ -134,7 +138,11 @@ export function maxAudioBytes(maxAudioMb: number): number {
   return maxAudioMb * 1024 * 1024;
 }
 
-export function formatTranscribedPrompt(candidate: TelegramAudioCandidate, transcript: string, caption?: string): string {
+export function formatTranscribedPrompt(
+  candidate: TelegramAudioCandidate,
+  transcript: string,
+  caption?: string,
+): string {
   const label = candidate.kind === "voice" ? "Telegram voice note" : "Telegram audio message";
   const lines = [`[Transcribed ${label}]`, transcript.trim()];
   const trimmedCaption = caption?.trim();
@@ -178,7 +186,9 @@ export async function transcribeWithLocalWhisperCpp(
 
   const limit = maxAudioBytes(options.maxAudioMb);
   if (audio.byteLength > limit) {
-    throw new Error(`audio is too large (${Math.ceil(audio.byteLength / 1024 / 1024)} MB; max ${options.maxAudioMb} MB)`);
+    throw new Error(
+      `audio is too large (${Math.ceil(audio.byteLength / 1024 / 1024)} MB; max ${options.maxAudioMb} MB)`,
+    );
   }
 
   await assertExecutable(options.whisperBinaryPath, "whisper.cpp binary");
@@ -194,17 +204,27 @@ export async function transcribeWithLocalWhisperCpp(
     if (options.ffmpegPath) {
       await assertExecutable(options.ffmpegPath, "ffmpeg binary");
       whisperInputPath = join(workDir, "input.wav");
-      await runner(options.ffmpegPath, ["-nostdin", "-y", "-i", inputPath, "-ar", "16000", "-ac", "1", whisperInputPath], {
-        timeout: options.timeoutSeconds * 1000,
-      });
+      await runner(
+        options.ffmpegPath,
+        ["-nostdin", "-y", "-i", inputPath, "-ar", "16000", "-ac", "1", whisperInputPath],
+        {
+          timeout: options.timeoutSeconds * 1000,
+        },
+      );
     } else if (!candidate.mimeType.includes("wav") && ext !== "wav") {
-      throw new MissingLocalWhisperSetupError("ffmpeg_path is required to transcribe Telegram voice/audio formats that are not WAV.");
+      throw new MissingLocalWhisperSetupError(
+        "ffmpeg_path is required to transcribe Telegram voice/audio formats that are not WAV.",
+      );
     }
 
     const outputBase = join(workDir, "transcript");
-    const result = await runner(options.whisperBinaryPath, ["-m", options.modelPath, "-f", whisperInputPath, "-otxt", "-of", outputBase, "-nt"], {
-      timeout: options.timeoutSeconds * 1000,
-    });
+    const result = await runner(
+      options.whisperBinaryPath,
+      ["-m", options.modelPath, "-f", whisperInputPath, "-otxt", "-of", outputBase, "-nt"],
+      {
+        timeout: options.timeoutSeconds * 1000,
+      },
+    );
 
     let transcript: string | undefined;
     try {

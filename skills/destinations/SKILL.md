@@ -5,14 +5,14 @@ Use this skill for place recommendations, destination comparisons, errands, rest
 ## Process
 
 - Use `web_search` when current/local options matter.
-- Rank by Jack's stated preference first, then proximity, quality, store size, and errand fit.
+- Rank by the owner's stated preference first, then proximity, quality, store size, and errand fit.
 - Be explicit about the tradeoff.
 - Return a concise recommendation plus alternatives only when useful.
 - Include destination name and address.
 
 For grocery requests in San Diego:
 
-- Jack prefers Whole Foods.
+- Example preference: the owner prefers Whole Foods.
 - Same-quality closer options are acceptable.
 - For a full food shop, avoid tiny/convenience-format stores unless clearly framed as quick-run options.
 
@@ -38,9 +38,9 @@ Lyft web:
 https://lyft.com/ride?id=lyft&destination[latitude]=<lat>&destination[longitude]=<lng>&destination[address]=<encoded address>
 ```
 
-Prefer these web formats for Jack's phone. Do not use native `uber://` or `lyft://` links from Telegram unless Jack asks.
+Prefer these web formats for the owner's phone. Do not use native `uber://` or `lyft://` links from Telegram unless the owner asks.
 
-Do not claim live Uber/Lyft prices unless Jack provides screenshots or a working price source. Tell him to tap both links for live fares, or compare screenshots if he sends them.
+Do not claim live Uber/Lyft prices unless the owner provides screenshots or a working price source. Tell them to tap both links for live fares, or compare screenshots if he sends them.
 
 ## Response shape
 

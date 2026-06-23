@@ -2,18 +2,19 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { paths } from "../paths.js";
 import { log } from "../lib/logger.js";
 import type { BackgroundMailEntry, BackgroundRole, BackgroundStage, BackgroundTask } from "./types.js";
-import { choosePipeline, friendlyIdFromUuid, nextQueuedRole, renderTask, renderTaskList } from "./logic.js";
+import { choosePipeline, friendlyIdFromUuid, nextQueuedRole } from "./logic.js";
 
 export { choosePipeline, friendlyIdFromUuid, nextQueuedRole, renderTask, renderTaskList } from "./logic.js";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_REPO = "/home/jack/jarvis";
+const DEFAULT_REPO = join(homedir(), "jarvis");
 
 function now(): string {
   return new Date().toISOString();
@@ -40,7 +41,10 @@ function mailPath(id: string): string {
 
 function normalizeTask(task: BackgroundTask): BackgroundTask {
   task.uuid = task.uuid ?? `legacy-${task.id}`;
-  task.pipeline = task.pipeline ?? [{ role: "implementer", status: task.status === "awaiting_review" ? "done" : "queued" }, { role: "reviewer", status: "queued" }];
+  task.pipeline = task.pipeline ?? [
+    { role: "implementer", status: task.status === "awaiting_review" ? "done" : "queued" },
+    { role: "reviewer", status: "queued" },
+  ];
   return task;
 }
 
@@ -67,7 +71,11 @@ export async function readBackgroundMail(id: string, limit = 20): Promise<Backgr
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   }
-  return raw.split("\n").filter(Boolean).slice(-limit).map((line) => JSON.parse(line) as BackgroundMailEntry);
+  return raw
+    .split("\n")
+    .filter(Boolean)
+    .slice(-limit)
+    .map((line) => JSON.parse(line) as BackgroundMailEntry);
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -90,9 +98,14 @@ async function createWorktree(task: BackgroundTask): Promise<void> {
 
 export async function listBackgroundTasks(): Promise<BackgroundTask[]> {
   await mkdir(paths.backgroundTasks, { recursive: true });
-  const { stdout } = await execFileAsync("bash", ["-lc", `find ${JSON.stringify(paths.backgroundTasks)} -maxdepth 1 -name '*.json' -type f | sort`]);
+  const { stdout } = await execFileAsync("bash", [
+    "-lc",
+    `find ${JSON.stringify(paths.backgroundTasks)} -maxdepth 1 -name '*.json' -type f | sort`,
+  ]);
   const files = stdout.split("\n").filter(Boolean);
-  const tasks = await Promise.all(files.map(async (file) => normalizeTask(JSON.parse(await readFile(file, "utf-8")) as BackgroundTask)));
+  const tasks = await Promise.all(
+    files.map(async (file) => normalizeTask(JSON.parse(await readFile(file, "utf-8")) as BackgroundTask)),
+  );
   return tasks.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
@@ -115,7 +128,11 @@ export function spawnBackgroundWorker(id: string, role?: BackgroundRole): number
   return child.pid ?? 0;
 }
 
-export async function startBackgroundTask(prompt: string, chatId: number, repo = DEFAULT_REPO): Promise<BackgroundTask> {
+export async function startBackgroundTask(
+  prompt: string,
+  chatId: number,
+  repo = DEFAULT_REPO,
+): Promise<BackgroundTask> {
   const { id, uuid } = await createTaskIdentity();
   const branch = `worker/${id}`;
   const worktree = join(paths.backgroundWorktrees, id);
@@ -139,8 +156,16 @@ export async function startBackgroundTask(prompt: string, chatId: number, repo =
 
   await mkdir(paths.backgroundNotes, { recursive: true });
   await createWorktree(task);
-  await writeFile(join(paths.backgroundNotes, `${id}.md`), `# ${task.name}\n\n**Status:** queued\n**Worktree:** ${worktree}\n**Branch:** ${branch}\n**Pipeline:** ${pipeline.map((stage) => stage.role).join(" -> ")}\n\n## Prompt\n${prompt}\n\n## Updates\n- ${now()}: task created.\n`, "utf-8");
-  await appendBackgroundMail(id, { from: "main", type: "status", body: `Task created. Pipeline: ${pipeline.map((stage) => stage.role).join(" -> ")}. Worktree prepared.` });
+  await writeFile(
+    join(paths.backgroundNotes, `${id}.md`),
+    `# ${task.name}\n\n**Status:** queued\n**Worktree:** ${worktree}\n**Branch:** ${branch}\n**Pipeline:** ${pipeline.map((stage) => stage.role).join(" -> ")}\n\n## Prompt\n${prompt}\n\n## Updates\n- ${now()}: task created.\n`,
+    "utf-8",
+  );
+  await appendBackgroundMail(id, {
+    from: "main",
+    type: "status",
+    body: `Task created. Pipeline: ${pipeline.map((stage) => stage.role).join(" -> ")}. Worktree prepared.`,
+  });
   await writeBackgroundTask(task);
   if (currentRole) {
     task.pid = spawnBackgroundWorker(id, currentRole);
@@ -185,9 +210,11 @@ function isPidAlive(pid: number | undefined): boolean {
 }
 
 function isTaskRunning(task: BackgroundTask): boolean {
-  return isPidAlive(task.pid)
-    || task.pipeline.some((stage) => stage.status === "running")
-    || ["queued", "running", "researching", "implementing", "reviewing", "awaiting_review"].includes(task.status);
+  return (
+    isPidAlive(task.pid) ||
+    task.pipeline.some((stage) => stage.status === "running") ||
+    ["queued", "running", "researching", "implementing", "reviewing", "awaiting_review"].includes(task.status)
+  );
 }
 
 async function appendTaskNote(id: string, line: string): Promise<void> {
@@ -199,7 +226,9 @@ export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer
   const task = await readBackgroundTask(id);
   if (isTaskRunning(task)) throw new Error(`${id} is currently running or queued`);
   if (!["needs_fix", "failed", "waiting_on_main"].includes(task.status)) {
-    throw new Error(`${id} cannot be resumed from status ${task.status}; expected needs_fix, failed, or waiting_on_main`);
+    throw new Error(
+      `${id} cannot be resumed from status ${task.status}; expected needs_fix, failed, or waiting_on_main`,
+    );
   }
   if (!task.worktree) throw new Error(`${id} has no worktree recorded`);
   const worktreeStat = await stat(task.worktree).catch((err: NodeJS.ErrnoException) => {
@@ -208,9 +237,13 @@ export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer
   });
   if (!worktreeStat.isDirectory()) throw new Error(`${id} worktree is not a directory: ${task.worktree}`);
 
-  const stages: BackgroundStage[] = role === "fixer"
-    ? [{ role: "fixer", status: "queued" }, { role: "reviewer", status: "queued" }]
-    : [{ role: "reviewer", status: "queued" }];
+  const stages: BackgroundStage[] =
+    role === "fixer"
+      ? [
+          { role: "fixer", status: "queued" },
+          { role: "reviewer", status: "queued" },
+        ]
+      : [{ role: "reviewer", status: "queued" }];
   task.pipeline.push(...stages);
   task.current_role = role;
   task.status = statusForResumeRole(role);
@@ -222,7 +255,10 @@ export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer
     type: "status",
     body: `Resumed existing task with ${stages.map((stage) => stage.role).join(" -> ")} stage(s) on the existing worktree.`,
   });
-  await appendTaskNote(task.id, `- ${now()}: resumed existing task; appended ${stages.map((stage) => stage.role).join(" -> ")} and spawned ${role}.\n`);
+  await appendTaskNote(
+    task.id,
+    `- ${now()}: resumed existing task; appended ${stages.map((stage) => stage.role).join(" -> ")} and spawned ${role}.\n`,
+  );
   await writeBackgroundTask(task);
   task.pid = spawnBackgroundWorker(task.id, role);
   await writeBackgroundTask(task);

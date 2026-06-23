@@ -19,7 +19,15 @@ test("friendlyIdFromUuid is stable and human-shaped", () => {
 });
 
 test("nextQueuedRole returns the first queued stage", () => {
-  assert.equal(nextQueuedRole({ pipeline: [{ role: "researcher", status: "done" }, { role: "reviewer", status: "queued" }] }), "reviewer");
+  assert.equal(
+    nextQueuedRole({
+      pipeline: [
+        { role: "researcher", status: "done" },
+        { role: "reviewer", status: "queued" },
+      ],
+    }),
+    "reviewer",
+  );
   assert.equal(nextQueuedRole({ pipeline: [{ role: "reviewer", status: "done" }] }), undefined);
 });
 
@@ -34,7 +42,10 @@ test("renderTask and renderTaskList produce concise operator output", () => {
     worktree: "/tmp/fern-sparrow",
     branch: "worker/fern-sparrow",
     chat_id: 1,
-    pipeline: [{ role: "implementer", status: "done" }, { role: "reviewer", status: "queued" }],
+    pipeline: [
+      { role: "implementer", status: "done" },
+      { role: "reviewer", status: "queued" },
+    ],
     current_role: "reviewer",
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",

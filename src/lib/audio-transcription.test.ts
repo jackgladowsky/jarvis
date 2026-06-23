@@ -52,18 +52,25 @@ test("selectTelegramAudioCandidate accepts audio documents", () => {
 });
 
 test("selectTelegramAudioCandidate ignores non-audio documents", () => {
-  assert.equal(selectTelegramAudioCandidate({
-    document: { file_id: "doc-file", mime_type: "application/pdf", file_name: "paper.pdf" },
-  }), undefined);
+  assert.equal(
+    selectTelegramAudioCandidate({
+      document: { file_id: "doc-file", mime_type: "application/pdf", file_name: "paper.pdf" },
+    }),
+    undefined,
+  );
 });
 
 test("formatTranscribedPrompt prefixes transcript and keeps caption", () => {
-  const text = formatTranscribedPrompt({
-    fileId: "file",
-    kind: "voice",
-    mimeType: "audio/ogg",
-    fileName: "voice.ogg",
-  }, " remind me to buy coffee ", "urgent");
+  const text = formatTranscribedPrompt(
+    {
+      fileId: "file",
+      kind: "voice",
+      mimeType: "audio/ogg",
+      fileName: "voice.ogg",
+    },
+    " remind me to buy coffee ",
+    "urgent",
+  );
 
   assert.equal(text, "[Transcribed Telegram voice note]\nremind me to buy coffee\n\n[Caption]\nurgent");
 });
@@ -78,12 +85,17 @@ test("transcribeWithLocalWhisperCpp runs ffmpeg and whisper with configured path
     return { stdout: "", stderr: "" };
   };
 
-  const transcript = await transcribeWithLocalWhisperCpp(Buffer.from("fake audio"), {
-    fileId: "file",
-    kind: "voice",
-    mimeType: "audio/ogg",
-    fileName: "voice.ogg",
-  }, await baseOptions(), runner);
+  const transcript = await transcribeWithLocalWhisperCpp(
+    Buffer.from("fake audio"),
+    {
+      fileId: "file",
+      kind: "voice",
+      mimeType: "audio/ogg",
+      fileName: "voice.ogg",
+    },
+    await baseOptions(),
+    runner,
+  );
 
   assert.equal(transcript, "hello from local whisper");
   assert.equal(calls.length, 2);
@@ -98,12 +110,17 @@ test("transcribeWithLocalWhisperCpp runs ffmpeg and whisper with configured path
 test("transcribeWithLocalWhisperCpp fails clearly when provider is disabled", async () => {
   const options = await baseOptions();
   await assert.rejects(
-    () => transcribeWithLocalWhisperCpp(Buffer.from("audio"), {
-      fileId: "file",
-      kind: "voice",
-      mimeType: "audio/ogg",
-      fileName: "voice.ogg",
-    }, { ...options, provider: "disabled" }),
+    () =>
+      transcribeWithLocalWhisperCpp(
+        Buffer.from("audio"),
+        {
+          fileId: "file",
+          kind: "voice",
+          mimeType: "audio/ogg",
+          fileName: "voice.ogg",
+        },
+        { ...options, provider: "disabled" },
+      ),
     MissingLocalWhisperSetupError,
   );
 });
@@ -111,12 +128,17 @@ test("transcribeWithLocalWhisperCpp fails clearly when provider is disabled", as
 test("transcribeWithLocalWhisperCpp requires ffmpeg for Telegram ogg voice notes", async () => {
   const options = await baseOptions();
   await assert.rejects(
-    () => transcribeWithLocalWhisperCpp(Buffer.from("audio"), {
-      fileId: "file",
-      kind: "voice",
-      mimeType: "audio/ogg",
-      fileName: "voice.ogg",
-    }, { ...options, ffmpegPath: null }),
+    () =>
+      transcribeWithLocalWhisperCpp(
+        Buffer.from("audio"),
+        {
+          fileId: "file",
+          kind: "voice",
+          mimeType: "audio/ogg",
+          fileName: "voice.ogg",
+        },
+        { ...options, ffmpegPath: null },
+      ),
     /ffmpeg_path is required/,
   );
 });
