@@ -1,5 +1,13 @@
 export const MAX_VISIBLE_TEXT_CHARS = 4000;
 
+export interface WorkbenchStepResult {
+  index: number;
+  action: string;
+  target: string;
+  startedUrl: string;
+  endedUrl: string;
+}
+
 export interface WorkbenchPageSnapshot {
   requestedUrl: string;
   finalUrl: string;
@@ -8,6 +16,7 @@ export interface WorkbenchPageSnapshot {
   screenshotPath: string;
   artifactPath: string;
   capturedAt: string;
+  steps?: WorkbenchStepResult[];
 }
 
 export function clipVisibleText(text: string, maxChars = MAX_VISIBLE_TEXT_CHARS): { text: string; truncated: boolean } {
@@ -21,12 +30,24 @@ export function clipVisibleText(text: string, maxChars = MAX_VISIBLE_TEXT_CHARS)
 
 export function renderWorkbenchResult(snapshot: WorkbenchPageSnapshot): string {
   const clipped = clipVisibleText(snapshot.visibleText, 1200);
+  const stepLines = snapshot.steps?.length
+    ? [
+        "",
+        "Steps:",
+        ...snapshot.steps.map(
+          (step) =>
+            `${step.index}. ${step.action} ${clipVisibleText(step.target, 120).text || "(unknown)"} -> ${step.endedUrl}`,
+        ),
+      ]
+    : [];
+
   return [
-    `Browser workbench opened: ${snapshot.finalUrl}`,
+    `Browser workbench result: ${snapshot.finalUrl}`,
     `Title: ${snapshot.title || "(untitled)"}`,
     `Captured: ${snapshot.capturedAt}`,
     `Screenshot: ${snapshot.screenshotPath}`,
     `Artifact: ${snapshot.artifactPath}`,
+    ...stepLines,
     "",
     "Visible text:",
     clipped.text || "(no visible text captured)",

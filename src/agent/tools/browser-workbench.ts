@@ -1,44 +1,79 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { auditToolCall } from "../../lib/logger.js";
-import { openUrlInWorkbench } from "../../workbench/controller.js";
+import { openUrlInWorkbench, runStepsInWorkbench } from "../../workbench/controller.js";
 import { renderWorkbenchResult } from "../../workbench/render.js";
-import { assessWorkbenchRequest, assertReadOnlyWorkbenchAction } from "../../workbench/safety.js";
+import { assessHumanHandoff, assessWorkbenchRequest, approvalIsExplicit } from "../../workbench/safety.js";
+
+const stepSchema = Type.Object({
+  action: Type.Union([Type.Literal("open_url"), Type.Literal("click"), Type.Literal("type"), Type.Literal("fill")], {
+    description: "Safe basic browser action. submit/download/destructive actions are not implemented.",
+  }),
+  url: Type.Optional(Type.String({ description: "Public http(s) URL for open_url." })),
+  selector: Type.Optional(Type.String({ description: "CSS selector for click/type/fill target." })),
+  text: Type.Optional(Type.String({ description: "Visible text for click target, or label text for type/fill." })),
+  value: Type.Optional(Type.String({ description: "Non-secret sample text to type/fill. Never pass credentials." })),
+});
+
+const approvalSchema = Type.Object({
+  approved: Type.Boolean({
+    description: "True only after Jack explicitly approves this exact side-effect-risky step.",
+  }),
+  approvedBy: Type.String({ description: "Approver name." }),
+  reason: Type.String({ description: "What was approved and why." }),
+});
 
 const schema = Type.Object({
-  action: Type.Literal("open_url", {
-    description: "Read-only action: open a public http(s) URL in the local browser workbench.",
+  action: Type.Union([Type.Literal("open_url"), Type.Literal("run_steps")], {
+    description: "Open one URL or run a small validated browser step plan.",
   }),
-  url: Type.String({ description: "Public http(s) URL to open." }),
+  url: Type.Optional(Type.String({ description: "Public http(s) URL to open for action=open_url." })),
+  steps: Type.Optional(Type.Array(stepSchema, { description: "Step plan for action=run_steps.", maxItems: 20 })),
   request: Type.Optional(
     Type.String({
       description:
         "The user's natural-language request. Used only for safety gating; do not include credentials or secrets.",
     }),
   ),
+  approval: Type.Optional(approvalSchema),
 });
 
 export const browserWorkbenchTool: AgentTool<typeof schema> = {
   name: "browser_workbench",
   label: "browser_workbench",
   description:
-    "Open a public http(s) URL in JARVIS's local-only Playwright browser workbench, capture title/visible text/screenshot/artifact paths, and return safe text results. Read-only in this version. Requires hard human approval for purchases/orders/bookings/sends/posts/deletes/account/financial/legal/medical actions and never bypasses CAPTCHA/login/2FA.",
+    "Run safe local Playwright browser workbench actions with persistent host-local profile/downloads/screenshots/artifacts. Supports open_url and small run_steps plans with benign click/type/fill. Blocks local/private URLs, credentials, login/2FA/CAPTCHA, submits, purchases/orders/bookings/rides/sends/posts/deletes/account/financial/legal/medical actions unless an explicit approval object is present; real purchase/ride/etc. execution is not implemented.",
   parameters: schema,
   async execute(_id, args: Static<typeof schema>) {
     const t0 = Date.now();
-    const approval = assessWorkbenchRequest(args.request ?? "");
-    const action = assertReadOnlyWorkbenchAction(args.action);
+    const auditArgs = {
+      action: args.action,
+      url: args.url,
+      steps: args.steps?.map((step) => ({ action: step.action, target: step.selector ?? step.text ?? step.url })),
+      request: args.request ? "[provided]" : undefined,
+      approval: args.approval ? { approved: args.approval.approved, approvedBy: args.approval.approvedBy } : undefined,
+    };
 
     try {
-      if (!action.allowed) throw new Error(action.reason ?? "Workbench action is blocked.");
-      if (approval.approvalRequired) {
+      const handoff = assessHumanHandoff(args.request ?? "");
+      if (handoff.approvalRequired) throw new Error(handoff.reason ?? "Human handoff required.");
+
+      const approval = assessWorkbenchRequest(args.request ?? "");
+      if (approval.approvalRequired && !approvalIsExplicit(args.approval)) {
         throw new Error(`${approval.reason} Ask Jack for explicit approval before continuing.`);
       }
 
-      const snapshot = await openUrlInWorkbench(args.url);
+      const snapshot =
+        args.action === "open_url"
+          ? await openUrlInWorkbench(requiredString(args.url, "url is required for open_url"))
+          : await runStepsInWorkbench(requiredSteps(args.steps), {
+              request: args.request,
+              approval: args.approval,
+            });
+
       await auditToolCall({
         tool: "browser_workbench",
-        args: { action: args.action, url: args.url, request: args.request ? "[provided]" : undefined },
+        args: auditArgs,
         outcome: "ok",
         duration_ms: Date.now() - t0,
       });
@@ -51,13 +86,14 @@ export const browserWorkbenchTool: AgentTool<typeof schema> = {
           screenshotPath: snapshot.screenshotPath,
           artifactPath: snapshot.artifactPath,
           capturedAt: snapshot.capturedAt,
+          steps: snapshot.steps,
         },
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await auditToolCall({
         tool: "browser_workbench",
-        args: { action: args.action, url: args.url, request: args.request ? "[provided]" : undefined },
+        args: auditArgs,
         outcome: "error",
         duration_ms: Date.now() - t0,
         error: message,
@@ -66,3 +102,13 @@ export const browserWorkbenchTool: AgentTool<typeof schema> = {
     }
   },
 };
+
+function requiredString(value: string | undefined, message: string): string {
+  if (!value) throw new Error(message);
+  return value;
+}
+
+function requiredSteps(steps: Static<typeof schema>["steps"]): NonNullable<Static<typeof schema>["steps"]> {
+  if (!steps?.length) throw new Error("steps are required for run_steps");
+  return steps;
+}

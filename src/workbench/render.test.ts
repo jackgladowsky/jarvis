@@ -22,10 +22,20 @@ test("renderWorkbenchResult returns safe paths/text, not binary data", () => {
     screenshotPath: "/home/jack/.jarvis/data/workbench/screenshots/test.png",
     artifactPath: "/home/jack/.jarvis/data/workbench/artifacts/test.json",
     capturedAt: "2026-01-01T00:00:00.000Z",
+    steps: [
+      {
+        index: 1,
+        action: "open_url",
+        target: "https://example.com/",
+        startedUrl: "about:blank",
+        endedUrl: "https://example.com/",
+      },
+    ],
   };
 
   const rendered = renderWorkbenchResult(snapshot);
   assert.match(rendered, /Example Domain/);
   assert.match(rendered, /screenshots\/test\.png/);
+  assert.match(rendered, /Steps:/);
   assert.doesNotMatch(rendered, /data:image|base64/i);
 });

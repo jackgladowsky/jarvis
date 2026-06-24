@@ -149,16 +149,17 @@ Config is loaded once at startup; restart JARVIS to apply changes.
 
 ## Browser workbench
 
-The first browser workbench slice is local-only and read-only. The `browser_workbench` agent tool can open a public `http(s)` URL in a persistent Chromium profile, capture title/visible text, and write screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. It blocks local/private URLs and includes hard approval gates for purchase/order/booking/send/post/delete/cancel/account/financial/legal/medical requests.
+The browser workbench is local-only. The `browser_workbench` agent tool can open a public `http(s)` URL in a persistent Chromium profile, capture title/visible text, and write screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. It also supports small validated `run_steps` plans for benign `click`, `type`, and `fill` actions. It blocks local/private URLs, credentials/login/2FA/CAPTCHA, and includes hard approval gates for purchase/order/booking/send/post/delete/cancel/account/financial/legal/medical requests; real purchase/ride/order execution is not implemented.
 
 Smoke test:
 
 ```bash
 pnpm exec playwright install chromium   # if the browser binary is not installed yet
+pnpm run workbench:smoke                # deterministic local fixture: benign click + fill
 pnpm run workbench:smoke -- https://example.com
 ```
 
-See `docs/workbench.md` for data paths, safety notes, and current limitations. CAPTCHA bypass, login/2FA automation, side-effect actions, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented in this first slice.
+See `docs/workbench.md` for data paths, click/type boundaries, safety notes, and current limitations. CAPTCHA bypass, login/2FA automation, submits/downloads, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented.
 
 ## Local whisper.cpp speech-to-text
 

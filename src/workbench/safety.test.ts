@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assessWorkbenchRequest, assertReadOnlyWorkbenchAction, validateWorkbenchUrl } from "./safety.js";
+import {
+  assessHumanHandoff,
+  assessWorkbenchRequest,
+  assertReadOnlyWorkbenchAction,
+  assertWorkbenchActionAllowed,
+  validateWorkbenchSteps,
+  validateWorkbenchUrl,
+} from "./safety.js";
 
 test("validateWorkbenchUrl allows public http(s) URLs", () => {
   const result = validateWorkbenchUrl("https://example.com/path?q=1");
@@ -35,8 +42,68 @@ test("assessWorkbenchRequest flags hard-approval categories", () => {
   assert.equal(safe.approvalRequired, false);
 });
 
-test("assertReadOnlyWorkbenchAction blocks side-effect actions", () => {
+test("assessHumanHandoff blocks credentials, login, 2FA, and CAPTCHA", () => {
+  for (const request of ["enter my password", "sign in", "use the 2FA code", "solve the CAPTCHA"]) {
+    const result = assessHumanHandoff(request);
+    assert.equal(result.approvalRequired, true, request);
+    assert.match(result.reason ?? "", /Human handoff required/);
+  }
+});
+
+test("workbench action allowlist admits basic click/type but not submit/download", () => {
   assert.equal(assertReadOnlyWorkbenchAction("open_url").allowed, true);
   assert.equal(assertReadOnlyWorkbenchAction("click").allowed, false);
-  assert.equal(assertReadOnlyWorkbenchAction("submit").allowed, false);
+  assert.equal(assertWorkbenchActionAllowed("click").allowed, true);
+  assert.equal(assertWorkbenchActionAllowed("type").allowed, true);
+  assert.equal(assertWorkbenchActionAllowed("fill").allowed, true);
+  assert.equal(assertWorkbenchActionAllowed("submit").allowed, false);
+  assert.equal(assertWorkbenchActionAllowed("download").allowed, false);
+});
+
+test("validateWorkbenchSteps allows benign open/click/type plan", () => {
+  const result = validateWorkbenchSteps([
+    { action: "open_url", url: "https://example.com" },
+    { action: "click", text: "More information" },
+    { action: "type", selector: "input[name=q]", value: "non-secret smoke text" },
+  ]);
+  assert.equal(result.allowed, true);
+});
+
+test("validateWorkbenchSteps gates side-effect language without explicit approval", () => {
+  const blocked = validateWorkbenchSteps([{ action: "open_url", url: "https://example.com" }], {
+    request: "Click checkout and place the order",
+  });
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason ?? "", /Explicit approval object required|Ask Jack|approval/i);
+
+  const approved = validateWorkbenchSteps([{ action: "open_url", url: "https://example.com" }], {
+    request: "Click checkout and place the order",
+    approval: { approved: true, approvedBy: "Jack", reason: "Reviewer test only; no real purchase executed." },
+  });
+  assert.equal(approved.allowed, true);
+});
+
+test("validateWorkbenchSteps blocks login-like and sensitive fields regardless of approval", () => {
+  const login = validateWorkbenchSteps([{ action: "open_url", url: "https://example.com" }], {
+    request: "log in with my password",
+    approval: { approved: true, approvedBy: "Jack", reason: "still must not automate credentials" },
+  });
+  assert.equal(login.allowed, false);
+  assert.match(login.reason ?? "", /Human handoff|required|Credentials/i);
+
+  const sensitiveField = validateWorkbenchSteps([
+    { action: "open_url", url: "https://example.com" },
+    { action: "fill", selector: "input[name=password]", value: "not-a-real-password" },
+  ]);
+  assert.equal(sensitiveField.allowed, false);
+  assert.match(sensitiveField.reason ?? "", /sensitive|handoff/i);
+});
+
+test("validateWorkbenchSteps blocks dangerous click labels unless approved", () => {
+  const blocked = validateWorkbenchSteps([
+    { action: "open_url", url: "https://example.com" },
+    { action: "click", text: "Submit payment" },
+  ]);
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason ?? "", /approval/i);
 });

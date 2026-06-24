@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 
-export type WorkbenchAction = "open_url" | "click" | "type" | "submit" | "download";
+export type WorkbenchAction = "open_url" | "click" | "type" | "fill" | "submit" | "download";
 
 export interface SafetyDecision {
   allowed: boolean;
@@ -11,6 +11,20 @@ export interface ApprovalDecision {
   approvalRequired: boolean;
   matchedTerms: string[];
   reason?: string;
+}
+
+export interface WorkbenchApproval {
+  approved: boolean;
+  approvedBy: string;
+  reason: string;
+}
+
+export interface WorkbenchStep {
+  action: "open_url" | "click" | "type" | "fill";
+  url?: string;
+  selector?: string;
+  text?: string;
+  value?: string;
 }
 
 const PRIVATE_IPV4_RANGES: Array<[number, number]> = [
@@ -36,6 +50,21 @@ const RISKY_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: "legal", pattern: /\b(legal|contract|lawsuit|settlement|notar|attorney|lawyer)\b/i },
   { label: "medical", pattern: /\b(medical|doctor|prescription|pharmacy|diagnos|treatment|health insurance)\b/i },
 ];
+
+const HUMAN_HANDOFF_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
+  {
+    label: "credential",
+    pattern: /\b(password|passcode|credential|(?<!non-)secret|api[_ -]?key|token|seed phrase|private key)\b/i,
+  },
+  { label: "login", pattern: /\b(log\s?in|sign\s?in|sign on|authenticate|auth code)\b/i },
+  { label: "2fa", pattern: /\b(2fa|mfa|two[- ]factor|verification code|otp|one[- ]time code)\b/i },
+  { label: "captcha", pattern: /\b(captcha|recaptcha|hcaptcha|human verification)\b/i },
+];
+
+const DANGEROUS_CLICK_TEXT =
+  /\b(submit|send|post|publish|buy|purchase|checkout|pay|place order|book|reserve|confirm|delete|remove|cancel|save changes|update account|transfer|sign in|log in)\b/i;
+const SENSITIVE_FIELD_HINT =
+  /\b(password|passcode|otp|2fa|mfa|captcha|verification|credit.?card|card.?number|cvv|cvc|ssn|social.?security|secret|token|api.?key)\b/i;
 
 function ip4ToNumber(ip: string): number {
   return ip.split(".").reduce((acc, part) => (acc << 8) + Number(part), 0) >>> 0;
@@ -90,7 +119,90 @@ export function assessWorkbenchRequest(text: string): ApprovalDecision {
   };
 }
 
+export function assessHumanHandoff(text: string): ApprovalDecision {
+  const matchedTerms = HUMAN_HANDOFF_PATTERNS.filter((entry) => entry.pattern.test(text)).map((entry) => entry.label);
+  return {
+    approvalRequired: matchedTerms.length > 0,
+    matchedTerms,
+    reason: matchedTerms.length
+      ? `Human handoff required for: ${Array.from(new Set(matchedTerms)).join(", ")}. Credentials/login/2FA/CAPTCHA are not automated.`
+      : undefined,
+  };
+}
+
+export function approvalIsExplicit(approval: WorkbenchApproval | undefined): boolean {
+  return Boolean(approval?.approved && approval.approvedBy.trim() && approval.reason.trim());
+}
+
+export function assertWorkbenchActionAllowed(action: WorkbenchAction): SafetyDecision {
+  if (action === "open_url" || action === "click" || action === "type" || action === "fill") return { allowed: true };
+  return { allowed: false, reason: `Workbench action ${action} is not implemented.` };
+}
+
 export function assertReadOnlyWorkbenchAction(action: WorkbenchAction): SafetyDecision {
   if (action === "open_url") return { allowed: true };
-  return { allowed: false, reason: `Workbench action ${action} is not implemented without human approval.` };
+  return { allowed: false, reason: `Workbench action ${action} is not read-only.` };
+}
+
+export function validateWorkbenchSteps(
+  steps: WorkbenchStep[],
+  options: { request?: string; approval?: WorkbenchApproval; allowNoOpen?: boolean } = {},
+): SafetyDecision {
+  if (!steps.length) return { allowed: false, reason: "At least one workbench step is required." };
+  if (steps.length > 20) return { allowed: false, reason: "Workbench run is limited to 20 steps." };
+
+  const requestHandoff = assessHumanHandoff(options.request ?? "");
+  if (requestHandoff.approvalRequired) return { allowed: false, reason: requestHandoff.reason };
+
+  const requestApproval = assessWorkbenchRequest(options.request ?? "");
+  if (requestApproval.approvalRequired && !approvalIsExplicit(options.approval)) {
+    return { allowed: false, reason: `${requestApproval.reason} Explicit approval object required.` };
+  }
+
+  let hasOpen = false;
+  for (const [index, step] of steps.entries()) {
+    const action = assertWorkbenchActionAllowed(step.action);
+    if (!action.allowed) return action;
+
+    const targetText = [step.selector, step.text].filter(Boolean).join(" ");
+    const stepText = [targetText, step.value].filter(Boolean).join(" ");
+    const handoff = assessHumanHandoff(stepText);
+    if (handoff.approvalRequired) return { allowed: false, reason: `Step ${index + 1}: ${handoff.reason}` };
+
+    if (step.action === "open_url") {
+      if (!step.url) return { allowed: false, reason: `Step ${index + 1}: open_url requires url.` };
+      const url = validateWorkbenchUrl(step.url);
+      if (!url.allowed) return { allowed: false, reason: `Step ${index + 1}: ${url.reason}` };
+      hasOpen = true;
+      continue;
+    }
+
+    if (!step.selector && !step.text) {
+      return { allowed: false, reason: `Step ${index + 1}: ${step.action} requires selector or text.` };
+    }
+
+    if (step.action === "click") {
+      if (step.value) return { allowed: false, reason: `Step ${index + 1}: click does not accept value.` };
+      if (DANGEROUS_CLICK_TEXT.test(stepText) && !approvalIsExplicit(options.approval)) {
+        return {
+          allowed: false,
+          reason: `Step ${index + 1}: click target looks like a submit/destructive action; explicit approval object required.`,
+        };
+      }
+      continue;
+    }
+
+    if ((step.action === "type" || step.action === "fill") && !step.value) {
+      return { allowed: false, reason: `Step ${index + 1}: ${step.action} requires non-secret value.` };
+    }
+    if ((step.action === "type" || step.action === "fill") && SENSITIVE_FIELD_HINT.test(targetText)) {
+      return {
+        allowed: false,
+        reason: `Step ${index + 1}: sensitive credential/payment field detected; human handoff required.`,
+      };
+    }
+  }
+
+  if (!hasOpen && !options.allowNoOpen) return { allowed: false, reason: "First run must include an open_url step." };
+  return { allowed: true };
 }
