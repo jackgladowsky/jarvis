@@ -69,6 +69,14 @@ export const paths = {
   internalNotificationsArchive: join(DATA_BASE, "data", "notifications", "archive"),
   internalNotificationsHeartbeat: join(DATA_BASE, "data", "notifications", "heartbeat.json"),
 
+  // Browser/desktop workbench state. Host-local only: persistent browser
+  // profile, downloads, screenshots, and machine-readable run artifacts.
+  workbench: join(DATA_BASE, "data", "workbench"),
+  workbenchProfile: join(DATA_BASE, "data", "workbench", "profile"),
+  workbenchDownloads: join(DATA_BASE, "data", "workbench", "downloads"),
+  workbenchScreenshots: join(DATA_BASE, "data", "workbench", "screenshots"),
+  workbenchArtifacts: join(DATA_BASE, "data", "workbench", "artifacts"),
+
   // Append-only audit log of every tool call. See DESIGN.md §13.
   audit: join(DATA_BASE, "data", "audit.log"),
 

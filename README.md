@@ -91,8 +91,9 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Telegram bot interface with hard allowlisting by numeric Telegram user ID.
 - Persistent JSONL sessions with rotation, archival, and summaries.
 - Markdown memory notes under `~/.jarvis/data/notes/`.
-- Five built-in tools: read, write, edit, bash, and Exa-backed web search/fetch.
+- Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, and read-only browser workbench.
 - Telegram image input and optional local whisper.cpp voice/audio transcription.
+- Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
 - Cron-style recurring scheduled jobs plus one-time reminders.
 - Detached background workers using isolated git worktrees and role pipelines.
 - Safe deploy helper that builds before restart and preserves host-local data.
@@ -145,6 +146,19 @@ Config is loaded once at startup; restart JARVIS to apply changes.
 /goal list|status|log <id>      inspect goal state/events
 /goal pause|resume|stop|next <id> control a goal loop
 ```
+
+## Browser workbench
+
+The first browser workbench slice is local-only and read-only. The `browser_workbench` agent tool can open a public `http(s)` URL in a persistent Chromium profile, capture title/visible text, and write screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. It blocks local/private URLs and includes hard approval gates for purchase/order/booking/send/post/delete/cancel/account/financial/legal/medical requests.
+
+Smoke test:
+
+```bash
+pnpm exec playwright install chromium   # if the browser binary is not installed yet
+pnpm run workbench:smoke -- https://example.com
+```
+
+See `docs/workbench.md` for data paths, safety notes, and current limitations. CAPTCHA bypass, login/2FA automation, side-effect actions, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented in this first slice.
 
 ## Local whisper.cpp speech-to-text
 

@@ -7,15 +7,27 @@
 // behind one API. The tool dispatches on input shape (URL → /contents,
 // otherwise → /search) so it stays a single tool, not two.
 //
+// `browser_workbench` is the deliberate sixth: Playwright browser state and
+// artifacts need structured guardrails that raw shell/browser scripting would
+// not provide safely.
+//
 // New additions still get the original treatment: the model is smart, it
 // can compose. Don't add a tool because something is *slightly* easier
 // with one — add it only when the shell genuinely can't do the job.
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { bashTool } from "./bash.js";
+import { browserWorkbenchTool } from "./browser-workbench.js";
 import { editTool } from "./edit.js";
 import { readTool } from "./read.js";
 import { webSearchTool } from "./web-search.js";
 import { writeTool } from "./write.js";
 
-export const allTools: AgentTool<any>[] = [readTool, writeTool, editTool, bashTool, webSearchTool];
+export const allTools: AgentTool<any>[] = [
+  readTool,
+  writeTool,
+  editTool,
+  bashTool,
+  webSearchTool,
+  browserWorkbenchTool,
+];

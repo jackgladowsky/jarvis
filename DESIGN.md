@@ -34,6 +34,7 @@ This doc captures the original design rationale plus selected architecture notes
 - Calendar / email style integrations. Scheduled prompts exist, but external app integrations do not.
 - Episodic memory / semantic search over past sessions. (v2.)
 - Web UI. Telegram is the only interface.
+- Full browser/desktop automation is incremental: the current Playwright workbench slice is local-only and read-only for public page inspection, with persistent host-local artifacts under `~/.jarvis/data/workbench/` and hard approval gates before side effects. Docker/noVNC human takeover, login/2FA/CAPTCHA handoff, and click/type/submit flows are future work.
 - SSH-out to other machines. Parked — interesting future direction, but not v1.
 - Custom note/memory tools. Notes are just files in a known directory.
 - Hot-reload of config. Restart the service.
