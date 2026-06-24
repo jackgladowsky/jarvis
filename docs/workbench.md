@@ -1,8 +1,8 @@
 # Browser workbench
 
-JARVIS has a local-only Playwright browser workbench. It can open a public `http(s)` URL, inspect title/visible text, save screenshot/artifact files, and run small validated step plans with benign `click`, `type`, and `fill` actions.
+JARVIS has a local-only Playwright browser workbench. It can open a public `http(s)` URL, inspect title/visible text, save screenshot/artifact files, and run small validated step plans with benign `click`, `type`, `fill`, and benign `submit` actions.
 
-It does **not** automate credentials, login, 2FA, CAPTCHA, submits, downloads, purchases/orders, bookings/rides, sends/posts/messages, deletes/cancels, account changes, or financial/legal/medical actions. Those are blocked unless the tool receives an explicit approval object where applicable, and real purchasing/rides/etc. are still not implemented.
+It does **not** automate credentials, login, 2FA, CAPTCHA, downloads, purchases/orders, bookings/rides, sends/posts/messages, deletes/cancels, account changes, or financial/legal/medical actions. Benign submits like search forms are allowed; sensitive/side-effect submits are blocked unless explicitly approved. Those are blocked unless the tool receives an explicit approval object where applicable, and real purchasing/rides/etc. are still not implemented.
 
 ## Runtime data
 
@@ -55,7 +55,7 @@ Blocked/handoff:
 - Password, OTP/2FA, CAPTCHA, API key/token/secret, credit-card/CVV/SSN/payment-like fields.
 - Login/sign-in pages or requests.
 - Submit/send/post/publish/buy/purchase/checkout/pay/place-order/book/reserve/confirm/delete/cancel/account-update/transfer-like targets unless an explicit approval object is supplied; real purchase/ride/order execution is not implemented.
-- `submit` and `download` actions are not implemented.
+- `download` actions are not implemented. Benign `submit` is implemented for safe forms like search; sensitive/side-effect submits are gated.
 
 ## Smoke test
 

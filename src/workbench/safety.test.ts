@@ -50,21 +50,22 @@ test("assessHumanHandoff blocks credentials, login, 2FA, and CAPTCHA", () => {
   }
 });
 
-test("workbench action allowlist admits basic click/type but not submit/download", () => {
+test("workbench action allowlist admits basic click/type/submit but not download", () => {
   assert.equal(assertReadOnlyWorkbenchAction("open_url").allowed, true);
   assert.equal(assertReadOnlyWorkbenchAction("click").allowed, false);
   assert.equal(assertWorkbenchActionAllowed("click").allowed, true);
   assert.equal(assertWorkbenchActionAllowed("type").allowed, true);
   assert.equal(assertWorkbenchActionAllowed("fill").allowed, true);
-  assert.equal(assertWorkbenchActionAllowed("submit").allowed, false);
+  assert.equal(assertWorkbenchActionAllowed("submit").allowed, true);
   assert.equal(assertWorkbenchActionAllowed("download").allowed, false);
 });
 
-test("validateWorkbenchSteps allows benign open/click/type plan", () => {
+test("validateWorkbenchSteps allows benign open/click/type/submit plan", () => {
   const result = validateWorkbenchSteps([
     { action: "open_url", url: "https://example.com" },
     { action: "click", text: "More information" },
     { action: "type", selector: "input[name=q]", value: "non-secret smoke text" },
+    { action: "submit", text: "Search" },
   ]);
   assert.equal(result.allowed, true);
 });

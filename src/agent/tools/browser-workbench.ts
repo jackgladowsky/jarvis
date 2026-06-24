@@ -6,12 +6,23 @@ import { renderWorkbenchResult } from "../../workbench/render.js";
 import { assessHumanHandoff, assessWorkbenchRequest, approvalIsExplicit } from "../../workbench/safety.js";
 
 const stepSchema = Type.Object({
-  action: Type.Union([Type.Literal("open_url"), Type.Literal("click"), Type.Literal("type"), Type.Literal("fill")], {
-    description: "Safe basic browser action. submit/download/destructive actions are not implemented.",
-  }),
+  action: Type.Union(
+    [
+      Type.Literal("open_url"),
+      Type.Literal("click"),
+      Type.Literal("type"),
+      Type.Literal("fill"),
+      Type.Literal("submit"),
+    ],
+    {
+      description: "Safe basic browser action. Destructive submits/downloads are not implemented.",
+    },
+  ),
   url: Type.Optional(Type.String({ description: "Public http(s) URL for open_url." })),
-  selector: Type.Optional(Type.String({ description: "CSS selector for click/type/fill target." })),
-  text: Type.Optional(Type.String({ description: "Visible text for click target, or label text for type/fill." })),
+  selector: Type.Optional(Type.String({ description: "CSS selector for click/type/fill/submit target." })),
+  text: Type.Optional(
+    Type.String({ description: "Visible text for click/submit target, or label text for type/fill." }),
+  ),
   value: Type.Optional(Type.String({ description: "Non-secret sample text to type/fill. Never pass credentials." })),
 });
 
@@ -42,7 +53,7 @@ export const browserWorkbenchTool: AgentTool<typeof schema> = {
   name: "browser_workbench",
   label: "browser_workbench",
   description:
-    "Run safe local Playwright browser workbench actions with persistent host-local profile/downloads/screenshots/artifacts. Supports open_url and small run_steps plans with benign click/type/fill. Blocks local/private URLs, credentials, login/2FA/CAPTCHA, submits, purchases/orders/bookings/rides/sends/posts/deletes/account/financial/legal/medical actions unless an explicit approval object is present; real purchase/ride/etc. execution is not implemented.",
+    "Run safe local Playwright browser workbench actions with persistent host-local profile/downloads/screenshots/artifacts. Supports open_url and small run_steps plans with benign click/type/fill/submit. Blocks local/private URLs, credentials, login/2FA/CAPTCHA, and risky purchases/orders/bookings/rides/sends/posts/deletes/account/financial/legal/medical actions unless an explicit approval object is present; real purchase/ride/etc. execution is not implemented.",
   parameters: schema,
   async execute(_id, args: Static<typeof schema>) {
     const t0 = Date.now();

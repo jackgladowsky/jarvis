@@ -149,7 +149,7 @@ Config is loaded once at startup; restart JARVIS to apply changes.
 
 ## Browser workbench
 
-The browser workbench is local-only. The `browser_workbench` agent tool can open a public `http(s)` URL in a persistent Chromium profile, capture title/visible text, and write screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. It also supports small validated `run_steps` plans for benign `click`, `type`, and `fill` actions. It blocks local/private URLs, credentials/login/2FA/CAPTCHA, and includes hard approval gates for purchase/order/booking/send/post/delete/cancel/account/financial/legal/medical requests; real purchase/ride/order execution is not implemented.
+The browser workbench is local-only. The `browser_workbench` agent tool can open a public `http(s)` URL in a persistent Chromium profile, capture title/visible text, and write screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. It also supports small validated `run_steps` plans for benign `click`, `type`, `fill`, and benign `submit` actions. It blocks local/private URLs, credentials/login/2FA/CAPTCHA, and includes hard approval gates for purchase/order/booking/send/post/delete/cancel/account/financial/legal/medical requests; real purchase/ride/order execution is not implemented.
 
 Smoke test:
 
@@ -159,7 +159,7 @@ pnpm run workbench:smoke                # deterministic local fixture: benign cl
 pnpm run workbench:smoke -- https://example.com
 ```
 
-See `docs/workbench.md` for data paths, click/type boundaries, safety notes, and current limitations. CAPTCHA bypass, login/2FA automation, submits/downloads, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented.
+See `docs/workbench.md` for data paths, click/type boundaries, safety notes, and current limitations. CAPTCHA bypass, login/2FA automation, downloads, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented. Benign submits like search forms are allowed; risky submits still require explicit approval.
 
 ## Local whisper.cpp speech-to-text
 

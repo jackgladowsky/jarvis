@@ -176,7 +176,7 @@ export async function runStepsInWorkbench(
           timeout: options.timeoutMs ?? 30_000,
         });
         await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
-      } else if (step.action === "click") {
+      } else if (step.action === "click" || step.action === "submit") {
         await assertNoHumanHandoffSignals(page);
         await locatorForStep(page, step).click({ timeout: options.timeoutMs ?? 10_000 });
         await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);

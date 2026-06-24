@@ -20,7 +20,7 @@ export interface WorkbenchApproval {
 }
 
 export interface WorkbenchStep {
-  action: "open_url" | "click" | "type" | "fill";
+  action: "open_url" | "click" | "type" | "fill" | "submit";
   url?: string;
   selector?: string;
   text?: string;
@@ -40,7 +40,7 @@ const RISKY_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: "purchase", pattern: /\b(buy|purchase|checkout|place\s+(?:the\s+)?order|pay|payment)\b/i },
   { label: "order", pattern: /\b(order|doordash|instacart|cart)\b/i },
   { label: "booking", pattern: /\b(book|reserve|reservation|ride|uber|lyft|flight|hotel|appointment)\b/i },
-  { label: "send/post", pattern: /\b(send|post|publish|submit|message|email|reply|comment|tweet)\b/i },
+  { label: "send/post", pattern: /\b(send|post|publish|message|email|reply|comment|tweet)\b/i },
   { label: "delete/cancel", pattern: /\b(delete|remove|cancel|close\s+(?:my\s+)?account|terminate)\b/i },
   {
     label: "account change",
@@ -62,7 +62,7 @@ const HUMAN_HANDOFF_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
 ];
 
 const DANGEROUS_CLICK_TEXT =
-  /\b(submit|send|post|publish|buy|purchase|checkout|pay|place order|book|reserve|confirm|delete|remove|cancel|save changes|update account|transfer|sign in|log in)\b/i;
+  /\b(send|post|publish|buy|purchase|checkout|pay|payment|place order|book|reserve|confirm|delete|remove|cancel|save changes|update account|transfer|sign in|log in)\b/i;
 const SENSITIVE_FIELD_HINT =
   /\b(password|passcode|otp|2fa|mfa|captcha|verification|credit.?card|card.?number|cvv|cvc|ssn|social.?security|secret|token|api.?key)\b/i;
 
@@ -135,7 +135,8 @@ export function approvalIsExplicit(approval: WorkbenchApproval | undefined): boo
 }
 
 export function assertWorkbenchActionAllowed(action: WorkbenchAction): SafetyDecision {
-  if (action === "open_url" || action === "click" || action === "type" || action === "fill") return { allowed: true };
+  if (action === "open_url" || action === "click" || action === "type" || action === "fill" || action === "submit")
+    return { allowed: true };
   return { allowed: false, reason: `Workbench action ${action} is not implemented.` };
 }
 
@@ -181,12 +182,12 @@ export function validateWorkbenchSteps(
       return { allowed: false, reason: `Step ${index + 1}: ${step.action} requires selector or text.` };
     }
 
-    if (step.action === "click") {
-      if (step.value) return { allowed: false, reason: `Step ${index + 1}: click does not accept value.` };
+    if (step.action === "click" || step.action === "submit") {
+      if (step.value) return { allowed: false, reason: `Step ${index + 1}: ${step.action} does not accept value.` };
       if (DANGEROUS_CLICK_TEXT.test(stepText) && !approvalIsExplicit(options.approval)) {
         return {
           allowed: false,
-          reason: `Step ${index + 1}: click target looks like a submit/destructive action; explicit approval object required.`,
+          reason: `Step ${index + 1}: ${step.action} target looks side-effect/destructive; explicit approval object required.`,
         };
       }
       continue;

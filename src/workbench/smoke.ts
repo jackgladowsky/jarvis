@@ -9,12 +9,19 @@ const fixtureHtml = `<!doctype html>
   <body>
     <h1>Workbench smoke fixture</h1>
     <a href="#clicked">Benign details link</a>
-    <label for="notes">Notes</label>
-    <input id="notes" name="notes" type="text" />
+    <form>
+      <label for="notes">Notes</label>
+      <input id="notes" name="notes" type="text" />
+      <button id="go" type="submit">Search</button>
+    </form>
     <p id="clicked">Not clicked yet</p>
     <script>
       document.querySelector('a').addEventListener('click', () => {
         document.querySelector('#clicked').textContent = 'Benign link clicked';
+      });
+      document.querySelector('form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        document.querySelector('#clicked').textContent = 'Searched: ' + document.querySelector('#notes').value;
       });
     </script>
   </body>
@@ -26,8 +33,13 @@ const run = target
       [
         { action: "click", text: "Benign details link" },
         { action: "fill", selector: "#notes", value: "non-secret smoke text" },
+        { action: "submit", selector: "#go" },
       ],
-      { fixtureHtml, request: "Smoke test: click benign link and type non-secret sample text into a local fixture." },
+      {
+        fixtureHtml,
+        request:
+          "Smoke test: click benign link, type non-secret sample text, and submit a benign local fixture search.",
+      },
     );
 
 run
