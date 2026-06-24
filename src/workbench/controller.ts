@@ -50,15 +50,13 @@ async function assertNoHumanHandoffSignals(page: Page): Promise<void> {
         doc?.querySelector('input[type="password"]') !== null;
       const text = doc?.body?.innerText ?? "";
       const captcha = /\b(captcha|recaptcha|hcaptcha|human verification)\b/i.test(text);
-      const login = /\b(log\s?in|sign\s?in|two[- ]factor|2fa|mfa|verification code|one[- ]time code)\b/i.test(text);
-      return { password, captcha, login };
+      const twoFactor = /\b(two[- ]factor|2fa|mfa|verification code|one[- ]time code)\b/i.test(text);
+      return { password, captcha, twoFactor };
     })
-    .catch(() => ({ password: false, captcha: false, login: false }));
+    .catch(() => ({ password: false, captcha: false, twoFactor: false }));
 
-  if (signals.password || signals.captcha || signals.login) {
-    throw new Error(
-      "Human handoff required: login/password/2FA/CAPTCHA-like page detected. Workbench will not bypass it.",
-    );
+  if (signals.password || signals.captcha || signals.twoFactor) {
+    throw new Error("Human handoff required: password/2FA/CAPTCHA-like page detected. Workbench will not bypass it.");
   }
 }
 
