@@ -92,7 +92,7 @@ async function snapshotPage(
     .innerText({ timeout: 5_000 })
     .catch(() => "");
   const visibleText = clipVisibleText(rawText).text;
-  await page.screenshot({ path: input.screenshotPath, fullPage: true });
+  await page.screenshot({ path: input.screenshotPath, fullPage: false, timeout: 10_000 });
 
   const snapshot: WorkbenchPageSnapshot = {
     requestedUrl: input.requestedUrl,
