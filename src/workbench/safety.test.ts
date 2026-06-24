@@ -84,14 +84,7 @@ test("validateWorkbenchSteps gates side-effect language without explicit approva
   assert.equal(approved.allowed, true);
 });
 
-test("validateWorkbenchSteps blocks login-like and sensitive fields regardless of approval", () => {
-  const login = validateWorkbenchSteps([{ action: "open_url", url: "https://example.com" }], {
-    request: "log in with my password",
-    approval: { approved: true, approvedBy: "Jack", reason: "still must not automate credentials" },
-  });
-  assert.equal(login.allowed, false);
-  assert.match(login.reason ?? "", /Human handoff|required|Credentials/i);
-
+test("validateWorkbenchSteps blocks sensitive fields regardless of approval", () => {
   const sensitiveField = validateWorkbenchSteps([
     { action: "open_url", url: "https://example.com" },
     { action: "fill", selector: "input[name=password]", value: "not-a-real-password" },

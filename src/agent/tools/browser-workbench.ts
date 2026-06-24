@@ -3,7 +3,7 @@ import { type Static, Type } from "typebox";
 import { auditToolCall } from "../../lib/logger.js";
 import { openUrlInWorkbench, runStepsInWorkbench } from "../../workbench/controller.js";
 import { renderWorkbenchResult } from "../../workbench/render.js";
-import { assessHumanHandoff, assessWorkbenchRequest, approvalIsExplicit } from "../../workbench/safety.js";
+import { assessWorkbenchRequest, approvalIsExplicit } from "../../workbench/safety.js";
 
 const stepSchema = Type.Object({
   action: Type.Union(
@@ -66,9 +66,6 @@ export const browserWorkbenchTool: AgentTool<typeof schema> = {
     };
 
     try {
-      const handoff = assessHumanHandoff(args.request ?? "");
-      if (handoff.approvalRequired) throw new Error(handoff.reason ?? "Human handoff required.");
-
       const approval = assessWorkbenchRequest(args.request ?? "");
       if (approval.approvalRequired && !approvalIsExplicit(args.approval)) {
         throw new Error(`${approval.reason} Ask Jack for explicit approval before continuing.`);

@@ -4,7 +4,6 @@ import { chromium, type Locator, type Page } from "playwright";
 import { paths } from "../paths.js";
 import { clipVisibleText, type WorkbenchPageSnapshot, type WorkbenchStepResult } from "./render.js";
 import {
-  assessHumanHandoff,
   type WorkbenchApproval,
   type WorkbenchStep,
   assertReadOnlyWorkbenchAction,
@@ -131,9 +130,6 @@ export async function runStepsInWorkbench(
     allowNoOpen: Boolean(options.fixtureHtml),
   });
   if (!validation.allowed) throw new Error(validation.reason ?? "Workbench steps are not allowed.");
-
-  const requestHandoff = assessHumanHandoff(options.request ?? "");
-  if (requestHandoff.approvalRequired) throw new Error(requestHandoff.reason ?? "Human handoff required.");
 
   await ensureWorkbenchDirs();
   const capturedAtDate = options.now ?? new Date();

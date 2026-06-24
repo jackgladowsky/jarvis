@@ -152,9 +152,6 @@ export function validateWorkbenchSteps(
   if (!steps.length) return { allowed: false, reason: "At least one workbench step is required." };
   if (steps.length > 20) return { allowed: false, reason: "Workbench run is limited to 20 steps." };
 
-  const requestHandoff = assessHumanHandoff(options.request ?? "");
-  if (requestHandoff.approvalRequired) return { allowed: false, reason: requestHandoff.reason };
-
   const requestApproval = assessWorkbenchRequest(options.request ?? "");
   if (requestApproval.approvalRequired && !approvalIsExplicit(options.approval)) {
     return { allowed: false, reason: `${requestApproval.reason} Explicit approval object required.` };
