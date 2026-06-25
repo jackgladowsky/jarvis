@@ -1,6 +1,6 @@
 {
   "name": "jarvis",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "Self-hosted Telegram AI assistant with host-local state, scheduler, and background workers.",
@@ -21,6 +21,7 @@
     "start": "node dist/index.js",
     "version:show": "pnpm run build && node dist/lib/version.js",
     "release:bump": "node scripts/bump-version.mjs",
+    "release": "node skills/release/scripts/release.mjs",
     "workbench:smoke": "pnpm build && node dist/workbench/smoke.js"
   },
   "dependencies": {

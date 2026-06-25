@@ -15,6 +15,7 @@ Skills are repo-local procedural references for JARVIS. They keep the core syste
 
 - `background-workers` — creating, monitoring, reviewing, resuming, and cleaning background tasks.
 - `deploy` — safe deploy/update flow, service restarts, setup, backups, and deployment safety.
+- `release` — manual release flow: bumping `package.json`, updating `CHANGELOG.md`, and opening the release PR.
 - `scheduler` — recurring tasks, one-time reminders, job notes, sessions, and scheduler logs.
 - `memory` — filesystem memory under `~/.jarvis/data/notes/`, read/write triggers, and formats.
 - `destinations` — place recommendations, destination comparisons, and Uber/Lyft/Maps links.
