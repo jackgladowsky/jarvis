@@ -49,19 +49,22 @@ jobs:
 
       - name: Set up test config
         # Tests transitively import `config.ts` and `agent/system-prompt.ts`,
-        # both of which read files from $JARVIS_DATA_DIR and process.env at
-        # module-load time. Provide a temp data dir seeded with the example
-        # config + prompt, plus stubbed env vars so the env schema validates.
-        env:
-          TELEGRAM_BOT_TOKEN: test-token
-          TELEGRAM_ALLOWED_USER_IDS: "0"
-          EXA_API_KEY: test-key
+        # both of which read files from $JARVIS_DATA_DIR at module-load time.
+        # Provide a temp data dir seeded with the example config + prompt, and
+        # stub the required env vars so the env schema validates at module load.
+        # Tests don't exercise the secrets themselves — only config.ts needs
+        # them to exist.
         run: |
           TEST_DATA_DIR="$(mktemp -d)"
           mkdir -p "$TEST_DATA_DIR/prompts"
           cp config.yaml.example "$TEST_DATA_DIR/config.yaml"
           cp prompts/system.md.example "$TEST_DATA_DIR/prompts/system.md"
-          echo "JARVIS_DATA_DIR=$TEST_DATA_DIR" >> "$GITHUB_ENV"
+          {
+            echo "JARVIS_DATA_DIR=$TEST_DATA_DIR"
+            echo "TELEGRAM_BOT_TOKEN=test-token"
+            echo "TELEGRAM_ALLOWED_USER_IDS=0"
+            echo "EXA_API_KEY=test-key"
+          } >> "$GITHUB_ENV"
 
       - name: Coverage
         run: pnpm run coverage
