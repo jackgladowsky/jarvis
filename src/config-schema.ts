@@ -4,7 +4,7 @@ import { z } from "zod";
 // and this schema is a bug — the example is documentation, this is enforcement.
 export const ConfigSchema = z.object({
   agent: z.object({
-    provider: z.enum(["codex", "anthropic"]),
+    provider: z.enum(["codex", "anthropic", "openrouter"]),
     model: z.string().min(1),
   }),
   session: z.object({
@@ -68,9 +68,10 @@ export type Config = z.infer<typeof ConfigSchema>;
 export const EnvSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_ALLOWED_USER_IDS: z.string().min(1),
-  // Optional because the anthropic provider doesn't need it, and vice versa.
+  // Optional because not every provider needs every key.
   CODEX_OAUTH_CREDS_PATH: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
   // Required: powers the `web_search` tool. Search and page-fetch both go
   // through Exa — without this key the tool throws on every call. Treated
   // as load-bearing rather than optional so startup fails fast if missing.

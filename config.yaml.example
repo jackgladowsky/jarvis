@@ -2,9 +2,10 @@
 # Secrets live in .env, not here. Copy this to ~/.jarvis/config.yaml.
 
 agent:
-  provider: codex                             # "codex" or "anthropic"
+  provider: codex                             # "codex" / "anthropic" / "openrouter"
   model: gpt-5.1                              # codex examples: gpt-5.1 / gpt-5.1-codex-max / gpt-5.1-codex-mini
                                               # anthropic examples: claude-sonnet-4-6
+                                              # openrouter examples: openai/gpt-4o / anthropic/claude-sonnet-4
 
 session:
   inactivity_threshold_minutes: 240           # 4 hours

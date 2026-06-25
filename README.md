@@ -135,6 +135,7 @@ Config is loaded once at startup; restart JARVIS to apply changes.
 /thinking [on|off]    show coarse progress updates for future turns
 /verbose [on|off]     show more detailed progress/tool updates for future turns
 /usage                show local context and token/cost usage estimates
+/version              show the running JARVIS version
 
 /bg <prompt>          start a background worker task
 /tasks                list recent background tasks
@@ -209,6 +210,8 @@ pnpm run coverage
 `pnpm run check` runs format check, lint, typecheck, and coverage.
 
 CI runs on pushes to `main` and pull requests using Node 20 and 22.
+
+Versioning follows semver: patch for fixes, minor for additive features, major for breaking data/config changes.
 
 ## Security model
 

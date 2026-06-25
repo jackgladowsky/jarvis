@@ -91,5 +91,6 @@ export async function getCodexAccessToken(): Promise<string> {
 export async function getApiKeyForProvider(providerName: string): Promise<string | undefined> {
   if (providerName === "openai-codex") return getCodexAccessToken();
   if (providerName === "anthropic") return env.ANTHROPIC_API_KEY;
+  if (providerName === "openrouter") return env.OPENROUTER_API_KEY;
   return undefined;
 }

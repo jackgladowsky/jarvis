@@ -15,6 +15,7 @@
 import { Bot, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { cancelChatRun, handleMessage, rotateSession, type StatusMode } from "../agent/runtime.js";
+import { describeModel, getSupportedProviders, switchModel } from "../agent/model.js";
 import { renderUsageReport } from "../agent/usage.js";
 import {
   answerBackgroundTask,
@@ -61,6 +62,7 @@ import {
   type InternalNotification,
 } from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
+import { collectVersionInfo, renderVersionBlock } from "../lib/version.js";
 import { withLock } from "../lib/mutex.js";
 import { commandName, commandRest, nextStatusMode, parseModeCommand } from "./commands.js";
 
@@ -557,6 +559,65 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
       await safe(
         "reply (/usage failed)",
         ctx.reply(`Usage report failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }
+    return;
+  }
+
+  if (commandName(userText) === "version") {
+    await safe("reply (/version)", ctx.reply(renderVersionBlock(collectVersionInfo())));
+    return;
+  }
+
+  if (commandName(userText) === "model") {
+    const rest = commandRest(userText);
+    const parts = rest.split(/\s+/).filter(Boolean);
+    const current = describeModel();
+
+    if (parts.length === 0) {
+      await safe(
+        "reply (/model current)",
+        ctx.reply(
+          `Current model: ${current}\n\n` +
+            `Usage: /model &lt;provider&gt; &lt;model-id&gt;\n` +
+            `Providers: ${getSupportedProviders().join(", ")}\n\n` +
+            `Examples:\n` +
+            `  /model openrouter openai/gpt-4o\n` +
+            `  /model openrouter anthropic/claude-sonnet-4\n` +
+            `  /model codex gpt-5.4\n` +
+            `  /model anthropic claude-sonnet-4-6`,
+        ),
+      );
+      return;
+    }
+
+    if (parts.length < 2) {
+      await safe(
+        "reply (/model usage)",
+        ctx.reply(
+          `Usage: /model &lt;provider&gt; &lt;model-id&gt;\n` +
+            `Example: /model openrouter openai/gpt-4o\n` +
+            `Current: ${current}`,
+        ),
+      );
+      return;
+    }
+
+    const [provider, ...modelParts] = parts;
+    const modelId = modelParts.join(" ");
+
+    try {
+      switchModel(provider, modelId);
+      await safe(
+        "reply (/model switched)",
+        ctx.reply(`Switched model to: ${describeModel()}.`),
+      );
+    } catch (err) {
+      await safe(
+        "reply (/model error)",
+        ctx.reply(
+          `Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
+        ),
       );
     }
     return;

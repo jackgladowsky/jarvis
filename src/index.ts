@@ -7,11 +7,12 @@ import { handleMessage } from "./agent/runtime.js";
 import * as sessions from "./agent/session-manager.js";
 import { notifyPendingDeployComplete } from "./lib/deploy-notify.js";
 import { log } from "./lib/logger.js";
+import { collectVersionInfo, formatVersionInfo } from "./lib/version.js";
 import { startScheduler } from "./scheduler.js";
 import { runTelegram } from "./transport/telegram.js";
 
 async function main(): Promise<void> {
-  log.info("jarvis starting");
+  log.info("jarvis starting", { version: formatVersionInfo(collectVersionInfo()) });
   // Load active.json and create session dirs before any messages can arrive.
   // Crash recovery (replaying transcripts) happens lazily inside handleMessage.
   await sessions.init();

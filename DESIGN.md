@@ -546,6 +546,8 @@ scripts/safe-deploy.sh
 
 `safe-deploy.sh` is the normal installed-host update path. It refuses dirty working trees, fast-forwards, installs dependencies, builds, sends a Telegram restart notice, writes a pending marker, and schedules a short delayed systemd restart so the launching chat response can complete. On startup, JARVIS consumes the marker and sends a back-online notice. `scripts/update.sh` is a compatibility alias. Nothing in `~/.jarvis/` is touched. Raw `sudo systemctl restart jarvis` is reserved for deliberate manual service/config operations.
 
+Release versions follow semver. Patch releases are fixes, minor releases are additive features or skills, and major releases mean a breaking config/session/tool contract change.
+
 ### Config / template drift on updates
 
 If a new version adds a config key, `config.yaml.example` will have it but the live `~/.jarvis/config.yaml` won't. Strategy:
