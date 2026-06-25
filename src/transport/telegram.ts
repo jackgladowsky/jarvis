@@ -14,34 +14,8 @@
 
 import { Bot, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
-import { cancelChatRun, handleMessage, rotateSession, type StatusMode } from "../agent/runtime.js";
-import { describeModel, getSupportedProviders, switchModel } from "../agent/model.js";
-import { renderUsageReport } from "../agent/usage.js";
-import {
-  answerBackgroundTask,
-  cancelBackgroundTask,
-  listBackgroundTasks,
-  readBackgroundMail,
-  readBackgroundTask,
-  renderTask,
-  renderTaskList,
-  resumeBackgroundTask,
-  startBackgroundTask,
-} from "../background/manager.js";
+import { handleMessage } from "../agent/runtime.js";
 import { config, env } from "../config.js";
-import {
-  listGoals,
-  readGoal,
-  readGoalEvents,
-  renderGoal,
-  renderGoalEvents,
-  renderGoalList,
-  resumeGoal,
-  setGoalStatus,
-  startGoal,
-  startNextGoalTask,
-} from "../goals/manager.js";
-import { parseGoalStartArgs } from "../goals/logic.js";
 import { isAllowed } from "../lib/allowlist.js";
 import {
   formatTranscribedPrompt,
@@ -62,9 +36,10 @@ import {
   type InternalNotification,
 } from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
-import { collectVersionInfo, renderVersionBlock } from "../lib/version.js";
 import { withLock } from "../lib/mutex.js";
-import { commandName, commandRest, nextStatusMode, parseModeCommand } from "./commands.js";
+import "./commands/handlers/index.js";
+import { botMenuCommands, findCommand } from "./commands/registry.js";
+import { consumeSttBenchmarkNext, getStatusMode } from "./commands/handlers/state.js";
 
 type Handler = typeof handleMessage;
 
@@ -81,23 +56,6 @@ const INTERNAL_NOTIFICATION_POLL_MS = 3000;
 const INTERNAL_NOTIFICATION_HEARTBEAT_MS = 5000;
 const MAX_TELEGRAM_IMAGES = 4;
 const MAX_TELEGRAM_IMAGE_BYTES = 10 * 1024 * 1024;
-
-const statusModes = new Map<number, Exclude<StatusMode, "off">>();
-const sttBenchmarkNext = new Set<number>();
-
-function statusModeFor(chatId: number): StatusMode {
-  return statusModes.get(chatId) ?? "off";
-}
-
-function setStatusMode(chatId: number, mode: StatusMode): void {
-  if (mode === "off") statusModes.delete(chatId);
-  else statusModes.set(chatId, mode);
-}
-
-function modeLabel(mode: StatusMode): string {
-  if (mode === "off") return "off";
-  return mode;
-}
 
 // Convert agent text to whatever Telegram expects, depending on parse_mode.
 // Skipping the conversion when parse_mode === "none" keeps the bot strictly
@@ -267,196 +225,6 @@ async function benchmarkTelegramAudio(
   await safe("reply (stt benchmark)", ctx.reply(body));
 }
 
-async function handleGoalCommand(ctx: Context, text: string): Promise<boolean> {
-  const trimmed = text.trim();
-  if (commandName(trimmed) !== "goal") return false;
-  const rest = commandRest(trimmed);
-  const [sub = "help", ...parts] = rest.split(/\s+/);
-  const arg = parts.join(" ").trim();
-  const chatId = ctx.chat!.id;
-
-  try {
-    if (["help", ""].includes(sub)) {
-      await safe(
-        "reply (/goal help)",
-        ctx.reply(
-          "Usage: /goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>\n/goal list\n/goal status <id>\n/goal pause|resume|stop|next <id>\n/goal log <id>",
-        ),
-      );
-      return true;
-    }
-
-    if (sub === "start") {
-      const parsed = parseGoalStartArgs(arg);
-      if (!parsed) {
-        await safe(
-          "reply (/goal start usage)",
-          ctx.reply("Usage: /goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>"),
-        );
-        return true;
-      }
-      const goal = await startGoal(parsed.objective, chatId, parsed.options);
-      await safe("reply (/goal start)", ctx.reply(`Started ${goal.id}.\n${renderGoal(goal)}`));
-      return true;
-    }
-
-    if (sub === "list") {
-      await safe("reply (/goal list)", ctx.reply(renderGoalList(await listGoals())));
-      return true;
-    }
-
-    if (sub === "status") {
-      if (!arg) {
-        await safe("reply (/goal status usage)", ctx.reply("Usage: /goal status <id>"));
-        return true;
-      }
-      await safe("reply (/goal status)", ctx.reply(renderGoal(await readGoal(arg))));
-      return true;
-    }
-
-    if (sub === "pause" || sub === "stop") {
-      if (!arg) {
-        await safe("reply (/goal state usage)", ctx.reply(`Usage: /goal ${sub} <id>`));
-        return true;
-      }
-      const goal = await setGoalStatus(arg, sub === "pause" ? "paused" : "stopped", `${sub} requested from Telegram`);
-      await safe(`reply (/goal ${sub})`, ctx.reply(renderGoal(goal)));
-      return true;
-    }
-
-    if (sub === "resume") {
-      if (!arg) {
-        await safe("reply (/goal resume usage)", ctx.reply("Usage: /goal resume <id>"));
-        return true;
-      }
-      await safe("reply (/goal resume)", ctx.reply(renderGoal(await resumeGoal(arg))));
-      return true;
-    }
-
-    if (sub === "next") {
-      if (!arg) {
-        await safe("reply (/goal next usage)", ctx.reply("Usage: /goal next <id>"));
-        return true;
-      }
-      await safe("reply (/goal next)", ctx.reply(renderGoal(await startNextGoalTask(arg, "manual /goal next"))));
-      return true;
-    }
-
-    if (sub === "log") {
-      if (!arg) {
-        await safe("reply (/goal log usage)", ctx.reply("Usage: /goal log <id>"));
-        return true;
-      }
-      await safe("reply (/goal log)", ctx.reply(renderGoalEvents(await readGoalEvents(arg, 20))));
-      return true;
-    }
-
-    await safe("reply (/goal unknown)", ctx.reply("Unknown /goal command. Try /goal help."));
-    return true;
-  } catch (err) {
-    log.warn("goal command failed", { command: sub, err: err instanceof Error ? err.message : err });
-    await safe(
-      "reply (goal command failed)",
-      ctx.reply(`Goal command failed: ${err instanceof Error ? err.message : String(err)}`),
-    );
-    return true;
-  }
-}
-
-async function handleBackgroundCommand(ctx: Context, text: string): Promise<boolean> {
-  const trimmed = text.trim();
-  const command = commandName(trimmed);
-  const rest = commandRest(trimmed);
-  const chatId = ctx.chat!.id;
-
-  try {
-    if (command === "bg") {
-      if (!rest) {
-        await safe("reply (/bg usage)", ctx.reply("Usage: /bg <long-running task prompt>"));
-        return true;
-      }
-      const task = await startBackgroundTask(rest, chatId);
-      await safe(
-        "reply (/bg)",
-        ctx.reply(
-          `Started background task ${task.id}.\nPipeline: ${task.pipeline.map((stage) => stage.role).join(" -> ")}\nWorktree: ${task.worktree}\nBranch: ${task.branch}`,
-        ),
-      );
-      return true;
-    }
-
-    if (command === "fixbg") {
-      const [id, requestedRole] = rest.split(/\s+/);
-      const role = requestedRole === "reviewer" ? "reviewer" : "fixer";
-      if (!id || (requestedRole && !["fixer", "reviewer"].includes(requestedRole))) {
-        await safe("reply (/fixbg usage)", ctx.reply("Usage: /fixbg <task-id> [fixer|reviewer]"));
-        return true;
-      }
-      const task = await resumeBackgroundTask(id, role);
-      await safe(
-        "reply (/fixbg)",
-        ctx.reply(
-          `Resumed ${task.id}; starting ${role} on existing worktree.\nPipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}\nWorktree: ${task.worktree}`,
-        ),
-      );
-      return true;
-    }
-
-    if (command === "tasks") {
-      const tasks = await listBackgroundTasks();
-      await safe("reply (/tasks)", ctx.reply(renderTaskList(tasks)));
-      return true;
-    }
-
-    if (command === "task") {
-      const id = rest.split(/\s+/, 1)[0];
-      if (!id) {
-        await safe("reply (/task usage)", ctx.reply("Usage: /task <id>"));
-        return true;
-      }
-      const task = await readBackgroundTask(id);
-      const mail = await readBackgroundMail(id, 8);
-      const mailText = mail.length
-        ? "\n\nRecent mailbox:\n" + mail.map((m) => `- ${m.from}/${m.type}: ${m.body}`).join("\n")
-        : "";
-      await safe("reply (/task)", ctx.reply(`${renderTask(task)}${mailText}`));
-      return true;
-    }
-
-    if (command === "answer") {
-      const [id, ...bodyParts] = rest.split(/\s+/);
-      const body = bodyParts.join(" ").trim();
-      if (!id || !body) {
-        await safe("reply (/answer usage)", ctx.reply("Usage: /answer <task-id> <answer>"));
-        return true;
-      }
-      const task = await answerBackgroundTask(id, body);
-      await safe("reply (/answer)", ctx.reply(`Answered ${task.id}; worker resumed.`));
-      return true;
-    }
-
-    if (command === "cancelbg") {
-      const id = rest.split(/\s+/, 1)[0];
-      if (!id) {
-        await safe("reply (/cancelbg usage)", ctx.reply("Usage: /cancelbg <task-id>"));
-        return true;
-      }
-      const task = await cancelBackgroundTask(id);
-      await safe("reply (/cancelbg)", ctx.reply(`Cancelled ${task.id}.`));
-      return true;
-    }
-  } catch (err) {
-    log.warn("background command failed", { command, err: err instanceof Error ? err.message : err });
-    await safe(
-      "reply (background command failed)",
-      ctx.reply(`Background command failed: ${err instanceof Error ? err.message : String(err)}`),
-    );
-    return true;
-  }
-
-  return false;
-}
-
 async function sendAgentPromptToTelegram(bot: Bot, chatId: number, prompt: string, handle: Handler): Promise<void> {
   let sentText = false;
   await handle(chatId, prompt, {
@@ -544,107 +312,19 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   const userText = ctx.message?.text ?? ctx.message?.caption ?? "";
 
   // ── Slash commands ──────────────────────────────────────────────────────
-  // Intercept commands before the agent runs.
-  if (userText.trim() === "/new") {
-    const sessionId = await rotateSession(chatId);
-    await safe("reply (/new)", ctx.reply(`Started a new session (${sessionId}).`));
-    return;
-  }
-
-  if (commandName(userText) === "usage") {
-    try {
-      await safe("reply (/usage)", ctx.reply(await renderUsageReport(chatId)));
-    } catch (err) {
-      log.warn("usage command failed", { chatId, err: err instanceof Error ? err.message : err });
+  // Intercept commands before the agent runs. The registry dispatches to the
+  // handler registered for the matching command name (or alias).
+  const commandMatch = findCommand(userText);
+  if (commandMatch) {
+    // Skip bypass-locked commands here; they are handled in the early block
+    // of `bot.on("message")` so they can interrupt a long agent run.
+    if (!commandMatch.def.bypassLock) {
       await safe(
-        "reply (/usage failed)",
-        ctx.reply(`Usage report failed: ${err instanceof Error ? err.message : String(err)}`),
-      );
-    }
-    return;
-  }
-
-  if (commandName(userText) === "version") {
-    await safe("reply (/version)", ctx.reply(renderVersionBlock(collectVersionInfo())));
-    return;
-  }
-
-  if (commandName(userText) === "model") {
-    const rest = commandRest(userText);
-    const parts = rest.split(/\s+/).filter(Boolean);
-    const current = describeModel();
-
-    if (parts.length === 0) {
-      await safe(
-        "reply (/model current)",
-        ctx.reply(
-          `Current model: ${current}\n\n` +
-            `Usage: /model &lt;provider&gt; &lt;model-id&gt;\n` +
-            `Providers: ${getSupportedProviders().join(", ")}\n\n` +
-            `Examples:\n` +
-            `  /model openrouter openai/gpt-4o\n` +
-            `  /model openrouter anthropic/claude-sonnet-4\n` +
-            `  /model codex gpt-5.4\n` +
-            `  /model anthropic claude-sonnet-4-6`,
-        ),
+        `reply (/${commandMatch.def.name})`,
+        Promise.resolve(commandMatch.def.handler(ctx, commandMatch.parsed)),
       );
       return;
     }
-
-    if (parts.length < 2) {
-      await safe(
-        "reply (/model usage)",
-        ctx.reply(
-          `Usage: /model &lt;provider&gt; &lt;model-id&gt;\n` +
-            `Example: /model openrouter openai/gpt-4o\n` +
-            `Current: ${current}`,
-        ),
-      );
-      return;
-    }
-
-    const [provider, ...modelParts] = parts;
-    const modelId = modelParts.join(" ");
-
-    try {
-      switchModel(provider, modelId);
-      await safe("reply (/model switched)", ctx.reply(`Switched model to: ${describeModel()}.`));
-    } catch (err) {
-      await safe(
-        "reply (/model error)",
-        ctx.reply(`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`),
-      );
-    }
-    return;
-  }
-
-  if (commandName(userText) === "sttbench") {
-    sttBenchmarkNext.add(chatId);
-    await safe(
-      "reply (/sttbench)",
-      ctx.reply(
-        "Send one voice note/audio file next; I’ll run base.en and small.en in parallel and report transcripts/timings.",
-      ),
-    );
-    return;
-  }
-
-  const modeCommand = parseModeCommand(userText);
-  if (modeCommand) {
-    const current = statusModeFor(chatId);
-    const next = nextStatusMode(modeCommand.command, modeCommand.arg);
-    if (!next) {
-      await safe("reply (mode usage)", ctx.reply("Usage: /thinking [on|off] or /verbose [on|off]."));
-      return;
-    }
-    setStatusMode(chatId, next);
-    await safe("reply (mode)", ctx.reply(`Progress updates: ${modeLabel(current)} → ${modeLabel(next)}.`));
-    return;
-  }
-
-  if (userText.trim().startsWith("/cancel")) {
-    await safe("reply (/cancel idle)", ctx.reply("No active run to cancel."));
-    return;
   }
 
   const audioCandidate = selectTelegramAudioCandidate(ctx.message);
@@ -653,7 +333,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     const audioStartedAtMs = Date.now();
     try {
       await safe("upload_voice", ctx.replyWithChatAction("upload_voice"));
-      if (sttBenchmarkNext.delete(chatId)) {
+      if (consumeSttBenchmarkNext(chatId)) {
         await benchmarkTelegramAudio(ctx, audioCandidate, audioStartedAtMs);
         return;
       }
@@ -719,7 +399,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 
   // Optional progress/status message for /thinking and /verbose. It is one
   // Telegram message, edited in place and deleted after the final answer.
-  const runStatusMode = statusModeFor(chatId);
+  const runStatusMode = getStatusMode(chatId);
   let statusMessage: { messageId: number; lines: string[]; lastEditAt: number } | undefined;
   let pendingStatusTimer: NodeJS.Timeout | undefined;
   let pendingStatusText = "";
@@ -947,6 +627,16 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 export async function runTelegram(handle: Handler): Promise<void> {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
+  // Register the command menu so Telegram shows hints when users type `/`.
+  // Failure here is non-fatal — the bot still works without menu hints.
+  try {
+    const menu = botMenuCommands();
+    await bot.api.setMyCommands(menu);
+    log.info("registered telegram command menu", { count: menu.length });
+  } catch (err) {
+    log.warn("setMyCommands failed", { err: err instanceof Error ? err.message : err });
+  }
+
   bot.on("message", async (ctx) => {
     const userId = ctx.from?.id;
     const chatId = ctx.chat.id;
@@ -959,20 +649,14 @@ export async function runTelegram(handle: Handler): Promise<void> {
     const audioKind = selectTelegramAudioCandidate(ctx.message)?.kind;
     log.info("inbound", { chatId, userId, len: text.length, imageCount, audioKind });
 
-    // Control commands must bypass the per-chat lock; otherwise they queue
-    // behind the long run they are supposed to manage. Comedy, but not useful
-    // comedy.
-    if (commandName(text) === "cancel") {
-      const cancelled = cancelChatRun(chatId);
-      await safe(
-        cancelled ? "reply (/cancel)" : "reply (/cancel idle)",
-        ctx.reply(cancelled ? "Cancelling…" : "No active run to cancel."),
-      );
+    // Control commands (those with `bypassLock: true`) must dispatch before the
+    // per-chat lock; otherwise they queue behind the long run they are
+    // supposed to manage. Comedy, but not useful comedy.
+    const bypassMatch = findCommand(text);
+    if (bypassMatch?.def.bypassLock) {
+      await safe(`reply (/${bypassMatch.def.name})`, Promise.resolve(bypassMatch.def.handler(ctx, bypassMatch.parsed)));
       return;
     }
-
-    if (await handleGoalCommand(ctx, text)) return;
-    if (await handleBackgroundCommand(ctx, text)) return;
 
     // Per-chat serialization — see DESIGN.md §10.
     await withLock(chatId, () => processMessage(ctx, handle));
