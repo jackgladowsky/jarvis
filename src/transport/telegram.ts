@@ -488,17 +488,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     const parts = chunks(text);
     const [first, ...rest] = parts;
 
-    if (placeholder) {
-      const formatted = format(first);
-      await safe(
-        "editMessageText (final chunk 1)",
-        ctx.api.editMessageText(chatId, placeholder.messageId, formatted.text, {
-          parse_mode: formatted.parse_mode,
-          link_preview_options: { is_disabled: true },
-        }),
-      );
-      placeholder = undefined;
-    } else if (!sending) {
+    if (!sending) {
       const formatted = format(first);
       await safe(
         "reply (final chunk 1)",
@@ -530,44 +520,10 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
         // Streaming text update for an in-progress text-only assistant message.
         // Either send the placeholder if we don't have one yet, or schedule a
         // debounced edit to the existing one.
-        onAssistantUpdate: async (text: string) => {
-          if (!placeholder && !sending) {
-            sending = true;
-            const formatted = format(chunks(text)[0] ?? text);
-            const sent = await safe(
-              "reply (placeholder)",
-              ctx.reply(formatted.text, {
-                parse_mode: formatted.parse_mode,
-                link_preview_options: { is_disabled: true },
-              }),
-            );
-            sending = false;
-            if (sent) {
-              placeholder = {
-                messageId: sent.message_id,
-                lastSentText: chunks(text)[0] ?? text,
-                lastEditAt: Date.now(),
-              };
-            }
-            return;
-          }
-          if (!placeholder) return; // still mid-send; next update will catch it
-
-          const elapsed = Date.now() - placeholder.lastEditAt;
-          if (elapsed >= EDIT_DEBOUNCE_MS) {
-            cancelPendingEdit();
-            await flushEdit(text);
-          } else {
-            // Schedule (or replace) a deferred edit so the latest text lands
-            // even if no further updates arrive within the debounce window.
-            pendingEditText = text;
-            if (!pendingEditTimer) {
-              pendingEditTimer = setTimeout(() => {
-                pendingEditTimer = undefined;
-                void flushEdit(pendingEditText);
-              }, EDIT_DEBOUNCE_MS - elapsed);
-            }
-          }
+        onAssistantUpdate: async (_text: string) => {
+          // No-op: we don't stream intermediate text to Telegram. The typing
+          // indicator handles the "working…" signal. Only the final message
+          // is sent, via onAssistantEnd → sendFinalChunks.
         },
 
         // The text-only assistant message finished. Final flush, then reset
@@ -582,12 +538,7 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
         // A streaming text message just sprouted a tool call — discard our
         // placeholder so the user doesn't see the "let me check…" filler.
         onAbandon: async () => {
-          cancelPendingEdit();
-          if (placeholder) {
-            const id = placeholder.messageId;
-            placeholder = undefined;
-            await safe("deleteMessage", ctx.api.deleteMessage(chatId, id));
-          }
+          // No placeholder to delete — we never stream intermediate text.
         },
 
         // The agent terminated this turn with stopReason "error" / "aborted".
