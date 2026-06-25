@@ -15,7 +15,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "pnpm build && node --test dist/**/*.test.js",
+    "test": "pnpm build && find dist -name '*.test.js' | xargs node --test",
     "coverage": "c8 --reporter=text --reporter=lcov pnpm test",
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run coverage",
     "start": "node dist/index.js",

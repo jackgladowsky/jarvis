@@ -5,7 +5,7 @@ import type { Usage } from "@mariozechner/pi-ai";
 import { config } from "../config.js";
 import { paths } from "../paths.js";
 import { estimateContextTokens } from "./compaction.js";
-import { model } from "./model.js";
+import { model, describeModel } from "./model.js";
 import * as sessions from "./session-manager.js";
 import { systemPrompt } from "./system-prompt.js";
 import { allTools } from "./tools/index.js";
@@ -206,12 +206,7 @@ export async function renderUsageReport(chatId: number): Promise<string> {
       ? `Context: ~${formatInt(contextTokens)} / ${formatInt(contextWindow)} tokens (${formatPercent((contextTokens / contextWindow) * 100)}), ~${formatInt(Math.max(0, contextWindow - contextTokens))} remaining`
       : `Context: ~${formatInt(contextTokens)} tokens used; model context window unavailable`;
 
-  const lines = [
-    "Usage for this chat",
-    `Session: ${active.sessionId}`,
-    `Model: ${config.agent.provider}/${config.agent.model}`,
-    contextLine,
-  ];
+  const lines = ["Usage for this chat", `Session: ${active.sessionId}`, `Model: ${describeModel()}`, contextLine];
 
   if (threshold > 0) {
     lines.push(`Compaction threshold: ~${formatInt(threshold)} tokens`);
