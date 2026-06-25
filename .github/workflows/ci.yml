@@ -47,6 +47,18 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      - name: Set up test config
+        # Tests transitively import `config.ts` and `agent/system-prompt.ts`,
+        # both of which read files from $JARVIS_DATA_DIR at module-load time.
+        # Provide a temp data dir seeded with the example config + prompt so
+        # the test runner doesn't depend on a host-installed JARVIS.
+        run: |
+          TEST_DATA_DIR="$(mktemp -d)"
+          mkdir -p "$TEST_DATA_DIR/prompts"
+          cp config.yaml.example "$TEST_DATA_DIR/config.yaml"
+          cp prompts/system.md.example "$TEST_DATA_DIR/prompts/system.md"
+          echo "JARVIS_DATA_DIR=$TEST_DATA_DIR" >> "$GITHUB_ENV"
+
       - name: Coverage
         run: pnpm run coverage
 
