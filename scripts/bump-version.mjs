@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
 
 const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
-const repoRoot = dirname(packageJsonPath);
 const raw = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 
-const semverRe = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+const semverRe =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const bump = process.argv[2] ?? "patch";
 const explicit = process.argv.find((arg) => arg.startsWith("--set="))?.slice("--set=".length);
 

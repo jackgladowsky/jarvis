@@ -115,9 +115,7 @@ export function getSupportedProviders(): string[] {
  */
 export function switchModel(provider: string, modelId: string, persist = true): Model<any> {
   if (!PROVIDER_KEY[provider]) {
-    throw new Error(
-      `unknown provider: "${provider}". Supported: ${Object.keys(PROVIDER_KEY).join(", ")}`,
-    );
+    throw new Error(`unknown provider: "${provider}". Supported: ${Object.keys(PROVIDER_KEY).join(", ")}`);
   }
   const next = resolveModel(provider, modelId);
   model = next;

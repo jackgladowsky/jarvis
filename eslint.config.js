@@ -21,4 +21,20 @@ export default tseslint.config(
       "preserve-caught-error": "off",
     },
   },
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: {
+        URL: "readonly",
+        process: "readonly",
+        console: "readonly",
+      },
+    },
+    rules: {
+      "no-undef": "error",
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+    },
+  },
 );

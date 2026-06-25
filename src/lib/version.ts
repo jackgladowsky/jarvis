@@ -40,18 +40,23 @@ export function readPackageVersion(): string {
 
 function git(args: string[]): string | undefined {
   try {
-    return execFileSync("git", args, {
-      cwd: repoRoot,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim() || undefined;
+    return (
+      execFileSync("git", args, {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || undefined
+    );
   } catch {
     return undefined;
   }
 }
 
 function gitFirstLine(args: string[]): string | undefined {
-  return git(args)?.split("\n").map((line) => line.trim()).find(Boolean);
+  return git(args)
+    ?.split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
 }
 
 export function collectVersionInfo(): VersionInfo {

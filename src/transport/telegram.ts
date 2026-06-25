@@ -608,16 +608,11 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
 
     try {
       switchModel(provider, modelId);
-      await safe(
-        "reply (/model switched)",
-        ctx.reply(`Switched model to: ${describeModel()}.`),
-      );
+      await safe("reply (/model switched)", ctx.reply(`Switched model to: ${describeModel()}.`));
     } catch (err) {
       await safe(
         "reply (/model error)",
-        ctx.reply(
-          `Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
-        ),
+        ctx.reply(`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`),
       );
     }
     return;
