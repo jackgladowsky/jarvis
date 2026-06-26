@@ -59,8 +59,7 @@ function loadMcpServers(): McpServersConfig {
 
 const schema = Type.Object({
   server: Type.String({
-    description:
-      "Name of the configured MCP server to call (e.g. 'filesystem', 'github').",
+    description: "Name of the configured MCP server to call (e.g. 'filesystem', 'github').",
   }),
   tool: Type.String({
     description: "Name of the tool to invoke on the MCP server.",
@@ -74,16 +73,19 @@ const schema = Type.Object({
 
 // ── Execute ─────────────────────────────────────────────────────────────────
 
-async function execute(
-  params: { server: string; tool: string; arguments?: Record<string, any> },
-): Promise<{ content: string; isError: boolean }> {
+async function execute(params: {
+  server: string;
+  tool: string;
+  arguments?: Record<string, any>;
+}): Promise<{ content: string; isError: boolean }> {
   const config = loadMcpServers();
   const serverConfig = config.servers[params.server];
 
   if (!serverConfig) {
     const available = Object.keys(config.servers);
     return {
-      content: `Unknown MCP server "${params.server}". ` +
+      content:
+        `Unknown MCP server "${params.server}". ` +
         (available.length > 0
           ? `Available servers: ${available.join(", ")}`
           : "No MCP servers configured. Add servers to ~/.jarvis/mcp-servers.json."),
@@ -91,10 +93,7 @@ async function execute(
     };
   }
 
-  const client = new Client(
-    { name: "jarvis-mcp", version: "1.0.0" },
-    { capabilities: {} },
-  );
+  const client = new Client({ name: "jarvis-mcp", version: "1.0.0" }, { capabilities: {} });
 
   const transport = new StdioClientTransport({
     command: serverConfig.command,
