@@ -1,29 +1,38 @@
 #!/bin/bash
 # Pre-push hook — runs typecheck + lint + format check before pushing.
+# Skips tag pushes and deletion pushes.
 # Installed by setting core.hooksPath .githooks.
 
-echo "🔍 Running typecheck + lint + format check before push..."
+while read _local_ref _local_sha _remote_ref _remote_sha; do
+  # Skip tags and deletion pushes
+  [[ "$_local_ref" == refs/tags/* ]] && exit 0
+  [[ "$_local_sha" == "0000000000000000000000000000000000000000" ]] && continue
 
-# Run typecheck (noEmit is fast)
-if ! pnpm exec tsc --noEmit 2>/dev/null; then
-  echo ""
-  echo "❌ Typecheck failed. Fix issues before pushing."
-  exit 1
-fi
+  echo "🔍 Running typecheck + lint + format check before push..."
 
-# Run linter
-if ! pnpm run lint 2>/dev/null; then
-  echo ""
-  echo "❌ Lint failed. Fix issues before pushing."
-  echo "   Run: pnpm run lint --fix"
-  exit 1
-fi
+  # Run typecheck
+  if ! pnpm exec tsc --noEmit; then
+    echo ""
+    echo "❌ Typecheck failed. Fix issues before pushing."
+    exit 1
+  fi
 
-# Run format check
-if ! pnpm run format:check 2>/dev/null; then
-  echo ""
-  echo "❌ Format check failed. Fix with: pnpm exec prettier --write ."
-  exit 1
-fi
+  # Run linter
+  if ! pnpm run lint; then
+    echo ""
+    echo "❌ Lint failed. Fix issues before pushing."
+    echo "   Run: pnpm run lint --fix"
+    exit 1
+  fi
 
-echo "✅ Typecheck + lint + format passed"
+  # Run format check
+  if ! pnpm run format:check; then
+    echo ""
+    echo "❌ Format check failed. Fix with: pnpm exec prettier --write ."
+    exit 1
+  fi
+
+  echo "✅ Typecheck + lint + format passed"
+done
+
+exit 0
