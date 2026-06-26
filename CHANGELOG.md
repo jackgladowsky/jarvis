@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- feat: add mcp_call gateway tool for MCP server integration
+- fix: lint errors and pre-push hook (typecheck + lint + format check)
+- style: fix prettier formatting
+
 ## 0.1.1
 
 - Add release skill and remove release-please
