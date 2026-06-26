@@ -50,7 +50,6 @@ const TYPING_REFIRE_MS = 4000;
 // Minimum spacing between consecutive `editMessageText` calls on the same
 // placeholder. Telegram's per-chat edit rate limit is ~1/sec; 1.5s gives us
 // margin and keeps the UI from stuttering.
-const EDIT_DEBOUNCE_MS = 1500;
 const STATUS_EDIT_DEBOUNCE_MS = 2500;
 const INTERNAL_NOTIFICATION_POLL_MS = 3000;
 const INTERNAL_NOTIFICATION_HEARTBEAT_MS = 5000;
@@ -390,12 +389,9 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   // Set true while a `ctx.reply` is mid-flight so concurrent updates don't
   // race to send a second placeholder. Belt-and-suspenders alongside the
   // listener-await ordering in runtime.ts.
-  let sending = false;
+  const sending = false;
   // Pending debounced edit. Cleared when we flush early or finalize.
   let pendingEditTimer: NodeJS.Timeout | undefined;
-  // Latest text accumulated since the last successful edit; used by the
-  // debounce timer when it fires.
-  let pendingEditText = "";
 
   // Optional progress/status message for /thinking and /verbose. It is one
   // Telegram message, edited in place and deleted after the final answer.
@@ -458,23 +454,6 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     const id = statusMessage.messageId;
     statusMessage = undefined;
     await safe("deleteMessage (status)", ctx.api.deleteMessage(chatId, id));
-  };
-
-  const flushEdit = async (text: string): Promise<void> => {
-    if (!placeholder || text === placeholder.lastSentText) return;
-    const streamText = chunks(text)[0] ?? text;
-    const formatted = format(streamText);
-    const result = await safe(
-      "editMessageText",
-      ctx.api.editMessageText(chatId, placeholder.messageId, formatted.text, {
-        parse_mode: formatted.parse_mode,
-        link_preview_options: { is_disabled: true },
-      }),
-    );
-    if (result !== undefined) {
-      placeholder.lastSentText = text;
-      placeholder.lastEditAt = Date.now();
-    }
   };
 
   const cancelPendingEdit = () => {

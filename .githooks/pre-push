@@ -1,0 +1,22 @@
+#!/bin/bash
+# Pre-push hook — runs lint + typecheck before pushing.
+# Installed by scripts/install-hooks.sh.
+
+echo "🔍 Running typecheck + lint before push..."
+
+# Run typecheck (noEmit is fast)
+if ! pnpm exec tsc --noEmit 2>/dev/null; then
+  echo ""
+  echo "❌ Typecheck failed. Fix issues before pushing."
+  exit 1
+fi
+
+# Run linter
+if ! pnpm run lint 2>/dev/null; then
+  echo ""
+  echo "❌ Lint failed. Fix issues before pushing."
+  echo "   Run: pnpm run lint --fix"
+  exit 1
+fi
+
+echo "✅ Typecheck + lint passed"

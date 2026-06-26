@@ -27,7 +27,7 @@ import { join } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { type Static, Type } from "typebox";
+import { Type } from "typebox";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
