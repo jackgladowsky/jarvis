@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- feat: HTTP transport support for MCP servers (OpenRouter)
+- feat: env var expansion in MCP header config
+
 ## 0.2.0
 
 - feat: add mcp_call gateway tool for MCP server integration
