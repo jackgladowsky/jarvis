@@ -46,7 +46,11 @@ interface McpServerConfig {
   env?: Record<string, string>;
   /** HTTP transport: URL of the remote MCP server */
   url?: string;
-  /** HTTP transport: additional headers (e.g. Authorization) */
+  /**
+   * HTTP transport: additional headers (e.g. Authorization).
+   * Values prefixed with "$" are expanded from environment variables
+   * (e.g. "Bearer $OPENROUTER_API_KEY").
+   */
   headers?: Record<string, string>;
 }
 
@@ -66,6 +70,26 @@ function loadMcpServers(): McpServersConfig {
     }
     throw err;
   }
+}
+
+/**
+ * Resolve header values that reference environment variables.
+ * Values prefixed with "$" are treated as env var names and replaced with
+ * their runtime value. Non-prefixed values pass through unchanged.
+ * e.g. "Bearer $OPENROUTER_API_KEY" → "Bearer sk-or-..."
+ */
+function resolveHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    out[key] = value.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, name) => {
+      const envVal = process.env[name];
+      if (envVal === undefined) {
+        throw new Error(`MCP config references env var "${name}" in header "${key}" but it is not set`);
+      }
+      return envVal;
+    });
+  }
+  return out;
 }
 
 // ── Tool Schema ─────────────────────────────────────────────────────────────
@@ -97,8 +121,9 @@ async function callTool(
   if (serverConfig.url) {
     // HTTP transport — remote MCP server (e.g. OpenRouter)
     const url = new URL(serverConfig.url);
+    const headers = serverConfig.headers ? resolveHeaders(serverConfig.headers) : undefined;
     const transport = new StreamableHTTPClientTransport(url, {
-      requestInit: serverConfig.headers ? { headers: serverConfig.headers } : undefined,
+      requestInit: headers ? { headers } : undefined,
     });
     try {
       await client.connect(transport);
