@@ -1,7 +1,11 @@
 // `mcp_call` tool — gateway to Model Context Protocol (MCP) servers.
 //
 // Reads MCP server config from ~/.jarvis/mcp-servers.json and exposes a
-// single tool that routes tool calls to the configured server over stdio.
+// single tool routes tool calls to the configured server.
+//
+// Supports two transport types:
+//   - stdio: spawns a local process (e.g. npx @modelcontextprotocol/server-*)
+//   - http: connects to a remote MCP server over Streamable HTTP
 //
 // Config format (~/.jarvis/mcp-servers.json):
 //   {
@@ -14,12 +18,13 @@
 //         "command": "npx",
 //         "args": ["-y", "@modelcontextprotocol/server-github"],
 //         "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }
+//       },
+//       "openrouter": {
+//         "url": "https://mcp.openrouter.ai/mcp",
+//         "headers": { "Authorization": "Bearer sk-or-..." }
 //       }
 //     }
 //   }
-//
-// Use: ask the model to call `mcp_call` with the server name, tool name,
-// and arguments. The model should know which tools each server exports.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -27,14 +32,22 @@ import { join } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Type } from "typebox";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
 interface McpServerConfig {
-  command: string;
-  args: string[];
+  /** Stdio transport: command to run */
+  command?: string;
+  /** Stdio transport: arguments to the command */
+  args?: string[];
+  /** Stdio transport: environment variables */
   env?: Record<string, string>;
+  /** HTTP transport: URL of the remote MCP server */
+  url?: string;
+  /** HTTP transport: additional headers (e.g. Authorization) */
+  headers?: Record<string, string>;
 }
 
 interface McpServersConfig {
@@ -59,7 +72,7 @@ function loadMcpServers(): McpServersConfig {
 
 const schema = Type.Object({
   server: Type.String({
-    description: "Name of the configured MCP server to call (e.g. 'filesystem', 'github').",
+    description: "Name of the configured MCP server to call (e.g. 'filesystem', 'openrouter').",
   }),
   tool: Type.String({
     description: "Name of the tool to invoke on the MCP server.",
@@ -72,6 +85,65 @@ const schema = Type.Object({
 });
 
 // ── Execute ─────────────────────────────────────────────────────────────────
+
+async function callTool(
+  serverConfig: McpServerConfig,
+  tool: string,
+  args: Record<string, any>,
+): Promise<{ content: string; isError: boolean }> {
+  const client = new Client({ name: "jarvis-mcp", version: "1.0.0" }, { capabilities: {} });
+
+  // Pick transport based on config shape.
+  if (serverConfig.url) {
+    // HTTP transport — remote MCP server (e.g. OpenRouter)
+    const url = new URL(serverConfig.url);
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: serverConfig.headers ? { headers: serverConfig.headers } : undefined,
+    });
+    try {
+      await client.connect(transport);
+      const result = await client.callTool({ name: tool, arguments: args });
+      return { content: normalizeContent(result.content), isError: !!result.isError };
+    } finally {
+      await client.close().catch(() => {});
+    }
+  } else if (serverConfig.command) {
+    // Stdio transport — local subprocess (e.g. npx MCP servers)
+    const transport = new StdioClientTransport({
+      command: serverConfig.command,
+      args: serverConfig.args,
+      env: serverConfig.env,
+    });
+    try {
+      await client.connect(transport);
+      const result = await client.callTool({ name: tool, arguments: args });
+      return { content: normalizeContent(result.content), isError: !!result.isError };
+    } finally {
+      await client.close().catch(() => {});
+    }
+  } else {
+    return {
+      content: 'MCP server config must have either "url" (HTTP) or "command" (stdio).',
+      isError: true,
+    };
+  }
+}
+
+function normalizeContent(content: any): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((item: any) => {
+        if (typeof item === "string") return item;
+        if (item?.type === "text") return item.text;
+        if (item?.type === "resource") return JSON.stringify(item.resource);
+        return JSON.stringify(item);
+      })
+      .join("\n")
+      .trim();
+  }
+  return JSON.stringify(content);
+}
 
 async function execute(params: {
   server: string;
@@ -93,43 +165,7 @@ async function execute(params: {
     };
   }
 
-  const client = new Client({ name: "jarvis-mcp", version: "1.0.0" }, { capabilities: {} });
-
-  const transport = new StdioClientTransport({
-    command: serverConfig.command,
-    args: serverConfig.args,
-    env: serverConfig.env,
-  });
-
-  try {
-    await client.connect(transport);
-
-    const result = await client.callTool({
-      name: params.tool,
-      arguments: params.arguments ?? {},
-    });
-
-    // Normalise MCP result content to a plain string.
-    let output: string;
-    if (typeof result.content === "string") {
-      output = result.content;
-    } else if (Array.isArray(result.content)) {
-      output = result.content
-        .map((item: any) => {
-          if (typeof item === "string") return item;
-          if (item?.type === "text") return item.text;
-          if (item?.type === "resource") return JSON.stringify(item.resource);
-          return JSON.stringify(item);
-        })
-        .join("\n");
-    } else {
-      output = JSON.stringify(result.content);
-    }
-
-    return { content: output.trim(), isError: !!result.isError };
-  } finally {
-    await client.close().catch(() => {});
-  }
+  return callTool(serverConfig, params.tool, params.arguments ?? {});
 }
 
 // ── Tool Definition ─────────────────────────────────────────────────────────
