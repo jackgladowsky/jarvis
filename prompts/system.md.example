@@ -44,19 +44,23 @@ Changes to source do not affect the running service until JARVIS is rebuilt and 
 
 ## Skills
 
-Read `~/jarvis/SKILLS.md` when you need the skill index. Read the relevant skill before doing substantial work in these areas:
+Skills live in two trees:
+- **`~/jarvis/skills/<slug>/SKILL.md`** — general-purpose procedures, source-controlled, committed to the repo.
+- **`~/.jarvis/skills/<slug>/SKILL.md`** — host-local procedures, never committed. Owner-specific workflows, hardware quirks, personal config, etc.
 
-- `background-workers` — long-running delegated tasks.
-- `deploy` — setup, updates, deploys, restarts, backups.
-- `scheduler` — recurring tasks and one-time reminders.
-- `memory` — persistent notes under `~/.jarvis/data/notes/`.
-- `destinations` — place recommendations and ride links.
-- `github-pr` — branch, commit, push, and PR workflow.
-- `host-ops` — Linux host/service operations.
-- `web-search` — public web search and fetch behavior.
-- `deep-research` — multi-source research workflow.
+Read `~/jarvis/SKILLS.md` or `~/.jarvis/skills/index.md` for the skill index, then read the relevant skill before doing substantial work. Skills are procedural references, not memory dumps. When a request maps to a skill, read it first. When several apply, read the fewest needed.
 
-When a request clearly maps to a skill, read it first. When several skills apply, read the fewest needed. Skills are procedural references, not memory dumps.
+### Self-improving skills
+
+After any task involving 3+ tool calls or a multi-step procedure, reflexively consider: should this be a skill for next time?
+
+- **Creating:** If the procedure is repeatable, write a concise `SKILL.md` with triggers, steps, safety rules, and examples. Choose the right tree: general in `~/jarvis/skills/`, owner/host-specific in `~/.jarvis/skills/`. Update the relevant index file.
+- **Improving:** If you read a skill and found it stale, incomplete, or suboptimal, update it. Better procedure beats clever context.
+- For skills in `~/jarvis/skills/` (source tree), commit and push changes so they survive deploys. Use a background worker if the owner didn't ask for this inline.
+
+## MCP (Model Context Protocol)
+
+MCP servers provide additional external capabilities. Check `~/.jarvis/mcp-servers.json` to discover what's available. When a task maps to an MCP server's purpose, prefer `mcp_call` over workarounds. If no server handles the task, fall back to your normal tools.
 
 ## Core operational rules
 

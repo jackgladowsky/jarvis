@@ -138,6 +138,39 @@ function formatStatus(event: AgentEvent, mode: StatusMode): string | undefined {
   }
 }
 
+// ─── Skill-creation nudge ────────────────────────────────────────────────────
+// After a turn with ≥3 tool calls, inject an ephemeral system note at the top
+// of the next turn's context. The note is NOT persisted to the session JSONL —
+// it's recalculated fresh each turn from the actual tool-call count.
+
+const SKILL_NUDGE_THRESHOLD = 3;
+
+function countRecentToolCalls(messages: AgentMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; content?: Array<{ type: string }> };
+    if (m.role === "assistant" && m.content) {
+      return m.content.filter((c) => c.type === "toolCall").length;
+    }
+  }
+  return 0;
+}
+
+function injectSkillNudge(messages: AgentMessage[]): void {
+  const count = countRecentToolCalls(messages);
+  if (count < SKILL_NUDGE_THRESHOLD) return;
+  // Inject right at the front so the model sees it near the start of context.
+  messages.unshift({
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: `[system-note: The previous turn involved ${count} tool calls. Consider whether any repeatable procedure here should be captured as a skill. See the Skills section of your system prompt for creation rules.]`,
+      },
+    ],
+    timestamp: 0,
+  });
+}
+
 // Build a fresh Agent for a given session. Tools, system prompt, and model
 // are constants for the process; transcript is per-session.
 function buildAgent(messages: AgentMessage[]): Agent {
@@ -277,6 +310,10 @@ export async function handleMessage(
       tokensBefore: compaction.tokensBefore,
     });
   }
+  // Ephemeral skill nudge: inject before buildAgent so it enters the agent's
+  // context this turn. Never persisted to the session JSONL — recalculated
+  // fresh each turn from the actual tool-call count.
+  injectSkillNudge(compaction.messages);
   const agent = buildAgent(compaction.messages);
   activeChatAgents.set(chatId, agent);
 

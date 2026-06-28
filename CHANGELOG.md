@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- feat: self-improving skill loop with code-level nudge
+
 ## 0.2.1
 
 - feat: HTTP transport support for MCP servers (OpenRouter)
