@@ -226,6 +226,10 @@ function resolveModel(provider: string, modelId: string): Model<any> {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: cached?.contextLength ?? fallbackCtx,
       maxTokens: cached?.maxCompletionTokens ?? fallbackMax,
+      headers: {
+        "HTTP-Referer": "https://github.com/jackgladowsky/jarvis",
+        "X-OpenRouter-Title": "JARVIS",
+      },
     } as Model<any>;
   }
 
