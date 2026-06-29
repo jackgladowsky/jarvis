@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Fix OpenRouter context window hardcode: fetch real context from API and persist to disk for instant restart availability
+
 ## 0.3.0
 
 - feat: self-improving skill loop with code-level nudge
