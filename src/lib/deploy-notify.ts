@@ -2,8 +2,7 @@ import { execSync } from "node:child_process";
 import { readFile, rename, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { config } from "../config.js";
-import { enqueueInternalNotification } from "./internal-notifications.js";
+import { config, env } from "../config.js";
 import { log } from "./logger.js";
 import { paths } from "../paths.js";
 
@@ -43,6 +42,34 @@ function changesSummary(oldRev: string, newRev: string): string[] {
   }
 }
 
+/**
+ * Send a Telegram message via the bot API using native fetch. Throws on failure.
+ */
+async function sendTelegramMessage(text: string, chatId: number): Promise<void> {
+  const token = env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    throw new Error("TELEGRAM_BOT_TOKEN not set");
+  }
+
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: "Markdown",
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Telegram API ${res.status}: ${body}`);
+  }
+}
+
 export async function notifyPendingDeployComplete(): Promise<void> {
   const marker = paths.deployPending;
   let raw: string;
@@ -65,43 +92,40 @@ export async function notifyPendingDeployComplete(): Promise<void> {
   const version = readVersion();
   const changes = deploy.old_rev && deploy.new_rev ? changesSummary(deploy.old_rev, deploy.new_rev) : [];
 
-  // The notification pump wraps this in the "Handle this as main JARVIS"
-  // preamble. The prompt text here is the final section — it's what the
-  // model receives as the notification body. So write it as natural
-  // JARVIS speech directed at the owner.
-  const promptLines: string[] = [`Hey Jack — just restarted to v${version} (${short(deploy.new_rev)}).`];
+  // Build the message in JARVIS's voice — this is sent directly to the owner
+  // via Telegram API, no notification pump delay.
+  const lines: string[] = [`Hey Jack — just restarted to **v${version}** (\`${short(deploy.new_rev)}\`).`];
 
   if (changes.length > 0) {
-    promptLines.push("Since last deploy:", ...changes.slice(0, 5).map((c) => c.replace(/^[0-9a-f]+\s+/, "- ")));
+    lines.push("");
+    lines.push("*Since last deploy:*");
+    for (const c of changes.slice(0, 5)) {
+      const msg = c.replace(/^[0-9a-f]+\s+/, "");
+      lines.push(`• ${msg}`);
+    }
     if (changes.length > 5) {
-      promptLines.push(`… and ${changes.length - 5} more commits`);
+      lines.push(`… and ${changes.length - 5} more commits`);
     }
   }
 
-  const prompt = promptLines.join("\n");
-
-  const bodyLines: string[] = [`Deploy complete: now running v${version} (${short(deploy.new_rev)}). Changes:`];
-  for (const line of changes.slice(0, 8)) {
-    bodyLines.push(`  ${line}`);
-  }
-  if (changes.length > 8) {
-    bodyLines.push(`  … and ${changes.length - 8} more`);
-  }
+  const message = lines.join("\n");
+  const chatId = config.scheduler.telegram_chat_id;
 
   try {
-    await enqueueInternalNotification({
-      source: "deploy",
-      chat_id: config.scheduler.telegram_chat_id,
-      title: `JARVIS back online (v${version})`,
-      body: bodyLines.join("\n"),
-      prompt,
-      fallback_text: `JARVIS back online: v${version} (${short(deploy.old_rev)} → ${short(deploy.new_rev)})`,
-    });
+    await sendTelegramMessage(message, chatId);
     await rename(marker, join(dirname(marker), `completed-${Date.now()}.json`));
   } catch (err) {
-    log.warn("deploy completion notification failed", err);
-    // Avoid spamming every restart forever. The marker is best-effort UX, not
-    // deploy state of record.
+    log.warn("deploy completion notification failed, falling back to internal notification", err);
+    // Fallback: queue internal notification so it gets delivered on next user message
+    const { enqueueInternalNotification } = await import("./internal-notifications.js");
+    await enqueueInternalNotification({
+      source: "deploy",
+      chat_id: chatId,
+      title: `JARVIS back online (v${version})`,
+      body: message,
+      prompt: message,
+      fallback_text: `JARVIS back online: v${version} (${short(deploy.old_rev)} → ${short(deploy.new_rev)})`,
+    });
     await rm(marker, { force: true });
   }
 }
