@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- feat: OpenRouter app attribution headers (JARVIS shows as named app in rankings)
+- fix: always notify on startup, even without deploy marker
+- fix: safe-deploy always rebuilds, never silently skips on "already up to date"
+
 ## 0.3.1
 
 - Fix OpenRouter context window hardcode: fetch real context from API and persist to disk for instant restart availability
