@@ -22,6 +22,8 @@ Quick heuristics for JARVIS:
 
 If in doubt, ask the owner. When unsure, `patch` is the safe default — it's always easy to add another.
 
+**Don't release on every commit.** Batch a few related changes together, then cut one release. The deploy pipeline (safe-deploy.sh) works fine without a version bump — the git SHA is always in the logs and the startup notification. Save semver bumps for when there's a meaningful chunk of work (a feature + its fixes, a batch of related changes, etc.).
+
 Pre-release labels (`-rc.1`, `-beta.2`) and build metadata (`+sha.abc`) are allowed by the semver regex in `scripts/bump-version.mjs` and `src/lib/version.ts`; use `--set=` for those (the bump subcommand can't construct them).
 
 ## Workflow
