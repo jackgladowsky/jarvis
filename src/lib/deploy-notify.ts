@@ -72,29 +72,32 @@ async function sendTelegramMessage(text: string, chatId: number): Promise<void> 
 
 export async function notifyPendingDeployComplete(): Promise<void> {
   const marker = paths.deployPending;
-  let raw: string;
+  const version = readVersion();
+  const chatId = config.scheduler.telegram_chat_id;
+
+  // Always announce startup so the owner knows JARVIS is back — even on
+  // manual restarts that didn't go through safe-deploy (no marker).
+  let raw: string | null = null;
   try {
     raw = await readFile(marker, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      log.warn("deploy marker read failed", err);
-    }
-    return;
+  } catch {
+    // No marker — manual restart or safe-deploy exited early. Still notify.
   }
 
   let deploy: PendingDeploy = {};
-  try {
-    deploy = JSON.parse(raw) as PendingDeploy;
-  } catch (err) {
-    log.warn("deploy marker parse failed", err);
+  if (raw) {
+    try {
+      deploy = JSON.parse(raw) as PendingDeploy;
+    } catch (err) {
+      log.warn("deploy marker parse failed", err);
+    }
   }
 
-  const version = readVersion();
   const changes = deploy.old_rev && deploy.new_rev ? changesSummary(deploy.old_rev, deploy.new_rev) : [];
 
-  // Build the message in JARVIS's voice — this is sent directly to the owner
-  // via Telegram API, no notification pump delay.
-  const lines: string[] = [`Hey Jack — just restarted to **v${version}** (\`${short(deploy.new_rev)}\`).`];
+  // Build the message in JARVIS's voice — sent directly via Telegram API,
+  // no notification pump delay. Always sent, marker or not.
+  const lines: string[] = [`Hey Jack — back online, running **v${version}** (\`${short(deploy.new_rev)}\`).`];
 
   if (changes.length > 0) {
     lines.push("");
@@ -109,13 +112,19 @@ export async function notifyPendingDeployComplete(): Promise<void> {
   }
 
   const message = lines.join("\n");
-  const chatId = config.scheduler.telegram_chat_id;
 
   try {
     await sendTelegramMessage(message, chatId);
-    await rename(marker, join(dirname(marker), `completed-${Date.now()}.json`));
+    if (raw) {
+      // Clean up the marker only if it existed
+      try {
+        await rename(marker, join(dirname(marker), `completed-${Date.now()}.json`));
+      } catch {
+        await rm(marker, { force: true });
+      }
+    }
   } catch (err) {
-    log.warn("deploy completion notification failed, falling back to internal notification", err);
+    log.warn("startup notification failed, falling back to internal notification", err);
     // Fallback: queue internal notification so it gets delivered on next user message
     const { enqueueInternalNotification } = await import("./internal-notifications.js");
     await enqueueInternalNotification({
@@ -124,8 +133,8 @@ export async function notifyPendingDeployComplete(): Promise<void> {
       title: `JARVIS back online (v${version})`,
       body: message,
       prompt: message,
-      fallback_text: `JARVIS back online: v${version} (${short(deploy.old_rev)} → ${short(deploy.new_rev)})`,
+      fallback_text: `JARVIS back online: v${version}`,
     });
-    await rm(marker, { force: true });
+    if (raw) await rm(marker, { force: true });
   }
 }

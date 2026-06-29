@@ -55,11 +55,11 @@ git merge --ff-only "$TARGET_REF"
 
 NEW_REV="$(git rev-parse HEAD)"
 NEW_SHORT="$(git rev-parse --short HEAD)"
-if [[ "$OLD_REV" == "$NEW_REV" ]]; then
-  echo "Already up to date ($OLD_SHORT)."
-  exit 0
-fi
 
+# Always rebuild + restart, even if already up to date. The dist/ tree may
+# be stale (e.g. source changed without a build, or a previous build was
+# interrupted). Skipping the restart means the running service keeps serving
+# old code silently — the owner has no idea a redeploy happened.
 echo "Installing deps..."
 pnpm install
 
