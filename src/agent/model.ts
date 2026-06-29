@@ -12,9 +12,9 @@
 //
 // For OpenRouter models, contextWindow is fetched live from the models API
 // instead of hardcoding a conservative default — otherwise we'd waste the
-// 1M+ context windows these models actually support. The fetch is async and
-// cached in-memory; initial resolution uses a safe fallback (200K) until
-// the API responds.
+// 1M+ context windows these models actually support. The cache is persisted
+// to disk so correct context windows are available immediately on restart
+// with no 200K fallback window.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -28,14 +28,63 @@ import { paths } from "../paths.js";
 // Model metadata fetched from OpenRouter's public models endpoint. Populated
 // on first OpenRouter resolution and refreshed on /model switches. The
 // public endpoint works without an API key.
+//
+// Persisted to disk so we never need a conservative fallback — after the
+// first ever API fetch, every restart reads the real context windows from
+// a local JSON file immediately.
 
 interface OpenRouterModelMeta {
   contextLength: number;
   maxCompletionTokens: number | null;
 }
 
+const OR_CACHE_PATH = join(paths.data, "openrouter-models-cache.json");
+
 let orModelCache: Map<string, OpenRouterModelMeta> | null = null;
 let orCachePromise: Promise<Map<string, OpenRouterModelMeta>> | null = null;
+
+/** Load the disk cache synchronously at module init. Returns null if absent/corrupt. */
+function loadOrCacheFromDisk(): Map<string, OpenRouterModelMeta> | null {
+  try {
+    if (existsSync(OR_CACHE_PATH)) {
+      const raw = readFileSync(OR_CACHE_PATH, "utf-8");
+      const parsed = JSON.parse(raw) as Array<{
+        id: string;
+        contextLength: number;
+        maxCompletionTokens: number | null;
+      }>;
+      const map = new Map<string, OpenRouterModelMeta>();
+      for (const entry of parsed) {
+        map.set(entry.id, {
+          contextLength: entry.contextLength,
+          maxCompletionTokens: entry.maxCompletionTokens,
+        });
+      }
+      if (map.size > 0) {
+        log.info("loaded OpenRouter model metadata from disk cache", { count: map.size });
+        return map;
+      }
+    }
+  } catch (err) {
+    log.warn("failed to load OpenRouter disk cache", { err: String(err) });
+  }
+  return null;
+}
+
+/** Write the in-memory cache to disk so the next restart is fast. */
+function persistOrCacheToDisk(cache: Map<string, OpenRouterModelMeta>): void {
+  try {
+    mkdirSync(paths.data, { recursive: true });
+    const data = Array.from(cache.entries()).map(([id, meta]) => ({
+      id,
+      contextLength: meta.contextLength,
+      maxCompletionTokens: meta.maxCompletionTokens,
+    }));
+    writeFileSync(OR_CACHE_PATH, JSON.stringify(data), "utf-8");
+  } catch (err) {
+    log.warn("failed to persist OpenRouter model cache", { err: String(err) });
+  }
+}
 
 async function fetchOpenRouterModels(): Promise<Map<string, OpenRouterModelMeta>> {
   const cache = new Map<string, OpenRouterModelMeta>();
@@ -47,22 +96,32 @@ async function fetchOpenRouterModels(): Promise<Map<string, OpenRouterModelMeta>
     const body = (await res.json()) as {
       data: Array<{ id: string; context_length?: number; top_provider?: { max_completion_tokens?: number } }>;
     };
+    let missingCtxCount = 0;
     for (const m of body.data ?? []) {
+      if (m.context_length == null) missingCtxCount++;
       cache.set(m.id, {
-        contextLength: m.context_length ?? 200_000,
+        // If the API didn't return a context_length (extremely rare), use a
+        // safe floor of 128K and log a warning.
+        contextLength: m.context_length ?? 128_000,
         maxCompletionTokens: m.top_provider?.max_completion_tokens ?? null,
       });
     }
+    if (missingCtxCount > 0) {
+      log.warn(`${missingCtxCount} OpenRouter models missing context_length, used 128K fallback`);
+    }
     log.info("fetched OpenRouter model metadata", { count: cache.size });
+
+    // Persist to disk so subsequent restarts have immediate access.
+    persistOrCacheToDisk(cache);
   } catch (err) {
-    log.warn("failed to fetch OpenRouter models, using defaults", { err: String(err) });
+    log.warn("failed to fetch OpenRouter models, keeping disk cache", { err: String(err) });
   }
   return cache;
 }
 
 // Kick off the fetch if it hasn't started yet. Returns synchronously if
-// cache is already populated; otherwise returns undefined (caller uses a
-// safe default and can await the promise to update later).
+// cache is already populated (from disk or previous API fetch); otherwise
+// returns undefined (caller falls through to a safe default).
 function ensureOrCache(): Map<string, OpenRouterModelMeta> | undefined {
   if (orModelCache) return orModelCache;
   if (!orCachePromise) {
@@ -148,10 +207,12 @@ function resolveModel(provider: string, modelId: string): Model<any> {
 
   if (provider === "openrouter") {
     // OpenRouter models are all OpenAI-compatible chat completions.
-    // Use the live cache if available; fall back to 200K before the first
-    // API fetch completes. refreshModelContext() patches the binding once
-    // the real data arrives.
-    const fallbackCtx = 200_000;
+    //
+    // Use the cache if available. On first ever run (no disk cache, no API
+    // response yet), use a safe 128K floor — but this window is tiny because
+    // the disk load runs synchronously at module init, and the API fetch
+    // resolves within a few seconds.
+    const fallbackCtx = 128_000;
     const fallbackMax = 4_096;
     const cached = ensureOrCache()?.get(modelId);
     return {
@@ -175,6 +236,15 @@ function resolveModel(provider: string, modelId: string): Model<any> {
   return m;
 }
 
+// ─── Bootstrap ────────────────────────────────────────────────────────────
+
+// Try to load disk cache immediately so OpenRouter models have correct
+// context windows from module init — no 200K fallback window.
+const diskCache = loadOrCacheFromDisk();
+if (diskCache) {
+  orModelCache = diskCache;
+}
+
 // Prefer the runtime-persisted choice (set via /model), fall back to config.yaml.
 const runtime = loadRuntimeModel();
 const initialProvider = runtime?.provider ?? config.agent.provider;
@@ -184,10 +254,10 @@ const initialModelId = runtime?.modelId ?? config.agent.model;
 export let model: Model<any> = resolveModel(initialProvider, initialModelId);
 
 // Kick off the OpenRouter model cache fetch in the background. Once it
-// resolves, patch the live model binding with the real context window.
-// This runs before main() awaits anything meaningful, so the cache is
-// usually populated by the time the first agent run starts.
-ensureOrCache();
+// resolves, patch the live model binding and persist the fresh data to disk.
+// This runs before main() awaits anything meaningful, so subsequent server
+// startups have the disk cache loaded immediately.
+if (!diskCache) ensureOrCache(); // only fire fetch if disk cache wasn't loaded
 if (model.provider === "openrouter") {
   refreshModelContext(model).catch((err) => log.warn("background model context refresh failed", { err: String(err) }));
 }
