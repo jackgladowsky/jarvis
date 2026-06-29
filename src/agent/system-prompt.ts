@@ -1,15 +1,17 @@
-// Loads the system prompt verbatim from `~/.jarvis/prompts/system.md` at
-// process startup. There is no dynamic injection — what's in the file is
-// exactly what the agent gets as its system message every turn.
+// System prompt assembly.
 //
-// See DESIGN.md §4 / §12 for the rationale: a static prompt makes the
-// session-start token budget predictable. Detailed procedures live in
-// repo-local skills that the prompt tells JARVIS to read on demand.
+// Loads the static base prompt from `~/.jarvis/prompts/system.md` and
+// dynamically appends a skills index + MCP server list so JARVIS always
+// knows what capabilities are available without reading index files on
+// demand.
 //
-// JARVIS itself can edit this file via its tools, but changes only take
-// effect after a service restart (the export below is read once at boot).
+// The base prompt remains the authoritative identity and rules. The
+// appended sections are purely informational reference — they don't change
+// behaviour, they just make skills/MCP discoverable at zero tool-call cost.
+//
+// Rebuilt on every import (once at startup). Changes to skills or MCP
+// config require a service restart to take effect.
 
-import { readFileSync } from "node:fs";
-import { paths } from "../paths.js";
+import { buildSystemPrompt } from "./prompt-assembler.js";
 
-export const systemPrompt: string = readFileSync(paths.systemPrompt, "utf-8");
+export const systemPrompt: string = buildSystemPrompt();

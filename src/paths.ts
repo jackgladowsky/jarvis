@@ -14,9 +14,14 @@ import { join } from "node:path";
 //   JARVIS_DATA_DIR=$PWD/.jarvis-dev pnpm start
 const DATA_BASE = process.env.JARVIS_DATA_DIR ?? join(homedir(), ".jarvis");
 
+const REPO_BASE = join(homedir(), "jarvis");
+
 export const paths = {
   // Base of the data tree.
   data: DATA_BASE,
+
+  // Repo root (source code).
+  repo: REPO_BASE,
 
   // Secrets and tunables (loaded by config.ts at startup).
   env: join(DATA_BASE, ".env"),
