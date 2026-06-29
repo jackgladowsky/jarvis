@@ -68,8 +68,12 @@ function roleInstructions(role: BackgroundRole): string[] {
 }
 
 function parseReviewVerdict(output: string): "ready" | "needs_fix" {
+  const lower = output.toLowerCase();
+  if (lower.includes("verdict: ready")) return "ready";
+  if (lower.includes("verdict: needs_fix")) return "needs_fix";
+  // Fallback: check first line per instruction
   const first = output.split("\n", 1)[0]?.toLowerCase() ?? "";
-  if (first.includes("verdict: ready")) return "ready";
+  if (first.includes("ready")) return "ready";
   return "needs_fix";
 }
 
