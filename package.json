@@ -22,7 +22,9 @@
     "version:show": "pnpm run build && node dist/lib/version.js",
     "release:bump": "node scripts/bump-version.mjs",
     "release": "node skills/release/scripts/release.mjs",
-    "workbench:smoke": "pnpm build && node dist/workbench/smoke.js"
+    "workbench:smoke": "pnpm build && node dist/workbench/smoke.js",
+    "observability:index": "pnpm build && node dist/observability/cli.js",
+    "observability:serve": "pnpm build && node dist/observability/server.js"
   },
   "dependencies": {
     "@mariozechner/pi-agent-core": "^0.73.0",

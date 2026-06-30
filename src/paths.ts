@@ -82,6 +82,9 @@ export const paths = {
   workbenchScreenshots: join(DATA_BASE, "data", "workbench", "screenshots"),
   workbenchArtifacts: join(DATA_BASE, "data", "workbench", "artifacts"),
 
+  // Local AI usage observability dashboard cache. Derived from raw JSONL; raw transcripts stay untouched.
+  observability: join(DATA_BASE, "data", "observability"),
+
   // Append-only audit log of every tool call. See DESIGN.md §13.
   audit: join(DATA_BASE, "data", "audit.log"),
 
