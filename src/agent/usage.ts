@@ -161,9 +161,20 @@ function formatPercent(n: number): string {
   return `${n.toFixed(1)}%`;
 }
 
-function renderTotals(scope: UsageScope): string {
-  if (scope.requests === 0) return `${scope.label}: no local usage recorded`;
-  return `${scope.label}: ${formatInt(scope.totalTokens)} tokens (${formatInt(scope.input)} in, ${formatInt(scope.output)} out, ${formatInt(scope.cacheRead)} cache read), ${formatMoney(scope.cost)} over ${formatInt(scope.requests)} calls`;
+function renderUsageTotals(title: string, totals: UsageTotals): string[] {
+  if (totals.requests === 0) return [`• ${title}: no local usage recorded`];
+  return [
+    `• ${title}: ${formatInt(totals.totalTokens)} tokens · ${formatMoney(totals.cost)} · ${formatInt(totals.requests)} calls`,
+    `  ↳ in ${formatInt(totals.input)} · out ${formatInt(totals.output)} · cache ${formatInt(totals.cacheRead)}`,
+  ];
+}
+
+function contextBar(used: number, total: number): string {
+  if (total <= 0) return "";
+  const width = 12;
+  const ratio = Math.max(0, Math.min(1, used / total));
+  const filled = Math.round(ratio * width);
+  return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
 export async function renderUsageReport(chatId: number): Promise<string> {
@@ -179,14 +190,15 @@ export async function renderUsageReport(chatId: number): Promise<string> {
 
   if (!active) {
     return [
-      "Usage for this chat",
-      "Session: none active",
-      "Context: no active session to estimate.",
+      "📊 Usage",
       "",
-      renderTotals({ label: "Local 7d total", ...weekUsage }),
-      renderTotals({ label: "Local 30d total", ...monthUsage }),
-      "Provider quota: not exposed by current Codex/Anthropic APIs; only limit errors reveal reset timing.",
-      "Notes: token/cost totals are local pi-ai estimates from persisted assistant messages, not provider billing.",
+      "No active session for this chat.",
+      "",
+      "Recent totals",
+      ...renderUsageTotals("7d", weekUsage),
+      ...renderUsageTotals("30d", monthUsage),
+      "",
+      "_Local pi-ai estimates; provider quota is not exposed._",
     ].join("\n");
   }
 
@@ -201,24 +213,39 @@ export async function renderUsageReport(chatId: number): Promise<string> {
   const threshold = contextWindow > 0 ? Math.max(0, contextWindow - config.compaction.reserve_tokens) : 0;
   const sessionUsage = await readJsonlUsage(join(paths.sessions, `${active.sessionId}.jsonl`));
 
-  const contextLine =
-    contextWindow > 0
-      ? `Context: ~${formatInt(contextTokens)} / ${formatInt(contextWindow)} tokens (${formatPercent((contextTokens / contextWindow) * 100)}), ~${formatInt(Math.max(0, contextWindow - contextTokens))} remaining`
-      : `Context: ~${formatInt(contextTokens)} tokens used; model context window unavailable`;
+  const remaining = contextWindow > 0 ? Math.max(0, contextWindow - contextTokens) : 0;
+  const usedPct = contextWindow > 0 ? formatPercent((contextTokens / contextWindow) * 100) : "?";
+  const thresholdPct = contextWindow > 0 && threshold > 0 ? formatPercent((threshold / contextWindow) * 100) : "?";
 
-  const lines = ["Usage for this chat", `Session: ${active.sessionId}`, `Model: ${describeModel()}`, contextLine];
+  const lines = [
+    "📊 Usage",
+    "",
+    "Session",
+    `• id: ${active.sessionId}`,
+    `• model: ${describeModel()}`,
+    "",
+    "Context",
+  ];
 
-  if (threshold > 0) {
-    lines.push(`Compaction threshold: ~${formatInt(threshold)} tokens`);
+  if (contextWindow > 0) {
+    lines.push(
+      `• ${contextBar(contextTokens, contextWindow)} ${usedPct} used`,
+      `• used: ~${formatInt(contextTokens)} / ${formatInt(contextWindow)}`,
+      `• left: ~${formatInt(remaining)}`,
+      `• compacts near: ~${formatInt(threshold)} (${thresholdPct})`,
+    );
+  } else {
+    lines.push(`• used: ~${formatInt(contextTokens)}`, "• model context window unavailable");
   }
 
   lines.push(
     "",
-    renderTotals({ label: "Current session local usage", ...sessionUsage }),
-    renderTotals({ label: "Local 7d total", ...weekUsage }),
-    renderTotals({ label: "Local 30d total", ...monthUsage }),
-    "Provider quota: not exposed by current Codex/Anthropic APIs; only limit errors reveal reset timing.",
-    "Notes: context is a local chars/4 estimate including rough system/tool overhead; cost is pi-ai's local estimate, not provider billing.",
+    "Token + cost estimates",
+    ...renderUsageTotals("session", sessionUsage),
+    ...renderUsageTotals("7d", weekUsage),
+    ...renderUsageTotals("30d", monthUsage),
+    "",
+    "_Costs are local pi-ai estimates, not provider billing. Context is chars/4-ish including system/tools._",
   );
 
   return lines.join("\n");
