@@ -4,18 +4,25 @@ import * as React from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   Activity,
+  AlertTriangle,
   ArrowDownRight,
+  BarChart3,
   Brain,
   Clock3,
   Cpu,
   Database,
   DollarSign,
   GitBranch,
+  GitCommitVertical,
+  Hourglass,
+  Layers3,
   ListFilter,
+  MessageSquareText,
   RefreshCcw,
   Search,
   Table2,
   TerminalSquare,
+  TimerReset,
   Zap,
 } from "lucide-react";
 
@@ -28,9 +35,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import type { CostTotals, ObservabilitySummary, SessionSummary, TokenTotals } from "../../../../src/observability/analytics";
+import type {
+  CostTotals,
+  ObservabilitySummary,
+  SessionSummary,
+  TokenTotals,
+} from "../../../../src/observability/analytics";
 
-type ScreenKey = "overview" | "sessions" | "traces" | "classifications";
+type ScreenKey = "overview" | "sessions" | "traces" | "analytics" | "classifications";
 type WindowKey = "7" | "30" | "all";
 type SourceKey = "all" | SessionSummary["source"];
 type SortKey = "recent" | "cost" | "tokens" | "tools" | "duration";
@@ -60,14 +72,27 @@ function short(value: string | undefined, length = 86): string {
 
 function formatDate(ms?: number): string {
   if (!ms) return "unknown";
-  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(ms));
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(
+    new Date(ms),
+  );
 }
 
 function duration(ms?: number): string {
   if (!ms) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${Math.round(ms / 1000)}s`;
   const minutes = Math.max(1, Math.round(ms / 60000));
   if (minutes < 60) return `${minutes}m`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function percent(numerator: number, denominator: number): string {
+  if (!denominator) return "0%";
+  return `${Math.round((numerator / denominator) * 100)}%`;
+}
+
+function chars(value: number): string {
+  return `${compactNumber.format(value)} chars`;
 }
 
 function zeroTokens(): TokenTotals {
@@ -168,22 +193,54 @@ export function ObservabilityDashboard({ summary }: DashboardProps) {
     let messages = 0;
     let compactions = 0;
     let retryFallbackEvents = 0;
+    let toolErrors = 0;
+    let promptChars = 0;
+    let assistantChars = 0;
+    let maxGapMs = 0;
+    let attentionScore = 0;
     for (const session of filteredSessions) {
       requests += session.usage.requests;
       toolCalls += session.toolCalls;
       messages += session.messages;
       compactions += session.compactions;
       retryFallbackEvents += session.retryFallbackEvents.length;
+      toolErrors += session.toolErrors;
+      promptChars += session.promptChars;
+      assistantChars += session.assistantChars;
+      maxGapMs = Math.max(maxGapMs, session.maxInterEventGapMs ?? 0);
+      attentionScore += session.attentionScore;
       addTokens(tokens, session.usage.tokens);
       addCost(cost, session.usage.cost);
     }
-    return { tokens, cost, requests, toolCalls, messages, compactions, retryFallbackEvents };
+    return {
+      tokens,
+      cost,
+      requests,
+      toolCalls,
+      messages,
+      compactions,
+      retryFallbackEvents,
+      toolErrors,
+      promptChars,
+      assistantChars,
+      maxGapMs,
+      attentionScore,
+    };
   }, [filteredSessions]);
 
   const chartRows = React.useMemo(() => {
     return liveSummary.timeSeries
       .filter((bucket) => inWindow(Date.parse(`${bucket.date}T00:00:00.000Z`), windowKey))
-      .map((bucket) => ({ date: bucket.date.slice(5), tokens: bucket.tokens.total, requests: bucket.requests, cost: bucket.cost.total }));
+      .map((bucket) => ({
+        date: bucket.date.slice(5),
+        tokens: bucket.tokens.total,
+        requests: bucket.requests,
+        cost: bucket.cost.total,
+        toolCalls: bucket.toolCalls,
+        toolErrors: bucket.toolErrors,
+        promptChars: bucket.promptChars,
+        assistantChars: bucket.assistantChars,
+      }));
   }, [liveSummary.timeSeries, windowKey]);
 
   const modelRows = React.useMemo(() => {
@@ -196,7 +253,54 @@ export function ObservabilityDashboard({ summary }: DashboardProps) {
       row.sessions += 1;
       rows.set(model, row);
     }
-    return Array.from(rows.values()).sort((a, b) => b.cost - a.cost || b.tokens - a.tokens).slice(0, 10);
+    return Array.from(rows.values())
+      .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens)
+      .slice(0, 10);
+  }, [filteredSessions]);
+
+  const analyticsRows = React.useMemo(() => {
+    const sources = new Map<string, { key: string; sessions: number; tokens: number; cost: number; tools: number }>();
+    const tools = new Map<string, { name: string; calls: number; errors: number; sessions: number }>();
+    const events = new Map<string, { key: string; count: number }>();
+    for (const session of filteredSessions) {
+      const sourceRow = sources.get(session.source) ?? {
+        key: session.source,
+        sessions: 0,
+        tokens: 0,
+        cost: 0,
+        tools: 0,
+      };
+      sourceRow.sessions += 1;
+      sourceRow.tokens += session.usage.tokens.total;
+      sourceRow.cost += session.usage.cost.total;
+      sourceRow.tools += session.toolCalls;
+      sources.set(session.source, sourceRow);
+      for (const tool of session.toolUsage) {
+        const row = tools.get(tool.name) ?? { name: tool.name, calls: 0, errors: 0, sessions: 0 };
+        row.calls += tool.calls;
+        row.errors += tool.errors;
+        row.sessions += 1;
+        tools.set(tool.name, row);
+      }
+      for (const [key, count] of Object.entries(session.eventTypes)) {
+        const row = events.get(key) ?? { key, count: 0 };
+        row.count += count;
+        events.set(key, row);
+      }
+    }
+    return {
+      sources: Array.from(sources.values()).sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
+      tools: Array.from(tools.values())
+        .sort((a, b) => b.errors - a.errors || b.calls - a.calls)
+        .slice(0, 12),
+      events: Array.from(events.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 12),
+      attention: filteredSessions
+        .filter((session) => session.attentionScore > 0)
+        .sort((a, b) => b.attentionScore - a.attentionScore)
+        .slice(0, 10),
+    };
   }, [filteredSessions]);
 
   const sortedSessions = React.useMemo(() => sortSessions(filteredSessions, sortKey), [filteredSessions, sortKey]);
@@ -204,7 +308,9 @@ export function ObservabilityDashboard({ summary }: DashboardProps) {
   const topSessions = React.useMemo(() => sortSessions(filteredSessions, "cost").slice(0, 8), [filteredSessions]);
   const traceSessions = React.useMemo(() => {
     return sortSessions(
-      filteredSessions.filter((session) => session.retryFallbackEvents.length > 0 || session.toolCalls > 0 || session.compactions > 0),
+      filteredSessions.filter(
+        (session) => session.retryFallbackEvents.length > 0 || session.toolCalls > 0 || session.compactions > 0,
+      ),
       sortKey,
     );
   }, [filteredSessions, sortKey]);
@@ -228,20 +334,37 @@ export function ObservabilityDashboard({ summary }: DashboardProps) {
             <div>
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <div className="text-[10px] font-medium uppercase tracking-[0.24em] text-muted-foreground">JARVIS</div>
-                <Badge variant="outline" className="rounded-none border-border/80 bg-muted/20 text-muted-foreground">Local / private</Badge>
-                <Badge variant="outline" className="rounded-none border-border/80 bg-muted/20 text-muted-foreground">{liveSummary.scannedFiles} files</Badge>
-                <Badge variant="outline" className="rounded-none border-border/80 bg-muted/20 text-muted-foreground">{liveSummary.parseErrors} parse errors</Badge>
+                <Badge variant="outline" className="rounded-none border-border/80 bg-muted/20 text-muted-foreground">
+                  Local / private
+                </Badge>
+                <Badge variant="outline" className="rounded-none border-border/80 bg-muted/20 text-muted-foreground">
+                  {liveSummary.scannedFiles} files
+                </Badge>
+                <Badge variant="outline" className="rounded-none border-border/80 bg-muted/20 text-muted-foreground">
+                  {liveSummary.parseErrors} parse errors
+                </Badge>
               </div>
               <h1 className="text-2xl font-semibold tracking-[-0.04em] md:text-3xl">Observability</h1>
             </div>
 
             <div className="flex flex-col gap-2 xl:items-end">
               <Tabs value={screen} onValueChange={(value) => setScreen(value as ScreenKey)}>
-                <TabsList className="grid h-10 w-full grid-cols-4 rounded-none border border-border/80 bg-muted/20 p-0 xl:w-[620px]">
-                  <TabsTrigger value="overview" className="rounded-none text-xs">Dashboard</TabsTrigger>
-                  <TabsTrigger value="sessions" className="rounded-none text-xs">Sessions</TabsTrigger>
-                  <TabsTrigger value="traces" className="rounded-none text-xs">Traces</TabsTrigger>
-                  <TabsTrigger value="classifications" className="rounded-none text-xs">Classifications</TabsTrigger>
+                <TabsList className="grid h-10 w-full grid-cols-5 rounded-none border border-border/80 bg-muted/20 p-0 xl:w-[760px]">
+                  <TabsTrigger value="overview" className="rounded-none text-xs">
+                    Dashboard
+                  </TabsTrigger>
+                  <TabsTrigger value="sessions" className="rounded-none text-xs">
+                    Sessions
+                  </TabsTrigger>
+                  <TabsTrigger value="traces" className="rounded-none text-xs">
+                    Traces
+                  </TabsTrigger>
+                  <TabsTrigger value="analytics" className="rounded-none text-xs">
+                    Analytics
+                  </TabsTrigger>
+                  <TabsTrigger value="classifications" className="rounded-none text-xs">
+                    Classifications
+                  </TabsTrigger>
                 </TabsList>
               </Tabs>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -261,7 +384,9 @@ export function ObservabilityDashboard({ summary }: DashboardProps) {
               />
             </div>
             <Select value={source} onValueChange={(value) => setSource(value as SourceKey)}>
-              <SelectTrigger className="h-9 rounded-none border-border/80 bg-card/70 text-xs"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-9 rounded-none border-border/80 bg-card/70 text-xs">
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent className="rounded-none">
                 <SelectItem value="all">All sources</SelectItem>
                 <SelectItem value="chat">Chat</SelectItem>
@@ -271,7 +396,9 @@ export function ObservabilityDashboard({ summary }: DashboardProps) {
               </SelectContent>
             </Select>
             <Select value={windowKey} onValueChange={(value) => setWindowKey(value as WindowKey)}>
-              <SelectTrigger className="h-9 rounded-none border-border/80 bg-card/70 text-xs"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-9 rounded-none border-border/80 bg-card/70 text-xs">
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent className="rounded-none">
                 <SelectItem value="7">Last 7 days</SelectItem>
                 <SelectItem value="30">Last 30 days</SelectItem>
@@ -279,7 +406,9 @@ export function ObservabilityDashboard({ summary }: DashboardProps) {
               </SelectContent>
             </Select>
             <Select value={sortKey} onValueChange={(value) => setSortKey(value as SortKey)}>
-              <SelectTrigger className="h-9 rounded-none border-border/80 bg-card/70 text-xs"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-9 rounded-none border-border/80 bg-card/70 text-xs">
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent className="rounded-none">
                 <SelectItem value="recent">Most recent</SelectItem>
                 <SelectItem value="cost">Highest cost</SelectItem>
@@ -308,7 +437,12 @@ export function ObservabilityDashboard({ summary }: DashboardProps) {
           ) : null}
           {screen === "sessions" ? <SessionsScreen sessions={sortedSessions} totals={totals} /> : null}
           {screen === "traces" ? <TracesScreen sessions={traceSessions} summary={liveSummary} totals={totals} /> : null}
-          {screen === "classifications" ? <ClassificationsScreen sessions={unclassifiedSessions} totals={totals} /> : null}
+          {screen === "analytics" ? (
+            <AnalyticsScreen chartRows={chartRows} rows={analyticsRows} totals={totals} />
+          ) : null}
+          {screen === "classifications" ? (
+            <ClassificationsScreen sessions={unclassifiedSessions} totals={totals} />
+          ) : null}
         </section>
       </div>
     </main>
@@ -324,23 +458,70 @@ function OverviewScreen({
   topSessions,
   totals,
 }: {
-  chartRows: { date: string; tokens: number; requests: number; cost: number }[];
+  chartRows: {
+    date: string;
+    tokens: number;
+    requests: number;
+    cost: number;
+    toolCalls: number;
+    toolErrors: number;
+    promptChars: number;
+    assistantChars: number;
+  }[];
   filteredSessions: SessionSummary[];
   modelRows: { model: string; cost: number; tokens: number; sessions: number }[];
   recentSessions: SessionSummary[];
   summary: ObservabilitySummary;
   topSessions: SessionSummary[];
-  totals: { tokens: TokenTotals; cost: CostTotals; requests: number; toolCalls: number; messages: number; compactions: number; retryFallbackEvents: number };
+  totals: {
+    tokens: TokenTotals;
+    cost: CostTotals;
+    requests: number;
+    toolCalls: number;
+    messages: number;
+    compactions: number;
+    retryFallbackEvents: number;
+    toolErrors: number;
+    promptChars: number;
+    assistantChars: number;
+    maxGapMs: number;
+    attentionScore: number;
+  };
 }) {
   return (
     <div className="space-y-3">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard icon={Activity} label="Sessions" value={integerNumber.format(filteredSessions.length)} sub="filtered runs" />
-        <MetricCard icon={Zap} label="LLM calls" value={integerNumber.format(totals.requests)} sub={`${integerNumber.format(totals.messages)} events`} />
-        <MetricCard icon={Cpu} label="Tokens" value={compactNumber.format(totals.tokens.total)} sub={`${compactNumber.format(totals.tokens.input)} in / ${compactNumber.format(totals.tokens.output)} out`} />
+        <MetricCard
+          icon={Activity}
+          label="Sessions"
+          value={integerNumber.format(filteredSessions.length)}
+          sub="filtered runs"
+        />
+        <MetricCard
+          icon={Zap}
+          label="LLM calls"
+          value={integerNumber.format(totals.requests)}
+          sub={`${integerNumber.format(totals.messages)} events`}
+        />
+        <MetricCard
+          icon={Cpu}
+          label="Tokens"
+          value={compactNumber.format(totals.tokens.total)}
+          sub={`${compactNumber.format(totals.tokens.input)} in / ${compactNumber.format(totals.tokens.output)} out`}
+        />
         <MetricCard icon={DollarSign} label="Cost" value={money(totals.cost.total)} sub="estimated" />
-        <MetricCard icon={TerminalSquare} label="Tools" value={integerNumber.format(totals.toolCalls)} sub={`${totals.compactions} compactions`} />
-        <MetricCard icon={GitBranch} label="Signals" value={integerNumber.format(totals.retryFallbackEvents)} sub="retry/fallback" />
+        <MetricCard
+          icon={TerminalSquare}
+          label="Tools"
+          value={integerNumber.format(totals.toolCalls)}
+          sub={`${totals.toolErrors} errors · ${totals.compactions} compactions`}
+        />
+        <MetricCard
+          icon={GitBranch}
+          label="Signals"
+          value={integerNumber.format(totals.retryFallbackEvents)}
+          sub={`${totals.attentionScore} attention pts`}
+        />
       </div>
 
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(360px,0.85fr)]">
@@ -349,9 +530,21 @@ function OverviewScreen({
             <AreaChart data={chartRows} margin={{ left: 8, right: 8, top: 12, bottom: 0 }}>
               <CartesianGrid vertical={false} strokeDasharray="3 3" />
               <XAxis dataKey="date" tickLine={false} axisLine={false} tickMargin={10} minTickGap={24} />
-              <YAxis tickLine={false} axisLine={false} width={48} tickFormatter={(value: number) => compactNumber.format(value)} />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                width={48}
+                tickFormatter={(value: number) => compactNumber.format(value)}
+              />
               <ChartTooltip content={<ChartTooltipContent indicator="line" />} />
-              <Area type="monotone" dataKey="tokens" stroke="var(--color-tokens)" fill="var(--color-tokens)" fillOpacity={0.16} strokeWidth={2} />
+              <Area
+                type="monotone"
+                dataKey="tokens"
+                stroke="var(--color-tokens)"
+                fill="var(--color-tokens)"
+                fillOpacity={0.16}
+                strokeWidth={2}
+              />
             </AreaChart>
           </ChartContainer>
         </Panel>
@@ -361,7 +554,14 @@ function OverviewScreen({
             <BarChart data={modelRows} layout="vertical" margin={{ left: 4, right: 12, top: 8, bottom: 8 }}>
               <CartesianGrid horizontal={false} strokeDasharray="3 3" />
               <XAxis type="number" hide />
-              <YAxis type="category" dataKey="model" tickLine={false} axisLine={false} width={118} tickFormatter={(value: string) => short(value, 18)} />
+              <YAxis
+                type="category"
+                dataKey="model"
+                tickLine={false}
+                axisLine={false}
+                width={118}
+                tickFormatter={(value: string) => short(value, 18)}
+              />
               <ChartTooltip content={<ChartTooltipContent formatter={(value) => money(Number(value))} hideLabel />} />
               <Bar dataKey="cost" fill="var(--color-cost)" radius={0} />
             </BarChart>
@@ -390,34 +590,90 @@ function OverviewScreen({
   );
 }
 
-function SessionsScreen({ sessions, totals }: { sessions: SessionSummary[]; totals: { tokens: TokenTotals; cost: CostTotals; requests: number; toolCalls: number; messages: number } }) {
+function SessionsScreen({
+  sessions,
+  totals,
+}: {
+  sessions: SessionSummary[];
+  totals: { tokens: TokenTotals; cost: CostTotals; requests: number; toolCalls: number; messages: number };
+}) {
   return (
     <div className="space-y-3">
       <div className="grid gap-3 md:grid-cols-4">
         <MetricCard icon={Table2} label="Rows" value={integerNumber.format(sessions.length)} sub="matching sessions" />
-        <MetricCard icon={Zap} label="Calls" value={integerNumber.format(totals.requests)} sub="assistant usage records" />
+        <MetricCard
+          icon={Zap}
+          label="Calls"
+          value={integerNumber.format(totals.requests)}
+          sub="assistant usage records"
+        />
         <MetricCard icon={Cpu} label="Tokens" value={compactNumber.format(totals.tokens.total)} sub="active filter" />
         <MetricCard icon={DollarSign} label="Cost" value={money(totals.cost.total)} sub="active filter" />
       </div>
-      <Panel title="Sessions" description="Sortable from the top bar. Search matches text, path, source, provider, and model.">
+      <Panel
+        title="Sessions"
+        description="Sortable from the top bar. Search matches text, path, source, provider, and model."
+      >
         <SessionTable sessions={sessions.slice(0, 250)} />
       </Panel>
     </div>
   );
 }
 
-function TracesScreen({ sessions, summary, totals }: { sessions: SessionSummary[]; summary: ObservabilitySummary; totals: { retryFallbackEvents: number; toolCalls: number; compactions: number } }) {
+function TracesScreen({
+  sessions,
+  summary,
+  totals,
+}: {
+  sessions: SessionSummary[];
+  summary: ObservabilitySummary;
+  totals: { retryFallbackEvents: number; toolCalls: number; toolErrors: number; compactions: number; maxGapMs: number };
+}) {
+  const [selectedPath, setSelectedPath] = React.useState<string | undefined>(sessions[0]?.path);
+  const selected = sessions.find((session) => session.path === selectedPath) ?? sessions[0];
   return (
     <div className="space-y-3">
-      <div className="grid gap-3 md:grid-cols-4">
-        <MetricCard icon={GitBranch} label="Trace rows" value={integerNumber.format(sessions.length)} sub="tools/signals/compactions" />
-        <MetricCard icon={TerminalSquare} label="Tool calls" value={integerNumber.format(totals.toolCalls)} sub="active filter" />
-        <MetricCard icon={ArrowDownRight} label="Events" value={integerNumber.format(totals.retryFallbackEvents)} sub="retry/fallback" />
-        <MetricCard icon={Database} label="Compactions" value={integerNumber.format(totals.compactions)} sub="summaries written" />
+      <div className="grid gap-3 md:grid-cols-5">
+        <MetricCard
+          icon={GitBranch}
+          label="Trace rows"
+          value={integerNumber.format(sessions.length)}
+          sub="tools/signals/compactions"
+        />
+        <MetricCard
+          icon={TerminalSquare}
+          label="Tool calls"
+          value={integerNumber.format(totals.toolCalls)}
+          sub={`${totals.toolErrors} errors`}
+        />
+        <MetricCard
+          icon={ArrowDownRight}
+          label="Events"
+          value={integerNumber.format(totals.retryFallbackEvents)}
+          sub="retry/fallback"
+        />
+        <MetricCard
+          icon={Database}
+          label="Compactions"
+          value={integerNumber.format(totals.compactions)}
+          sub="summaries written"
+        />
+        <MetricCard icon={TimerReset} label="Max gap" value={duration(totals.maxGapMs)} sub="between trace events" />
       </div>
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(420px,0.95fr)]">
         <Panel title="Trace sessions" description="Sessions with tool calls, compactions, or reliability events.">
-          <TraceTable sessions={sessions.slice(0, 250)} />
+          <TraceTable sessions={sessions.slice(0, 250)} selectedPath={selected?.path} onSelect={setSelectedPath} />
+        </Panel>
+        <Panel
+          title="Full session trace tree"
+          description="Prompts, assistant calls, tool calls/results, compactions, model switches, and event gaps."
+        >
+          <TraceTree key={selected?.path ?? "empty-trace"} session={selected} />
+        </Panel>
+      </div>
+      <div className="grid gap-3 xl:grid-cols-2">
+        <Panel title="Per-session tool diagnostics" description="Tool calls and errors inside the selected trace.">
+          <ToolDiagnostics session={selected} />
         </Panel>
         <Panel title="Event feed" description="Latest reliability events from the global index.">
           <ReliabilityFeed summary={summary} limit={18} />
@@ -427,12 +683,191 @@ function TracesScreen({ sessions, summary, totals }: { sessions: SessionSummary[
   );
 }
 
+function AnalyticsScreen({
+  chartRows,
+  rows,
+  totals,
+}: {
+  chartRows: {
+    date: string;
+    tokens: number;
+    requests: number;
+    cost: number;
+    toolCalls: number;
+    toolErrors: number;
+    promptChars: number;
+    assistantChars: number;
+  }[];
+  rows: {
+    sources: { key: string; sessions: number; tokens: number; cost: number; tools: number }[];
+    tools: { name: string; calls: number; errors: number; sessions: number }[];
+    events: { key: string; count: number }[];
+    attention: SessionSummary[];
+  };
+  totals: {
+    requests: number;
+    toolCalls: number;
+    toolErrors: number;
+    promptChars: number;
+    assistantChars: number;
+    maxGapMs: number;
+    attentionScore: number;
+  };
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-3 md:grid-cols-5">
+        <MetricCard
+          icon={MessageSquareText}
+          label="Prompts"
+          value={chars(totals.promptChars)}
+          sub={`${chars(totals.assistantChars)} assistant`}
+        />
+        <MetricCard
+          icon={AlertTriangle}
+          label="Tool errors"
+          value={integerNumber.format(totals.toolErrors)}
+          sub={`${percent(totals.toolErrors, Math.max(1, totals.toolCalls + totals.toolErrors))} of tool events`}
+        />
+        <MetricCard icon={Hourglass} label="Max idle gap" value={duration(totals.maxGapMs)} sub="trace event spacing" />
+        <MetricCard
+          icon={Layers3}
+          label="Attention"
+          value={integerNumber.format(totals.attentionScore)}
+          sub="weighted risk score"
+        />
+        <MetricCard
+          icon={BarChart3}
+          label="Requests"
+          value={integerNumber.format(totals.requests)}
+          sub="LLM usage records"
+        />
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-2">
+        <Panel
+          title="Prompt/response volume"
+          description="Daily character volume complements token/cost metrics and catches huge pasted prompts."
+        >
+          <ChartContainer
+            config={{
+              promptChars: { label: "Prompt chars", color: "var(--chart-1)" },
+              assistantChars: { label: "Assistant chars", color: "var(--chart-2)" },
+            }}
+            className="h-[280px] w-full"
+          >
+            <AreaChart data={chartRows} margin={{ left: 8, right: 8, top: 12, bottom: 0 }}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" />
+              <XAxis dataKey="date" tickLine={false} axisLine={false} tickMargin={10} minTickGap={24} />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                width={48}
+                tickFormatter={(value: number) => compactNumber.format(value)}
+              />
+              <ChartTooltip content={<ChartTooltipContent indicator="line" />} />
+              <Area
+                type="monotone"
+                dataKey="promptChars"
+                stroke="var(--color-promptChars)"
+                fill="var(--color-promptChars)"
+                fillOpacity={0.14}
+                strokeWidth={2}
+              />
+              <Area
+                type="monotone"
+                dataKey="assistantChars"
+                stroke="var(--color-assistantChars)"
+                fill="var(--color-assistantChars)"
+                fillOpacity={0.14}
+                strokeWidth={2}
+              />
+            </AreaChart>
+          </ChartContainer>
+        </Panel>
+        <Panel
+          title="Tool activity and errors"
+          description="Daily tool volume with error overlay from tool result events."
+        >
+          <ChartContainer
+            config={{
+              toolCalls: { label: "Tool calls", color: "var(--chart-1)" },
+              toolErrors: { label: "Tool errors", color: "var(--chart-5)" },
+            }}
+            className="h-[280px] w-full"
+          >
+            <BarChart data={chartRows} margin={{ left: 8, right: 8, top: 12, bottom: 0 }}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" />
+              <XAxis dataKey="date" tickLine={false} axisLine={false} tickMargin={10} minTickGap={24} />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                width={48}
+                tickFormatter={(value: number) => compactNumber.format(value)}
+              />
+              <ChartTooltip content={<ChartTooltipContent />} />
+              <Bar dataKey="toolCalls" fill="var(--color-toolCalls)" radius={0} />
+              <Bar dataKey="toolErrors" fill="var(--color-toolErrors)" radius={0} />
+            </BarChart>
+          </ChartContainer>
+        </Panel>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(360px,0.85fr)]">
+        <Panel title="Source breakdown" description="Cost, token, tool, and session mix by ingestion source.">
+          <RankedRows
+            rows={rows.sources.map((row) => ({
+              key: row.key,
+              value: row.cost,
+              label: money(row.cost),
+              sub: `${compactNumber.format(row.tokens)} tok · ${row.sessions} sessions · ${row.tools} tools`,
+            }))}
+          />
+        </Panel>
+        <Panel title="Event type mix" description="Trace-node categories produced by the JSONL indexer.">
+          <RankedRows
+            rows={rows.events.map((row) => ({
+              key: row.key.replaceAll("_", " "),
+              value: row.count,
+              label: integerNumber.format(row.count),
+              sub: "trace nodes",
+            }))}
+          />
+        </Panel>
+        <Panel
+          title="Attention queue"
+          description="Sessions weighted by errors, fallbacks, long gaps, compactions, and high spend."
+        >
+          <AttentionQueue sessions={rows.attention} />
+        </Panel>
+      </div>
+
+      <Panel
+        title="Tool reliability leaderboard"
+        description="Tool calls, error counts, and observed session coverage in the active slice."
+      >
+        <ToolReliabilityTable tools={rows.tools} />
+      </Panel>
+    </div>
+  );
+}
+
 function ClassificationsScreen({ sessions, totals }: { sessions: SessionSummary[]; totals: { messages: number } }) {
   return (
     <div className="space-y-3">
       <div className="grid gap-3 md:grid-cols-4">
-        <MetricCard icon={Brain} label="Unclassified" value={integerNumber.format(sessions.length)} sub="session scaffold" />
-        <MetricCard icon={Activity} label="Messages" value={integerNumber.format(totals.messages)} sub="in active slice" />
+        <MetricCard
+          icon={Brain}
+          label="Unclassified"
+          value={integerNumber.format(sessions.length)}
+          sub="session scaffold"
+        />
+        <MetricCard
+          icon={Activity}
+          label="Messages"
+          value={integerNumber.format(totals.messages)}
+          sub="in active slice"
+        />
         <MetricCard icon={ListFilter} label="Labels" value="0" sub="not annotated yet" />
         <MetricCard icon={Database} label="Mutation" value="0" sub="raw logs untouched" />
       </div>
@@ -440,10 +875,12 @@ function ClassificationsScreen({ sessions, totals }: { sessions: SessionSummary[
         <Panel title="Classifier backlog" description="Everything is intentionally read-only for now.">
           <div className="space-y-3 text-sm text-muted-foreground">
             <div className="border border-border/60 p-3">
-              Each session currently includes <span className="font-mono text-foreground">classification: unclassified</span> as a safe scaffold.
+              Each session currently includes{" "}
+              <span className="font-mono text-foreground">classification: unclassified</span> as a safe scaffold.
             </div>
             <div className="border border-border/60 p-3">
-              Next useful step: local LLM batch classifier that writes derived labels into the observability cache, never into raw transcripts.
+              Next useful step: local LLM batch classifier that writes derived labels into the observability cache,
+              never into raw transcripts.
             </div>
           </div>
         </Panel>
@@ -474,21 +911,39 @@ function SessionTable({ sessions, compact = false }: { sessions: SessionSummary[
         <TableBody>
           {sessions.map((session) => (
             <TableRow key={session.path} className="hover:bg-muted/30">
-              <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">{formatDate(session.endedAt)}</TableCell>
+              <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                {formatDate(session.endedAt)}
+              </TableCell>
               <TableCell>
-                <div className="max-w-[760px] truncate font-medium">{short(session.displayName ?? session.firstUserText, compact ? 105 : 140)}</div>
+                <div className="max-w-[760px] truncate font-medium">
+                  {short(session.displayName ?? session.firstUserText, compact ? 105 : 140)}
+                </div>
                 <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
-                  {(session.models.length ? session.models : ["unknown"]).slice(0, 2).map((model) => <span key={model} className="truncate">{short(model, 46)}</span>)}
+                  {(session.models.length ? session.models : ["unknown"]).slice(0, 2).map((model) => (
+                    <span key={model} className="truncate">
+                      {short(model, 46)}
+                    </span>
+                  ))}
                   <span>·</span>
                   <span className="truncate">{session.relativePath}</span>
                 </div>
               </TableCell>
-              <TableCell><Badge variant="outline" className="rounded-none capitalize">{session.source}</Badge></TableCell>
-              {!compact ? <TableCell className="text-xs text-muted-foreground">{session.providers.join(", ") || "—"}</TableCell> : null}
-              <TableCell className="text-right font-mono text-xs">{compactNumber.format(session.usage.tokens.total)}</TableCell>
+              <TableCell>
+                <Badge variant="outline" className="rounded-none capitalize">
+                  {session.source}
+                </Badge>
+              </TableCell>
+              {!compact ? (
+                <TableCell className="text-xs text-muted-foreground">{session.providers.join(", ") || "—"}</TableCell>
+              ) : null}
+              <TableCell className="text-right font-mono text-xs">
+                {compactNumber.format(session.usage.tokens.total)}
+              </TableCell>
               <TableCell className="text-right font-mono text-xs">{integerNumber.format(session.toolCalls)}</TableCell>
               <TableCell className="text-right font-mono text-xs">{money(session.usage.cost.total)}</TableCell>
-              {!compact ? <TableCell className="text-right font-mono text-xs">{duration(session.durationMs)}</TableCell> : null}
+              {!compact ? (
+                <TableCell className="text-right font-mono text-xs">{duration(session.durationMs)}</TableCell>
+              ) : null}
             </TableRow>
           ))}
         </TableBody>
@@ -497,7 +952,15 @@ function SessionTable({ sessions, compact = false }: { sessions: SessionSummary[
   );
 }
 
-function TraceTable({ sessions }: { sessions: SessionSummary[] }) {
+function TraceTable({
+  sessions,
+  selectedPath,
+  onSelect,
+}: {
+  sessions: SessionSummary[];
+  selectedPath?: string;
+  onSelect?: (path: string) => void;
+}) {
   return (
     <div className="overflow-x-auto border border-border/70">
       <Table>
@@ -513,16 +976,215 @@ function TraceTable({ sessions }: { sessions: SessionSummary[] }) {
         </TableHeader>
         <TableBody>
           {sessions.map((session) => (
-            <TableRow key={session.path} className="hover:bg-muted/30">
-              <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">{formatDate(session.endedAt)}</TableCell>
+            <TableRow
+              key={session.path}
+              className={cn("cursor-pointer hover:bg-muted/30", selectedPath === session.path && "bg-muted/40")}
+              onClick={() => onSelect?.(session.path)}
+            >
+              <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                {formatDate(session.endedAt)}
+              </TableCell>
               <TableCell>
-                <div className="max-w-[700px] truncate font-medium">{short(session.displayName ?? session.firstUserText, 130)}</div>
-                <div className="mt-1 text-xs text-muted-foreground">{short(session.models.join(", ") || "unknown", 120)}</div>
+                <div className="max-w-[700px] truncate font-medium">
+                  {short(session.displayName ?? session.firstUserText, 130)}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {short(session.models.join(", ") || "unknown", 120)}
+                </div>
               </TableCell>
               <TableCell className="text-right font-mono text-xs">{session.toolCalls}</TableCell>
-              <TableCell className="text-right font-mono text-xs">{session.retryFallbackEvents.length}</TableCell>
+              <TableCell className="text-right font-mono text-xs">
+                {session.retryFallbackEvents.length + session.toolErrors}
+              </TableCell>
               <TableCell className="text-right font-mono text-xs">{session.compactions}</TableCell>
-              <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground">{stopReasonText(session)}</TableCell>
+              <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground">
+                {stopReasonText(session)}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function TraceTree({ session }: { session: SessionSummary | undefined }) {
+  const [expanded, setExpanded] = React.useState<Set<string>>(
+    () => new Set((session?.traceNodes ?? []).slice(0, 80).map((node) => node.id)),
+  );
+  if (!session) return <div className="text-sm text-muted-foreground">No trace session selected.</div>;
+  const nodes = session.traceNodes.slice(0, 500);
+  const hasChildren = new Set(nodes.map((node) => node.parentId).filter(Boolean) as string[]);
+  const visible = nodes.filter((node) => {
+    let parentId = node.parentId;
+    while (parentId) {
+      if (!expanded.has(parentId)) return false;
+      parentId = nodes.find((candidate) => candidate.id === parentId)?.parentId;
+    }
+    return true;
+  });
+  return (
+    <div className="max-h-[620px] overflow-auto border border-border/60 bg-background/40">
+      {visible.map((node) => {
+        const expandable = hasChildren.has(node.id);
+        return (
+          <div
+            key={node.id}
+            className={cn(
+              "border-b border-border/40 px-2 py-2 text-xs last:border-b-0",
+              node.isError && "bg-destructive/10",
+            )}
+            style={{ paddingLeft: `${8 + node.depth * 18}px` }}
+          >
+            <div className="flex items-start gap-2">
+              <button
+                type="button"
+                className={cn("mt-0.5 w-4 text-muted-foreground", !expandable && "opacity-30")}
+                onClick={() => {
+                  if (!expandable) return;
+                  setExpanded((current) => {
+                    const next = new Set(current);
+                    if (next.has(node.id)) next.delete(node.id);
+                    else next.add(node.id);
+                    return next;
+                  });
+                }}
+              >
+                {expandable ? (expanded.has(node.id) ? "▾" : "▸") : "•"}
+              </button>
+              <GitCommitVertical className="mt-0.5 size-3.5 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="rounded-none text-[10px]">
+                    {node.kind.replaceAll("_", " ")}
+                  </Badge>
+                  {node.role ? (
+                    <span className="uppercase tracking-wide text-muted-foreground">{node.role}</span>
+                  ) : null}
+                  <span className="truncate font-medium">{node.title}</span>
+                  {node.toolName ? <span className="font-mono text-muted-foreground">{node.toolName}</span> : null}
+                  {node.tokens ? (
+                    <span className="font-mono text-muted-foreground">{compactNumber.format(node.tokens)} tok</span>
+                  ) : null}
+                  {node.cost ? <span className="font-mono text-muted-foreground">{money(node.cost)}</span> : null}
+                </div>
+                {node.preview ? (
+                  <div className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
+                    {short(node.preview, 260)}
+                  </div>
+                ) : null}
+                <div className="mt-1 flex flex-wrap gap-2 font-mono text-[11px] text-muted-foreground">
+                  <span>{formatDate(node.timestamp)}</span>
+                  {node.durationFromPreviousMs !== undefined ? (
+                    <span>+{duration(node.durationFromPreviousMs)}</span>
+                  ) : null}
+                  {node.model ? <span>{short(node.model, 42)}</span> : null}
+                  {node.provider ? <span>{node.provider}</span> : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {session.traceNodes.length > nodes.length ? (
+        <div className="p-2 text-xs text-muted-foreground">
+          Showing first {nodes.length} of {session.traceNodes.length} trace nodes.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ToolDiagnostics({ session }: { session: SessionSummary | undefined }) {
+  if (!session) return <div className="text-sm text-muted-foreground">No trace session selected.</div>;
+  if (session.toolUsage.length === 0)
+    return <div className="text-sm text-muted-foreground">No tool calls in this session.</div>;
+  return (
+    <ToolReliabilityTable
+      tools={session.toolUsage.map((tool) => ({
+        name: tool.name,
+        calls: tool.calls,
+        errors: tool.errors,
+        sessions: tool.sessions,
+      }))}
+    />
+  );
+}
+
+function RankedRows({ rows }: { rows: { key: string; value: number; label: string; sub: string }[] }) {
+  const max = Math.max(1, ...rows.map((row) => row.value));
+  if (rows.length === 0) return <div className="text-sm text-muted-foreground">No rows in this slice.</div>;
+  return (
+    <div className="space-y-2">
+      {rows.map((row) => (
+        <div key={row.key} className="space-y-1">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="truncate font-medium capitalize">{row.key}</span>
+            <span className="font-mono text-xs text-muted-foreground">{row.label}</span>
+          </div>
+          <div className="h-1.5 bg-muted">
+            <div className="h-full bg-primary" style={{ width: `${Math.max(3, (row.value / max) * 100)}%` }} />
+          </div>
+          <div className="text-xs text-muted-foreground">{row.sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AttentionQueue({ sessions }: { sessions: SessionSummary[] }) {
+  if (sessions.length === 0)
+    return <div className="text-sm text-muted-foreground">No sessions need attention in this slice.</div>;
+  return (
+    <div className="space-y-2">
+      {sessions.map((session) => (
+        <div key={session.path} className="border border-border/60 px-3 py-2">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="truncate font-medium">{short(session.displayName ?? session.firstUserText, 70)}</span>
+            <Badge variant="outline" className="rounded-none">
+              {session.attentionScore}
+            </Badge>
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {session.attentionReasons.join(" · ") || "attention signal"}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ToolReliabilityTable({
+  tools,
+}: {
+  tools: { name: string; calls: number; errors: number; sessions: number }[];
+}) {
+  if (tools.length === 0) return <div className="text-sm text-muted-foreground">No tool usage in this slice.</div>;
+  return (
+    <div className="overflow-x-auto border border-border/70">
+      <Table>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead>Tool</TableHead>
+            <TableHead className="text-right">Calls</TableHead>
+            <TableHead className="text-right">Errors</TableHead>
+            <TableHead className="text-right">Error rate</TableHead>
+            <TableHead className="text-right">Sessions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {tools.map((tool) => (
+            <TableRow key={tool.name} className="hover:bg-muted/30">
+              <TableCell className="font-medium">
+                <TerminalSquare className="mr-2 inline size-4 text-muted-foreground" />
+                {tool.name}
+              </TableCell>
+              <TableCell className="text-right font-mono text-xs">{integerNumber.format(tool.calls)}</TableCell>
+              <TableCell className="text-right font-mono text-xs">{integerNumber.format(tool.errors)}</TableCell>
+              <TableCell className="text-right font-mono text-xs">
+                {percent(tool.errors, tool.calls + tool.errors)}
+              </TableCell>
+              <TableCell className="text-right font-mono text-xs">{integerNumber.format(tool.sessions)}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -542,7 +1204,11 @@ function DenseSessionList({ sessions }: { sessions: SessionSummary[] }) {
             <span className="font-mono text-muted-foreground">{money(session.usage.cost.total)}</span>
           </div>
           <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-            <span>{formatDate(session.endedAt)}</span><span>·</span><span>{compactNumber.format(session.usage.tokens.total)} tok</span><span>·</span><span>{session.toolCalls} tools</span>
+            <span>{formatDate(session.endedAt)}</span>
+            <span>·</span>
+            <span>{compactNumber.format(session.usage.tokens.total)} tok</span>
+            <span>·</span>
+            <span>{session.toolCalls} tools</span>
           </div>
         </div>
       ))}
@@ -555,8 +1221,14 @@ function ToolUsage({ summary }: { summary: ObservabilitySummary }) {
     <div className="grid gap-2 md:grid-cols-2">
       {summary.toolUsage.slice(0, 12).map((tool) => (
         <div key={tool.name} className="grid grid-cols-[1fr_auto] items-center gap-3 border border-border/60 px-3 py-2">
-          <div className="flex items-center gap-2 truncate text-sm"><TerminalSquare className="size-4 text-muted-foreground" /><span className="truncate">{tool.name}</span></div>
-          <div className="font-mono text-xs text-muted-foreground">{integerNumber.format(tool.calls)}</div>
+          <div className="flex items-center gap-2 truncate text-sm">
+            <TerminalSquare className="size-4 text-muted-foreground" />
+            <span className="truncate">{tool.name}</span>
+          </div>
+          <div className="font-mono text-xs text-muted-foreground">
+            {integerNumber.format(tool.calls)}
+            {tool.errors ? ` / ${tool.errors} err` : ""}
+          </div>
         </div>
       ))}
     </div>
@@ -569,20 +1241,34 @@ function ReliabilityFeed({ summary, limit = 10 }: { summary: ObservabilitySummar
       {summary.retryFallbackEvents.slice(0, limit).map((event, index) => (
         <div key={`${event.timestamp ?? "event"}-${index}`} className="border border-border/60 px-3 py-2">
           <div className="mb-1 flex items-center justify-between gap-3">
-            <Badge variant="outline" className="rounded-none">{event.type.replaceAll("_", " ")}</Badge>
+            <Badge variant="outline" className="rounded-none">
+              {event.type.replaceAll("_", " ")}
+            </Badge>
             <span className="font-mono text-xs text-muted-foreground">{formatDate(event.timestamp)}</span>
           </div>
           <div className="text-sm text-muted-foreground">{short(event.detail, 150)}</div>
         </div>
       ))}
       {summary.retryFallbackEvents.length === 0 ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground"><ArrowDownRight className="size-4" /> No reliability events detected.</div>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <ArrowDownRight className="size-4" /> No reliability events detected.
+        </div>
       ) : null}
     </div>
   );
 }
 
-function MetricCard({ icon: Icon, label, value, sub }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string; sub: string }) {
+function MetricCard({
+  icon: Icon,
+  label,
+  value,
+  sub,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  value: string;
+  sub: string;
+}) {
   return (
     <Card className="rounded-none border-border/70 bg-card/70 shadow-none">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1.5">

@@ -25,7 +25,7 @@ export async function getObservabilitySummary(refresh = false): Promise<Observab
 
   if (!refresh) {
     const stored = await analytics.loadStoredObservabilitySummary();
-    if (stored) return stored;
+    if (stored?.schemaVersion === 2) return stored;
   }
 
   const summary = await analytics.collectObservabilitySummary();

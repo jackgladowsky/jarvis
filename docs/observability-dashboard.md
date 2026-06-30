@@ -31,7 +31,7 @@ The app lives in `apps/observability/` and uses shadcn/ui primitives, Tailwind v
 
 ## Current views
 
-- top tabs for Dashboard, Sessions, Traces, and Classifications
+- top tabs for Dashboard, Sessions, Traces, Analytics, and Classifications
 - dense top filters for source, time window, search, and session sort
 - JARVIS and Pi session/traces ingestion
 - usage/cost/tool/message summary cards
@@ -40,3 +40,18 @@ The app lives in `apps/observability/` and uses shadcn/ui primitives, Tailwind v
 - highest-spend session panel
 - tool usage and retry/fallback feeds
 - classification scaffold: each session has `classification: { status: "unclassified", labels: [] }` for future local LLM annotation without mutating raw transcripts
+
+## New tracing and analytics features
+
+The observability cache is now schema version 2. The dashboard rebuilds old schema caches automatically and adds these feature-complete improvements without mutating raw logs:
+
+1. Full per-session trace nodes for session metadata, prompts, assistant calls, tool calls, tool results, model changes, compactions, and branch summaries.
+2. Expand/collapse trace tree UI with parent/child indentation for Pi-style traces and synthetic ordering for plain JARVIS JSONL logs.
+3. Per-node timestamps, inter-event gaps, model/provider metadata, token counts, cost, previews, and error highlighting.
+4. Session and global tool-error accounting derived from tool result events.
+5. Per-session tool diagnostics table with calls, errors, error rate, and session coverage.
+6. Prompt-vs-assistant character-volume analytics for pasted prompt/output size visibility.
+7. Daily tool-call and tool-error chart for operational reliability trends.
+8. Source breakdown by sessions, tokens, cost, and tool volume.
+9. Trace event-type mix panel to show whether a slice is dominated by messages, tools, compactions, or model switches.
+10. Weighted attention queue ranking sessions by tool errors, fallback/retry signals, long idle gaps, compactions, and high spend.

@@ -43,6 +43,7 @@ export interface SessionSummary {
   assistantMessages: number;
   toolCalls: number;
   toolResults: number;
+  toolErrors: number;
   compactions: number;
   models: string[];
   providers: string[];
@@ -56,6 +57,41 @@ export interface SessionSummary {
   cwd?: string;
   parentSession?: string;
   branchSummaries: number;
+  promptChars: number;
+  assistantChars: number;
+  maxInterEventGapMs?: number;
+  avgInterEventGapMs?: number;
+  eventTypes: Record<string, number>;
+  toolUsage: ToolBreakdownRow[];
+  traceNodes: TraceNode[];
+  attentionScore: number;
+  attentionReasons: string[];
+}
+
+export interface TraceNode {
+  id: string;
+  parentId?: string;
+  timestamp?: number;
+  depth: number;
+  kind:
+    | "session"
+    | "message"
+    | "tool_call"
+    | "tool_result"
+    | "compaction"
+    | "branch_summary"
+    | "model_change"
+    | "event";
+  role?: string;
+  title: string;
+  preview?: string;
+  toolName?: string;
+  isError?: boolean;
+  model?: string;
+  provider?: string;
+  tokens?: number;
+  cost?: number;
+  durationFromPreviousMs?: number;
 }
 
 export interface RetryFallbackEvent {
@@ -77,6 +113,9 @@ export interface TimeBucket {
   userMessages: number;
   assistantMessages: number;
   toolCalls: number;
+  toolErrors: number;
+  promptChars: number;
+  assistantChars: number;
   tokens: TokenTotals;
   cost: CostTotals;
 }
@@ -93,10 +132,11 @@ export interface ToolBreakdownRow {
   name: string;
   calls: number;
   sessions: number;
+  errors: number;
 }
 
 export interface ObservabilitySummary {
-  schemaVersion: 1;
+  schemaVersion: 2;
   generatedAt: string;
   dataDir: string;
   roots: SourceRoot[];
@@ -110,6 +150,9 @@ export interface ObservabilitySummary {
     toolCalls: number;
     toolResults: number;
     compactions: number;
+    toolErrors: number;
+    promptChars: number;
+    assistantChars: number;
     usage: UsageTotals;
     retryFallbackEvents: number;
   };
@@ -232,18 +275,37 @@ function contentBlocks(message: JsonRecord): JsonRecord[] {
   return blocks;
 }
 
-function textPreview(message: JsonRecord): string | undefined {
+function messageText(message: JsonRecord): string {
   const content = message.content;
-  const text = (typeof content === "string"
-    ? content
-    : contentBlocks(message)
-        .map((block) => asString(block.text) ?? asString(block.thinking))
-        .filter((part): part is string => Boolean(part))
-        .join(" "))
+  return (
+    typeof content === "string"
+      ? content
+      : contentBlocks(message)
+          .map((block) => asString(block.text) ?? asString(block.thinking))
+          .filter((part): part is string => Boolean(part))
+          .join(" ")
+  )
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function truncateText(text: string | undefined, length = 180): string | undefined {
   if (!text) return undefined;
-  return text.length > 180 ? `${text.slice(0, 177)}…` : text;
+  return text.length > length ? `${text.slice(0, length - 1)}…` : text;
+}
+
+function textPreview(message: JsonRecord): string | undefined {
+  return truncateText(messageText(message));
+}
+
+function valuePreview(value: unknown, length = 260): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return truncateText(value.replace(/\s+/g, " ").trim(), length);
+  try {
+    return truncateText(JSON.stringify(value), length);
+  } catch {
+    return undefined;
+  }
 }
 
 async function listJsonlFiles(root: string): Promise<string[]> {
@@ -292,7 +354,7 @@ async function parseSessionFile(
 ): Promise<{
   session: SessionSummary;
   parseErrors: number;
-  toolNames: string[];
+  toolEvents: { name: string; isError: boolean }[];
   modelUsage: Map<string, UsageTotals>;
   providerUsage: Map<string, UsageTotals>;
 }> {
@@ -309,6 +371,7 @@ async function parseSessionFile(
     assistantMessages: 0,
     toolCalls: 0,
     toolResults: 0,
+    toolErrors: 0,
     compactions: 0,
     models: [],
     providers: [],
@@ -318,16 +381,68 @@ async function parseSessionFile(
     retryFallbackEvents: [],
     classification: { status: "unclassified", labels: [] },
     branchSummaries: 0,
+    promptChars: 0,
+    assistantChars: 0,
+    eventTypes: {},
+    toolUsage: [],
+    traceNodes: [],
+    attentionScore: 0,
+    attentionReasons: [],
   };
   const modelSet = new Set<string>();
   const providerSet = new Set<string>();
   const apiSet = new Set<string>();
-  const toolNames: string[] = [];
+  const toolEvents: { name: string; isError: boolean }[] = [];
+  const sessionToolCounts = new Map<string, { calls: number; sessions: Set<string>; errors: number }>();
+  const interEventGaps: number[] = [];
   const modelUsage = new Map<string, UsageTotals>();
   const providerUsage = new Map<string, UsageTotals>();
   let parseErrors = 0;
   let previousModel: string | undefined;
   let previousProvider: string | undefined;
+  let traceIndex = 0;
+  let previousTraceTimestamp: number | undefined;
+
+  function addTraceNode(input: Omit<TraceNode, "depth" | "id"> & { id?: string }): TraceNode {
+    const timestamp = input.timestamp;
+    const gap =
+      timestamp !== undefined && previousTraceTimestamp !== undefined
+        ? Math.max(0, timestamp - previousTraceTimestamp)
+        : undefined;
+    if (gap !== undefined) interEventGaps.push(gap);
+    if (timestamp !== undefined) previousTraceTimestamp = timestamp;
+    const node: TraceNode = {
+      ...input,
+      id: input.id || `${session.id}:${traceIndex}`,
+      durationFromPreviousMs: input.durationFromPreviousMs ?? gap,
+      depth: 0,
+    };
+    traceIndex += 1;
+    session.traceNodes.push(node);
+    session.eventTypes[node.kind] = (session.eventTypes[node.kind] ?? 0) + 1;
+    return node;
+  }
+
+  function getSessionToolRow(name: string): { calls: number; sessions: Set<string>; errors: number } {
+    let row = sessionToolCounts.get(name);
+    if (!row) {
+      row = { calls: 0, sessions: new Set(), errors: 0 };
+      sessionToolCounts.set(name, row);
+    }
+    row.sessions.add(`${session.source}:${session.id}`);
+    return row;
+  }
+
+  function recordToolCall(name: string): void {
+    toolEvents.push({ name, isError: false });
+    getSessionToolRow(name).calls += 1;
+  }
+
+  function recordToolError(name: string): void {
+    toolEvents.push({ name, isError: true });
+    session.toolErrors += 1;
+    getSessionToolRow(name).errors += 1;
+  }
 
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
@@ -349,17 +464,34 @@ async function parseSessionFile(
         session.startedAt = session.startedAt === undefined ? timestamp : Math.min(session.startedAt, timestamp);
         session.endedAt = session.endedAt === undefined ? timestamp : Math.max(session.endedAt, timestamp);
       }
+      addTraceNode({
+        id: asString(parsed.id),
+        parentId: asString(parsed.parentId),
+        timestamp,
+        kind: "session",
+        title: session.displayName ?? "Session started",
+        preview: valuePreview({ cwd: session.cwd, parentSession: session.parentSession }),
+      });
       continue;
     }
 
     if (parsed.type === "session_info") {
       session.displayName = asString(parsed.name) ?? session.displayName;
+      addTraceNode({
+        id: asString(parsed.id),
+        parentId: asString(parsed.parentId),
+        timestamp: timestampMs(parsed.timestamp),
+        kind: "event",
+        title: "Session info",
+        preview: session.displayName,
+      });
       continue;
     }
 
     const entryTimestamp = timestampMs(parsed.timestamp);
     if (entryTimestamp !== undefined) {
-      session.startedAt = session.startedAt === undefined ? entryTimestamp : Math.min(session.startedAt, entryTimestamp);
+      session.startedAt =
+        session.startedAt === undefined ? entryTimestamp : Math.min(session.startedAt, entryTimestamp);
       session.endedAt = session.endedAt === undefined ? entryTimestamp : Math.max(session.endedAt, entryTimestamp);
     }
 
@@ -369,11 +501,29 @@ async function parseSessionFile(
       if (model) modelSet.add(model);
       if (provider) providerSet.add(provider);
       if (model && previousModel && previousModel !== model) {
-        session.retryFallbackEvents.push({ timestamp: entryTimestamp, type: "model_switch", detail: `${previousModel} → ${model}` });
+        session.retryFallbackEvents.push({
+          timestamp: entryTimestamp,
+          type: "model_switch",
+          detail: `${previousModel} → ${model}`,
+        });
       }
       if (provider && previousProvider && previousProvider !== provider) {
-        session.retryFallbackEvents.push({ timestamp: entryTimestamp, type: "provider_switch", detail: `${previousProvider} → ${provider}` });
+        session.retryFallbackEvents.push({
+          timestamp: entryTimestamp,
+          type: "provider_switch",
+          detail: `${previousProvider} → ${provider}`,
+        });
       }
+      addTraceNode({
+        id: asString(parsed.id),
+        parentId: asString(parsed.parentId),
+        timestamp: entryTimestamp,
+        kind: "model_change",
+        title: "Model changed",
+        preview: [provider, model].filter(Boolean).join(" / ") || undefined,
+        model,
+        provider,
+      });
       previousModel = model ?? previousModel;
       previousProvider = provider ?? previousProvider;
       continue;
@@ -381,10 +531,30 @@ async function parseSessionFile(
 
     if (parsed.type === "compaction") {
       session.compactions += 1;
+      addTraceNode({
+        id: asString(parsed.id),
+        parentId: asString(parsed.parentId),
+        timestamp: entryTimestamp,
+        kind: "compaction",
+        title: "Context compaction",
+        preview: valuePreview({
+          summary: parsed.summary,
+          tokensBefore: parsed.tokensBefore,
+          firstKeptEntryId: parsed.firstKeptEntryId,
+        }),
+      });
       continue;
     }
     if (parsed.type === "branch_summary") {
       session.branchSummaries += 1;
+      addTraceNode({
+        id: asString(parsed.id),
+        parentId: asString(parsed.parentId),
+        timestamp: entryTimestamp,
+        kind: "branch_summary",
+        title: "Branch summary",
+        preview: valuePreview(parsed.summary ?? parsed),
+      });
       continue;
     }
 
@@ -394,15 +564,21 @@ async function parseSessionFile(
     const timestamp = timestampMs(message.timestamp) ?? entryTimestamp;
 
     session.messages += 1;
+    const text = messageText(message);
     if (message.role === "user") {
       session.userMessages += 1;
+      session.promptChars += text.length;
       session.firstUserText ??= session.displayName ?? textPreview(message);
     }
-    if (message.role === "assistant") session.assistantMessages += 1;
+    if (message.role === "assistant") {
+      session.assistantMessages += 1;
+      session.assistantChars += text.length;
+    }
     if (message.role === "toolResult") {
       session.toolResults += 1;
       const toolName = asString(message.toolName) ?? "unknown";
       if (message.isError === true) {
+        recordToolError(toolName);
         session.retryFallbackEvents.push({ timestamp, type: "tool_error", detail: toolName });
       }
     }
@@ -438,22 +614,66 @@ async function parseSessionFile(
       addUsageToMap(providerUsage, provider ?? "unknown", usage);
     }
 
+    const messageRole = asString(message.role);
+    const messageToolName = asString(message.toolName);
+    const messageNode = addTraceNode({
+      id: asString(parsed.id),
+      parentId: asString(parsed.parentId),
+      timestamp,
+      kind: messageRole === "toolResult" ? "tool_result" : "message",
+      role: messageRole,
+      title:
+        messageRole === "toolResult"
+          ? `Tool result · ${messageToolName ?? "unknown"}`
+          : `${messageRole ?? "message"}${model ? ` · ${model}` : ""}`,
+      preview: textPreview(message),
+      toolName: messageToolName,
+      isError: message.isError === true,
+      model,
+      provider,
+      tokens: usage?.tokens.total,
+      cost: usage?.cost.total,
+    });
+
+    let blockIndex = 0;
     for (const block of contentBlocks(message)) {
       if (block.type === "toolCall") {
         session.toolCalls += 1;
         const toolName = asString(block.name) ?? "unknown";
-        toolNames.push(toolName);
+        recordToolCall(toolName);
+        addTraceNode({
+          id: asString(block.id) ?? `${messageNode.id}:tool-call:${blockIndex}`,
+          parentId: messageNode.id,
+          timestamp,
+          kind: "tool_call",
+          title: `Tool call · ${toolName}`,
+          preview: valuePreview(block.arguments ?? block.input),
+          toolName,
+        });
       }
       if (block.type === "toolResult") {
         session.toolResults += 1;
+        const toolName = asString(block.toolName) ?? "tool error";
         if (block.isError === true) {
+          recordToolError(toolName);
           session.retryFallbackEvents.push({
             timestamp,
             type: "tool_error",
-            detail: asString(block.toolName) ?? "tool error",
+            detail: toolName,
           });
         }
+        addTraceNode({
+          id: asString(block.id) ?? `${messageNode.id}:tool-result:${blockIndex}`,
+          parentId: messageNode.id,
+          timestamp,
+          kind: "tool_result",
+          title: `Tool result · ${toolName}`,
+          preview: valuePreview(block.content ?? block.text),
+          toolName,
+          isError: block.isError === true,
+        });
       }
+      blockIndex += 1;
     }
     session.retryFallbackEvents.push(...detectTextEvents(message));
   }
@@ -465,7 +685,57 @@ async function parseSessionFile(
   if (session.startedAt !== undefined && session.endedAt !== undefined) {
     session.durationMs = Math.max(0, session.endedAt - session.startedAt);
   }
-  return { session, parseErrors, toolNames, modelUsage, providerUsage };
+  if (interEventGaps.length > 0) {
+    session.maxInterEventGapMs = Math.max(...interEventGaps);
+    session.avgInterEventGapMs = interEventGaps.reduce((sum, gap) => sum + gap, 0) / interEventGaps.length;
+  }
+  session.toolUsage = toolRows(sessionToolCounts);
+  annotateTraceDepths(session.traceNodes);
+  applyAttentionScore(session);
+  return { session, parseErrors, toolEvents, modelUsage, providerUsage };
+}
+
+function annotateTraceDepths(nodes: TraceNode[]): void {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const visiting = new Set<string>();
+  const depthFor = (node: TraceNode): number => {
+    if (!node.parentId || !byId.has(node.parentId) || visiting.has(node.id)) return 0;
+    if (node.depth > 0) return node.depth;
+    visiting.add(node.id);
+    node.depth = Math.min(12, depthFor(byId.get(node.parentId)!) + 1);
+    visiting.delete(node.id);
+    return node.depth;
+  };
+  for (const node of nodes) depthFor(node);
+}
+
+function applyAttentionScore(session: SessionSummary): void {
+  const reasons: string[] = [];
+  let score = 0;
+  if (session.toolErrors > 0) {
+    score += session.toolErrors * 4;
+    reasons.push(`${session.toolErrors} tool error${session.toolErrors === 1 ? "" : "s"}`);
+  }
+  if (session.retryFallbackEvents.length > 0) {
+    score += session.retryFallbackEvents.length * 3;
+    reasons.push(
+      `${session.retryFallbackEvents.length} reliability signal${session.retryFallbackEvents.length === 1 ? "" : "s"}`,
+    );
+  }
+  if ((session.maxInterEventGapMs ?? 0) >= 30 * 60 * 1000) {
+    score += 2;
+    reasons.push("long idle gap");
+  }
+  if (session.compactions > 0) {
+    score += session.compactions;
+    reasons.push(`${session.compactions} compaction${session.compactions === 1 ? "" : "s"}`);
+  }
+  if (session.usage.cost.total >= 1) {
+    score += 2;
+    reasons.push("high spend");
+  }
+  session.attentionScore = score;
+  session.attentionReasons = reasons;
 }
 
 function breakdownRows(map: Map<string, BreakdownRow>): BreakdownRow[] {
@@ -474,9 +744,11 @@ function breakdownRows(map: Map<string, BreakdownRow>): BreakdownRow[] {
   );
 }
 
-function toolRows(toolCounts: Map<string, { calls: number; sessions: Set<string> }>): ToolBreakdownRow[] {
+function toolRows(
+  toolCounts: Map<string, { calls: number; sessions: Set<string>; errors: number }>,
+): ToolBreakdownRow[] {
   return [...toolCounts.entries()]
-    .map(([name, row]) => ({ name, calls: row.calls, sessions: row.sessions.size }))
+    .map(([name, row]) => ({ name, calls: row.calls, sessions: row.sessions.size, errors: row.errors }))
     .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
 }
 
@@ -516,6 +788,9 @@ export async function collectObservabilitySummary(
     toolCalls: 0,
     toolResults: 0,
     compactions: 0,
+    toolErrors: 0,
+    promptChars: 0,
+    assistantChars: 0,
     usage: emptyUsage(),
     retryFallbackEvents: 0,
   };
@@ -525,7 +800,7 @@ export async function collectObservabilitySummary(
   const byModel = new Map<string, BreakdownRow>();
   const byProvider = new Map<string, BreakdownRow>();
   const bySource = new Map<string, BreakdownRow>();
-  const toolCounts = new Map<string, { calls: number; sessions: Set<string> }>();
+  const toolCounts = new Map<string, { calls: number; sessions: Set<string>; errors: number }>();
   const allEvents: RetryFallbackEvent[] = [];
 
   for (const root of roots) {
@@ -542,6 +817,9 @@ export async function collectObservabilitySummary(
       totals.toolCalls += session.toolCalls;
       totals.toolResults += session.toolResults;
       totals.compactions += session.compactions;
+      totals.toolErrors += session.toolErrors;
+      totals.promptChars += session.promptChars;
+      totals.assistantChars += session.assistantChars;
       totals.retryFallbackEvents += session.retryFallbackEvents.length;
       addUsage(totals.usage, session.usage);
       allEvents.push(...session.retryFallbackEvents);
@@ -556,6 +834,9 @@ export async function collectObservabilitySummary(
           userMessages: 0,
           assistantMessages: 0,
           toolCalls: 0,
+          toolErrors: 0,
+          promptChars: 0,
+          assistantChars: 0,
           tokens: emptyTokens(),
           cost: emptyCost(),
         };
@@ -566,6 +847,9 @@ export async function collectObservabilitySummary(
       bucket.userMessages += session.userMessages;
       bucket.assistantMessages += session.assistantMessages;
       bucket.toolCalls += session.toolCalls;
+      bucket.toolErrors += session.toolErrors;
+      bucket.promptChars += session.promptChars;
+      bucket.assistantChars += session.assistantChars;
       addTokens(bucket.tokens, session.usage.tokens);
       addCost(bucket.cost, session.usage.cost);
 
@@ -585,13 +869,14 @@ export async function collectObservabilitySummary(
         row.sessions += 1;
         addUsageToBreakdown(row, usage);
       }
-      for (const toolName of parsed.toolNames) {
-        let row = toolCounts.get(toolName);
+      for (const toolEvent of parsed.toolEvents) {
+        let row = toolCounts.get(toolEvent.name);
         if (!row) {
-          row = { calls: 0, sessions: new Set() };
-          toolCounts.set(toolName, row);
+          row = { calls: 0, sessions: new Set(), errors: 0 };
+          toolCounts.set(toolEvent.name, row);
         }
-        row.calls += 1;
+        if (toolEvent.isError) row.errors += 1;
+        else row.calls += 1;
         row.sessions.add(`${session.source}:${session.id}`);
       }
     }
@@ -600,7 +885,7 @@ export async function collectObservabilitySummary(
   sessions.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
   allEvents.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     dataDir: paths.data,
     roots,

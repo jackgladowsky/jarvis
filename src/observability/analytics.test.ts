@@ -47,9 +47,27 @@ test("collectObservabilitySummary aggregates sessions, usage, tools, model switc
   await writeFile(
     join(pi, "pi.jsonl"),
     [
-      JSON.stringify({ type: "session", version: 3, id: "pi-session", timestamp: "2026-01-03T00:00:00.000Z", cwd: "/repo" }),
-      JSON.stringify({ type: "session_info", id: "info", parentId: null, timestamp: "2026-01-03T00:00:01.000Z", name: "Pi trace" }),
-      JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-01-03T00:00:02.000Z", message: { role: "user", content: "inspect pi" } }),
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "pi-session",
+        timestamp: "2026-01-03T00:00:00.000Z",
+        cwd: "/repo",
+      }),
+      JSON.stringify({
+        type: "session_info",
+        id: "info",
+        parentId: null,
+        timestamp: "2026-01-03T00:00:01.000Z",
+        name: "Pi trace",
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "u1",
+        parentId: null,
+        timestamp: "2026-01-03T00:00:02.000Z",
+        message: { role: "user", content: "inspect pi" },
+      }),
       JSON.stringify({
         type: "message",
         id: "a1",
@@ -65,8 +83,28 @@ test("collectObservabilitySummary aggregates sessions, usage, tools, model switc
           content: [{ type: "toolCall", name: "read", id: "t1", arguments: {} }],
         },
       }),
-      JSON.stringify({ type: "message", id: "t1r", parentId: "a1", timestamp: "2026-01-03T00:00:04.000Z", message: { role: "toolResult", toolCallId: "t1", toolName: "read", isError: true, content: [{ type: "text", text: "failed" }] } }),
-      JSON.stringify({ type: "compaction", id: "c1", parentId: "t1r", timestamp: "2026-01-03T00:00:05.000Z", summary: "old", firstKeptEntryId: "a1", tokensBefore: 100 }),
+      JSON.stringify({
+        type: "message",
+        id: "t1r",
+        parentId: "a1",
+        timestamp: "2026-01-03T00:00:04.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "t1",
+          toolName: "read",
+          isError: true,
+          content: [{ type: "text", text: "failed" }],
+        },
+      }),
+      JSON.stringify({
+        type: "compaction",
+        id: "c1",
+        parentId: "t1r",
+        timestamp: "2026-01-03T00:00:05.000Z",
+        summary: "old",
+        firstKeptEntryId: "a1",
+        tokensBefore: 100,
+      }),
     ].join("\n") + "\n",
     "utf-8",
   );
@@ -91,19 +129,31 @@ test("collectObservabilitySummary aggregates sessions, usage, tools, model switc
     summary.totals.usage.tokens.total,
   );
   assert.ok(
-    Math.abs(summary.byModel.reduce((total, row) => total + row.cost.total, 0) - summary.totals.usage.cost.total) < 0.000001,
+    Math.abs(summary.byModel.reduce((total, row) => total + row.cost.total, 0) - summary.totals.usage.cost.total) <
+      0.000001,
   );
   assert.equal(
     summary.byProvider.reduce((total, row) => total + row.tokens.total, 0),
     summary.totals.usage.tokens.total,
   );
   assert.ok(
-    Math.abs(summary.byProvider.reduce((total, row) => total + row.cost.total, 0) - summary.totals.usage.cost.total) < 0.000001,
+    Math.abs(summary.byProvider.reduce((total, row) => total + row.cost.total, 0) - summary.totals.usage.cost.total) <
+      0.000001,
   );
   assert.equal(summary.sessions.find((session) => session.id === "job")?.compactions, 1);
   assert.equal(summary.sessions.find((session) => session.id === "pi")?.source, "pi");
   assert.equal(summary.sessions.find((session) => session.id === "pi")?.displayName, "Pi trace");
-  assert.equal(summary.sessions.find((session) => session.id === "pi")?.toolResults, 1);
+  const piSession = summary.sessions.find((session) => session.id === "pi");
+  assert.equal(piSession?.toolResults, 1);
+  assert.equal(piSession?.toolErrors, 1);
+  assert.equal(piSession?.toolUsage.find((tool) => tool.name === "read")?.errors, 1);
+  assert.equal(piSession?.toolUsage.find((tool) => tool.name === "read")?.sessions, 1);
+  assert.ok(piSession?.traceNodes.some((node) => node.kind === "tool_call" && node.toolName === "read"));
+  assert.ok(piSession?.traceNodes.some((node) => node.kind === "tool_result" && node.isError === true));
+  assert.ok((piSession?.maxInterEventGapMs ?? 0) > 0);
+  assert.ok((piSession?.attentionScore ?? 0) > 0);
+  assert.equal(summary.totals.toolErrors, 1);
+  assert.ok(summary.timeSeries.some((bucket) => bucket.toolErrors === 1));
   assert.equal(summary.sessions.find((session) => session.id === "a")?.classification.status, "unclassified");
   assert.ok(summary.retryFallbackEvents.some((event) => event.type === "model_switch"));
   assert.ok(summary.retryFallbackEvents.some((event) => event.type === "tool_error"));
