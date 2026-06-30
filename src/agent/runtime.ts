@@ -152,7 +152,6 @@ function isFallbackModelActive(): boolean {
   return model.provider === FALLBACK_PROVIDER && model.id === FALLBACK_MODEL_ID;
 }
 
-
 function countRecentToolCalls(messages: AgentMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i] as { role?: string; content?: Array<{ type: string }> };
@@ -416,7 +415,9 @@ export async function handleMessage(
 
       const next = attempts[i + 1];
       if (next) {
-        await callbacks.onStatus?.(next.label.startsWith("fallback") ? "Primary failed; trying fallback model" : "Model call failed; retrying");
+        await callbacks.onStatus?.(
+          next.label.startsWith("fallback") ? "Primary failed; trying fallback model" : "Model call failed; retrying",
+        );
         continue;
       }
     }

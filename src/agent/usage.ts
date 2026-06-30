@@ -20,7 +20,6 @@ interface UsageTotals {
   cost: number;
 }
 
-
 const EMPTY_TOTALS: UsageTotals = {
   requests: 0,
   input: 0,
@@ -214,15 +213,7 @@ export async function renderUsageReport(chatId: number): Promise<string> {
   const usedPct = contextWindow > 0 ? formatPercent((contextTokens / contextWindow) * 100) : "?";
   const thresholdPct = contextWindow > 0 && threshold > 0 ? formatPercent((threshold / contextWindow) * 100) : "?";
 
-  const lines = [
-    "📊 Usage",
-    "",
-    "Session",
-    `• id: ${active.sessionId}`,
-    `• model: ${describeModel()}`,
-    "",
-    "Context",
-  ];
+  const lines = ["📊 Usage", "", "Session", `• id: ${active.sessionId}`, `• model: ${describeModel()}`, "", "Context"];
 
   if (contextWindow > 0) {
     lines.push(
