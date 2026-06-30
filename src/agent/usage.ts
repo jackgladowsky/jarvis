@@ -20,9 +20,6 @@ interface UsageTotals {
   cost: number;
 }
 
-interface UsageScope extends UsageTotals {
-  label: string;
-}
 
 const EMPTY_TOTALS: UsageTotals = {
   requests: 0,
