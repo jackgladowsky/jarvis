@@ -199,7 +199,7 @@ function saveRuntimeModel(provider: string, modelId: string): void {
 // For openrouter we build a dynamic model because users can pass arbitrary
 // model slugs (openai/gpt-4o, anthropic/claude-sonnet-4, …) that aren't
 // all pre-registered in pi-ai's generated model table.
-function resolveModel(provider: string, modelId: string): Model<any> {
+export function resolveModel(provider: string, modelId: string): Model<any> {
   const providerKey = PROVIDER_KEY[provider];
   if (!providerKey) {
     throw new Error(`unknown agent.provider: ${provider}. Supported: ${Object.keys(PROVIDER_KEY).join(", ")}`);

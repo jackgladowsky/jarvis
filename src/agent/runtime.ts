@@ -31,7 +31,7 @@ import {
   rewriteJobSessionWithCompaction,
   type JobLoadedSession,
 } from "./job-session.js";
-import { model } from "./model.js";
+import { model, resolveModel } from "./model.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { systemPrompt } from "./system-prompt.js";
@@ -144,6 +144,14 @@ function formatStatus(event: AgentEvent, mode: StatusMode): string | undefined {
 // it's recalculated fresh each turn from the actual tool-call count.
 
 const SKILL_NUDGE_THRESHOLD = 3;
+const PRIMARY_RETRY_COUNT = 3;
+const FALLBACK_PROVIDER = "openrouter";
+const FALLBACK_MODEL_ID = "deepseek/deepseek-v4-flash";
+
+function isFallbackModelActive(): boolean {
+  return model.provider === FALLBACK_PROVIDER && model.id === FALLBACK_MODEL_ID;
+}
+
 
 function countRecentToolCalls(messages: AgentMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -173,11 +181,11 @@ function injectSkillNudge(messages: AgentMessage[]): void {
 
 // Build a fresh Agent for a given session. Tools, system prompt, and model
 // are constants for the process; transcript is per-session.
-function buildAgent(messages: AgentMessage[]): Agent {
+function buildAgent(messages: AgentMessage[], agentModel = model): Agent {
   return new Agent({
     initialState: {
       systemPrompt,
-      model,
+      model: agentModel,
       tools: allTools,
       messages,
       thinkingLevel: "off",
@@ -314,78 +322,107 @@ export async function handleMessage(
   // context this turn. Never persisted to the session JSONL — recalculated
   // fresh each turn from the actual tool-call count.
   injectSkillNudge(compaction.messages);
-  const agent = buildAgent(compaction.messages);
-  activeChatAgents.set(chatId, agent);
-
-  // Track abandon state per assistant message so the transport gets notified
-  // exactly once when a streaming text message turns into a tool call.
-  let currentMsgIsAbandoned = false;
-
-  const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
-    const status = formatStatus(event, callbacks.statusMode ?? "off");
-    if (status) await callbacks.onStatus?.(status);
-
-    if (event.type === "message_start" && event.message.role === "assistant") {
-      currentMsgIsAbandoned = false;
-      return;
-    }
-
-    if (event.type === "message_update" && event.message.role === "assistant") {
-      const m = event.message;
-      if (hasToolCall(m.content)) {
-        if (!currentMsgIsAbandoned) {
-          currentMsgIsAbandoned = true;
-          await callbacks.onAbandon?.();
-        }
-        return;
-      }
-      const t = extractText(m.content).trim();
-      if (t) await callbacks.onAssistantUpdate?.(t);
-      return;
-    }
-
-    if (event.type === "message_end" && event.message.role === "assistant") {
-      const m = event.message;
-      // Tool-call messages aren't shown to the user — DESIGN.md §12 streaming
-      // rule. Their content is still in the transcript for context.
-      if (hasToolCall(m.content)) return;
-      if (m.stopReason === "error" || m.stopReason === "aborted") {
-        const friendly = formatAgentError(m.stopReason, m.errorMessage);
-        log.warn("agent error", {
-          chatId,
-          sessionId: session.sessionId,
-          stopReason: m.stopReason,
-          err: m.errorMessage ?? "",
-        });
-        if (currentMsgIsAbandoned) {
-          currentMsgIsAbandoned = false;
-        }
-        await callbacks.onError?.(friendly);
-        return;
-      }
-      const t = extractText(m.content).trim();
-      if (t) await callbacks.onAssistantEnd?.(t);
-      return;
-    }
-  });
-
-  // Snapshot the message-array length before prompting so we can diff and
-  // persist exactly the new messages this turn produced.
-  const before = agent.state.messages.length;
-
-  try {
-    await agent.prompt(text, images);
-  } finally {
-    unsubscribe();
-    if (activeChatAgents.get(chatId) === agent) activeChatAgents.delete(chatId);
+  const attempts = [
+    ...Array.from({ length: PRIMARY_RETRY_COUNT + 1 }, (_, i) => ({
+      label: i === 0 ? "primary" : `primary retry ${i}/${PRIMARY_RETRY_COUNT}`,
+      agentModel: model,
+    })),
+  ];
+  if (!isFallbackModelActive()) {
+    attempts.push({
+      label: `fallback ${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID}`,
+      agentModel: resolveModel(FALLBACK_PROVIDER, FALLBACK_MODEL_ID),
+    });
   }
 
-  // Persist new messages + stamp lastMessageAt. Do this even if the prompt
-  // ended in error — the partial transcript is still useful for context on
-  // the next turn (and for debugging).
-  const newMessages = agent.state.messages.slice(before);
-  await sessions.appendMessages(session.sessionId, newMessages);
-  await sessions.markActivity(chatId);
+  let lastError = "agent message failed";
+
+  for (let i = 0; i < attempts.length; i++) {
+    const attempt = attempts[i];
+    const agent = buildAgent(compaction.messages.slice(), attempt.agentModel);
+    activeChatAgents.set(chatId, agent);
+    let currentMsgIsAbandoned = false;
+    let promptError: string | undefined;
+
+    const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+      const status = formatStatus(event, callbacks.statusMode ?? "off");
+      if (status) await callbacks.onStatus?.(status);
+
+      if (event.type === "message_start" && event.message.role === "assistant") {
+        currentMsgIsAbandoned = false;
+        return;
+      }
+
+      if (event.type === "message_update" && event.message.role === "assistant") {
+        const m = event.message;
+        if (hasToolCall(m.content)) {
+          if (!currentMsgIsAbandoned) {
+            currentMsgIsAbandoned = true;
+            await callbacks.onAbandon?.();
+          }
+          return;
+        }
+        const t = extractText(m.content).trim();
+        if (t) await callbacks.onAssistantUpdate?.(t);
+        return;
+      }
+
+      if (event.type === "message_end" && event.message.role === "assistant") {
+        const m = event.message;
+        if (hasToolCall(m.content)) return;
+        if (m.stopReason === "error" || m.stopReason === "aborted") {
+          promptError = formatAgentError(m.stopReason, m.errorMessage);
+          lastError = promptError;
+          log.warn("agent attempt failed", {
+            chatId,
+            sessionId: session.sessionId,
+            attempt: attempt.label,
+            model: `${attempt.agentModel.provider}/${attempt.agentModel.id}`,
+            stopReason: m.stopReason,
+            err: m.errorMessage ?? "",
+          });
+          if (currentMsgIsAbandoned) currentMsgIsAbandoned = false;
+          return;
+        }
+        const t = extractText(m.content).trim();
+        if (t) await callbacks.onAssistantEnd?.(t);
+        return;
+      }
+    });
+
+    const before = agent.state.messages.length;
+
+    try {
+      await agent.prompt(text, images);
+      if (promptError) throw new Error(promptError);
+
+      const newMessages = agent.state.messages.slice(before);
+      await sessions.appendMessages(session.sessionId, newMessages);
+      await sessions.markActivity(chatId);
+      unsubscribe();
+      if (activeChatAgents.get(chatId) === agent) activeChatAgents.delete(chatId);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      log.warn("agent prompt attempt errored", {
+        chatId,
+        sessionId: session.sessionId,
+        attempt: attempt.label,
+        model: `${attempt.agentModel.provider}/${attempt.agentModel.id}`,
+        err: lastError,
+      });
+      unsubscribe();
+      if (activeChatAgents.get(chatId) === agent) activeChatAgents.delete(chatId);
+
+      const next = attempts[i + 1];
+      if (next) {
+        await callbacks.onStatus?.(next.label.startsWith("fallback") ? "Primary failed; trying fallback model" : "Model call failed; retrying");
+        continue;
+      }
+    }
+  }
+
+  await callbacks.onError?.(`Model call failed after retries and fallback: ${lastError}`);
 }
 
 // Force-rotate a chat's session — bound to the `/new` command in the
