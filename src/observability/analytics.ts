@@ -25,7 +25,7 @@ export interface UsageTotals {
 }
 
 export interface SourceRoot {
-  source: "chat" | "scheduled" | "background";
+  source: "chat" | "scheduled" | "background" | "pi";
   root: string;
 }
 
@@ -52,6 +52,10 @@ export interface SessionSummary {
   retryFallbackEvents: RetryFallbackEvent[];
   firstUserText?: string;
   classification: ClassificationScaffold;
+  displayName?: string;
+  cwd?: string;
+  parentSession?: string;
+  branchSummaries: number;
 }
 
 export interface RetryFallbackEvent {
@@ -127,6 +131,7 @@ export function defaultSourceRoots(): SourceRoot[] {
     { source: "chat", root: paths.sessions },
     { source: "scheduled", root: paths.scheduledJobSessions },
     { source: "background", root: paths.backgroundSessions },
+    { source: "pi", root: paths.piSessions },
   ];
 }
 
@@ -186,6 +191,15 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function timestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 function usageFromMessage(message: JsonRecord): UsageTotals | undefined {
   const usage = asRecord(message.usage);
   if (!usage) return undefined;
@@ -219,10 +233,13 @@ function contentBlocks(message: JsonRecord): JsonRecord[] {
 }
 
 function textPreview(message: JsonRecord): string | undefined {
-  const text = contentBlocks(message)
-    .map((block) => asString(block.text))
-    .filter((part): part is string => Boolean(part))
-    .join(" ")
+  const content = message.content;
+  const text = (typeof content === "string"
+    ? content
+    : contentBlocks(message)
+        .map((block) => asString(block.text) ?? asString(block.thinking))
+        .filter((part): part is string => Boolean(part))
+        .join(" "))
     .replace(/\s+/g, " ")
     .trim();
   if (!text) return undefined;
@@ -256,7 +273,7 @@ function sessionIdFromPath(path: string): string {
 }
 
 function detectTextEvents(message: JsonRecord): RetryFallbackEvent[] {
-  const timestamp = asNumber(message.timestamp);
+  const timestamp = timestampMs(message.timestamp);
   const stopReason = asString(message.stopReason);
   const text = `${textPreview(message) ?? ""} ${stopReason ?? ""}`.toLowerCase();
   const out: RetryFallbackEvent[] = [];
@@ -300,6 +317,7 @@ async function parseSessionFile(
     usage: emptyUsage(),
     retryFallbackEvents: [],
     classification: { status: "unclassified", labels: [] },
+    branchSummaries: 0,
   };
   const modelSet = new Set<string>();
   const providerSet = new Set<string>();
@@ -321,24 +339,75 @@ async function parseSessionFile(
       continue;
     }
     if (!parsed) continue;
-    const timestamp = asNumber(parsed.timestamp);
-    if (timestamp !== undefined) {
-      session.startedAt = session.startedAt === undefined ? timestamp : Math.min(session.startedAt, timestamp);
-      session.endedAt = session.endedAt === undefined ? timestamp : Math.max(session.endedAt, timestamp);
+
+    if (parsed.type === "session") {
+      session.displayName ??= asString(parsed.name);
+      session.cwd = asString(parsed.cwd) ?? session.cwd;
+      session.parentSession = asString(parsed.parentSession) ?? session.parentSession;
+      const timestamp = timestampMs(parsed.timestamp);
+      if (timestamp !== undefined) {
+        session.startedAt = session.startedAt === undefined ? timestamp : Math.min(session.startedAt, timestamp);
+        session.endedAt = session.endedAt === undefined ? timestamp : Math.max(session.endedAt, timestamp);
+      }
+      continue;
     }
+
+    if (parsed.type === "session_info") {
+      session.displayName = asString(parsed.name) ?? session.displayName;
+      continue;
+    }
+
+    const entryTimestamp = timestampMs(parsed.timestamp);
+    if (entryTimestamp !== undefined) {
+      session.startedAt = session.startedAt === undefined ? entryTimestamp : Math.min(session.startedAt, entryTimestamp);
+      session.endedAt = session.endedAt === undefined ? entryTimestamp : Math.max(session.endedAt, entryTimestamp);
+    }
+
+    if (parsed.type === "model_change") {
+      const model = asString(parsed.modelId);
+      const provider = asString(parsed.provider);
+      if (model) modelSet.add(model);
+      if (provider) providerSet.add(provider);
+      if (model && previousModel && previousModel !== model) {
+        session.retryFallbackEvents.push({ timestamp: entryTimestamp, type: "model_switch", detail: `${previousModel} → ${model}` });
+      }
+      if (provider && previousProvider && previousProvider !== provider) {
+        session.retryFallbackEvents.push({ timestamp: entryTimestamp, type: "provider_switch", detail: `${previousProvider} → ${provider}` });
+      }
+      previousModel = model ?? previousModel;
+      previousProvider = provider ?? previousProvider;
+      continue;
+    }
+
     if (parsed.type === "compaction") {
       session.compactions += 1;
       continue;
     }
+    if (parsed.type === "branch_summary") {
+      session.branchSummaries += 1;
+      continue;
+    }
+
+    const message = parsed.type === "message" ? asRecord(parsed.message) : parsed;
+    if (!message) continue;
+    if (message.timestamp === undefined && entryTimestamp !== undefined) message.timestamp = entryTimestamp;
+    const timestamp = timestampMs(message.timestamp) ?? entryTimestamp;
 
     session.messages += 1;
-    if (parsed.role === "user") {
+    if (message.role === "user") {
       session.userMessages += 1;
-      session.firstUserText ??= textPreview(parsed);
+      session.firstUserText ??= session.displayName ?? textPreview(message);
     }
-    if (parsed.role === "assistant") session.assistantMessages += 1;
+    if (message.role === "assistant") session.assistantMessages += 1;
+    if (message.role === "toolResult") {
+      session.toolResults += 1;
+      const toolName = asString(message.toolName) ?? "unknown";
+      if (message.isError === true) {
+        session.retryFallbackEvents.push({ timestamp, type: "tool_error", detail: toolName });
+      }
+    }
 
-    const model = asString(parsed.model) ?? asString(parsed.responseModel);
+    const model = asString(message.model) ?? asString(message.responseModel);
     if (model) {
       modelSet.add(model);
       if (previousModel && previousModel !== model) {
@@ -346,7 +415,7 @@ async function parseSessionFile(
       }
       previousModel = model;
     }
-    const provider = asString(parsed.provider);
+    const provider = asString(message.provider);
     if (provider) {
       providerSet.add(provider);
       if (previousProvider && previousProvider !== provider) {
@@ -358,18 +427,18 @@ async function parseSessionFile(
       }
       previousProvider = provider;
     }
-    const api = asString(parsed.api);
+    const api = asString(message.api);
     if (api) apiSet.add(api);
-    const stopReason = asString(parsed.stopReason);
+    const stopReason = asString(message.stopReason);
     if (stopReason) session.stopReasons[stopReason] = (session.stopReasons[stopReason] ?? 0) + 1;
-    const usage = usageFromMessage(parsed);
+    const usage = usageFromMessage(message);
     if (usage) {
       addUsage(session.usage, usage);
       addUsageToMap(modelUsage, model ?? "unknown", usage);
       addUsageToMap(providerUsage, provider ?? "unknown", usage);
     }
 
-    for (const block of contentBlocks(parsed)) {
+    for (const block of contentBlocks(message)) {
       if (block.type === "toolCall") {
         session.toolCalls += 1;
         const toolName = asString(block.name) ?? "unknown";
@@ -386,9 +455,10 @@ async function parseSessionFile(
         }
       }
     }
-    session.retryFallbackEvents.push(...detectTextEvents(parsed));
+    session.retryFallbackEvents.push(...detectTextEvents(message));
   }
 
+  session.firstUserText ??= session.displayName;
   session.models = [...modelSet].sort();
   session.providers = [...providerSet].sort();
   session.apis = [...apiSet].sort();

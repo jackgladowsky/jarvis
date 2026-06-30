@@ -24,7 +24,9 @@
     "release": "node skills/release/scripts/release.mjs",
     "workbench:smoke": "pnpm build && node dist/workbench/smoke.js",
     "observability:index": "pnpm build && node dist/observability/cli.js",
-    "observability:serve": "pnpm build && node dist/observability/server.js"
+    "observability:dev": "pnpm build && pnpm --dir apps/observability dev --hostname ${JARVIS_OBSERVABILITY_HOST:-127.0.0.1} --port ${JARVIS_OBSERVABILITY_PORT:-8765}",
+    "observability:build": "pnpm build && pnpm --dir apps/observability build",
+    "observability:serve": "pnpm build && pnpm --dir apps/observability dev --hostname ${JARVIS_OBSERVABILITY_HOST:-127.0.0.1} --port ${JARVIS_OBSERVABILITY_PORT:-8765}"
   },
   "dependencies": {
     "@mariozechner/pi-agent-core": "^0.73.0",
