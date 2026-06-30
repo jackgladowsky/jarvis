@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- feat: retry failed chat model calls three times, then fall back to DeepSeek V4 Flash
+- fix: make `/usage` easier to scan with sections, context bar, and split totals
+
 ## 0.4.0
 
 - feat: OpenRouter app attribution headers (JARVIS shows as named app in rankings)
