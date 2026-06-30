@@ -221,7 +221,7 @@ export function resolveModel(provider: string, modelId: string): Model<any> {
       api: "openai-completions",
       provider: "openrouter",
       baseUrl: "https://openrouter.ai/api/v1",
-      reasoning: false,
+      reasoning: true,
       input: ["text", "image"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: cached?.contextLength ?? fallbackCtx,

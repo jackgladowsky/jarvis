@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- feat: add `/reasoning off|low|medium|high` to enable real model reasoning/thinking
 - feat: add local AI usage observability dashboard/API over JARVIS session JSONL
 - feat: retry failed chat model calls three times, then fall back to DeepSeek V4 Flash
 - fix: make `/usage` easier to scan with sections, context bar, and split totals

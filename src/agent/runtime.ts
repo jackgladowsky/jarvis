@@ -32,6 +32,7 @@ import {
   type JobLoadedSession,
 } from "./job-session.js";
 import { model, resolveModel } from "./model.js";
+import { getReasoningLevel } from "./reasoning.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { systemPrompt } from "./system-prompt.js";
@@ -187,7 +188,7 @@ function buildAgent(messages: AgentMessage[], agentModel = model): Agent {
       model: agentModel,
       tools: allTools,
       messages,
-      thinkingLevel: "off",
+      thinkingLevel: getReasoningLevel(),
     },
     getApiKey: getApiKeyForProvider,
   });

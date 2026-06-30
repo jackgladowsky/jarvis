@@ -9,6 +9,7 @@
 import type { Context } from "grammy";
 import { log } from "../../../lib/logger.js";
 import { collectVersionInfo, renderVersionBlock } from "../../../lib/version.js";
+import { parseReasoningLevel, switchReasoningLevel, getReasoningLevel } from "../../../agent/reasoning.js";
 import { renderUsageReport } from "../../../agent/usage.js";
 import { parseModeCommand } from "../../commands.js";
 import type { StatusMode } from "../../../agent/runtime.js";
@@ -37,6 +38,24 @@ function resolveNextMode(cmd: "thinking" | "verbose", arg: string): StatusMode |
   if (["off", "false", "0", "stop"].includes(arg)) return "off";
   if (["on", "true", "1", ""].includes(arg)) return cmd === "verbose" ? "verbose" : "thinking";
   return undefined;
+}
+
+export async function handleReasoning(ctx: Context, parsed: ParsedCommand): Promise<void> {
+  const arg = parsed.args.trim();
+  if (!arg) {
+    await ctx.reply(`Reasoning: ${getReasoningLevel()}\nUsage: /reasoning off|low|medium|high`);
+    return;
+  }
+
+  const next = parseReasoningLevel(arg);
+  if (!next) {
+    await ctx.reply("Usage: /reasoning off|low|medium|high");
+    return;
+  }
+
+  const previous = getReasoningLevel();
+  switchReasoningLevel(next);
+  await ctx.reply(`Reasoning: ${previous} → ${next}`);
 }
 
 export async function handleThinkingOrVerbose(ctx: Context, parsed: ParsedCommand): Promise<void> {
@@ -69,6 +88,14 @@ export const statusCommands: CommandDef[] = [
     description: "Show JARVIS version, commit, branch, and dirty state",
     category: "Status",
     handler: (ctx) => handleVersion(ctx),
+  },
+
+  {
+    name: "reasoning",
+    description: "Set model reasoning/thinking level",
+    category: "Status",
+    argsHint: "[off|low|medium|high]",
+    handler: (ctx, parsed) => handleReasoning(ctx, parsed),
   },
   {
     name: "thinking",
