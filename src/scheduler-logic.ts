@@ -7,6 +7,8 @@ export type OneTimeTask = {
   run_at: string;
   prompt: string;
   notify: "always" | "on_issue" | "never";
+  provider?: "codex" | "anthropic" | "openrouter";
+  model?: string;
 };
 export type SchedulerJob = RecurringTask | OneTimeTask;
 
@@ -22,12 +24,16 @@ export function taskSignature(task: SchedulerJob): string {
           run_at: task.run_at,
           prompt: task.prompt,
           notify: task.notify,
+          provider: task.provider,
+          model: task.model,
         }
       : {
           name: task.name,
           schedule: task.schedule,
           prompt: task.prompt,
           notify: task.notify,
+          provider: task.provider,
+          model: task.model,
         },
   );
 }

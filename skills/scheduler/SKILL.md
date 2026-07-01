@@ -34,6 +34,8 @@ Built-in recurring tasks may also be registered by source code. Config and dynam
       "name": "Human name",
       "schedule": "0 8 * * *",
       "notify": "always",
+      "provider": "openrouter",
+      "model": "google/gemini-2.5-flash",
       "prompt": "What the scheduled agent should do."
     },
     {
@@ -48,6 +50,8 @@ Built-in recurring tasks may also be registered by source code. Config and dynam
 ```
 
 Recurring tasks use `schedule` with a cron expression. One-time tasks use `run_at` with an absolute timestamp including timezone/offset. After a one-time task runs, the scheduler removes it.
+
+`provider` + `model` are optional per-task model overrides; omit them to use the current global agent model. Use both fields together.
 
 `notify` may be `always`, `on_issue`, or `never`.
 

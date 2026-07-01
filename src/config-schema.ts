@@ -86,6 +86,8 @@ export const ConfigSchema = z.object({
         schedule: z.string().min(1),
         prompt: z.string().min(1),
         notify: z.enum(["always", "on_issue", "never"]),
+        provider: z.enum(["codex", "anthropic", "openrouter"]).optional(),
+        model: z.string().min(1).optional(),
       }),
     ),
   }),

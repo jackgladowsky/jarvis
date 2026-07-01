@@ -22,7 +22,11 @@ import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import { type ImageContent } from "@mariozechner/pi-ai";
 import { log } from "../lib/logger.js";
-import { createTelemetryStreamFn, hashTelemetryIdentifier, type LlmTelemetryScope } from "../observability/llm-telemetry.js";
+import {
+  createTelemetryStreamFn,
+  hashTelemetryIdentifier,
+  type LlmTelemetryScope,
+} from "../observability/llm-telemetry.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
 import { estimateContextTokens, maybeCompact, maybeCompactLoaded } from "./compaction.js";
@@ -458,11 +462,14 @@ export async function runScheduledPrompt(
   taskName: string,
   prompt: string,
   taskNotePath: string,
+  modelOverride: { provider?: string; model?: string } = {},
 ): Promise<string> {
+  const taskModel =
+    modelOverride.provider && modelOverride.model ? resolveModel(modelOverride.provider, modelOverride.model) : model;
   const loaded = await loadScheduledMessages(taskId);
   let initialMessages: AgentMessage[];
   try {
-    const compaction = await maybeCompactLoaded(`scheduled:${taskId}`, loaded, model, makeSummaryMessage, {
+    const compaction = await maybeCompactLoaded(`scheduled:${taskId}`, loaded, taskModel, makeSummaryMessage, {
       rewriteWithCompaction: (entry, keptTail) => rewriteScheduledSessionWithCompaction(taskId, entry, keptTail),
       reload: () => loadScheduledMessages(taskId),
     });
@@ -480,7 +487,7 @@ export async function runScheduledPrompt(
     initialMessages = [];
   }
 
-  const agent = buildAgent(initialMessages, model, {
+  const agent = buildAgent(initialMessages, taskModel, {
     kind: "scheduled",
     session_id: `scheduled:${taskId}`,
     task_id: taskId,

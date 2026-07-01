@@ -13,6 +13,24 @@ test("config example validates against the runtime schema", async () => {
   assert.deepEqual(config.scheduler.tasks, []);
 });
 
+test("config parser accepts per-scheduled-task model overrides", async () => {
+  const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
+  const config = parseYaml(raw) as any;
+  config.scheduler.tasks = [
+    {
+      id: "voice-review",
+      name: "Voice review",
+      schedule: "45 3 * * *",
+      prompt: "Review voice",
+      notify: "on_issue",
+      provider: "openrouter",
+      model: "google/gemini-2.5-flash",
+    },
+  ];
+
+  assert.equal(parseConfig(config, "task-model").scheduler.tasks[0]?.model, "google/gemini-2.5-flash");
+});
+
 test("config parser rejects missing required tunables", () => {
   assert.throws(
     () => parseConfig({ agent: { provider: "codex", model: "gpt" } }, "test-config"),

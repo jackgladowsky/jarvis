@@ -28,6 +28,8 @@ const BaseTaskSchema = z.object({
   name: z.string().min(1),
   prompt: z.string().min(1),
   notify: z.enum(["always", "on_issue", "never"]),
+  provider: z.enum(["codex", "anthropic", "openrouter"]).optional(),
+  model: z.string().min(1).optional(),
 });
 
 const RecurringTaskSchema = BaseTaskSchema.extend({
@@ -151,7 +153,10 @@ async function runTask(task: SchedulerJob): Promise<void> {
   await schedulerLog(`[${task.id}] starting: ${task.name}`);
   try {
     const notePath = await ensureTaskNote(task);
-    output = await runScheduledPrompt(task.id, task.name, task.prompt, notePath);
+    output = await runScheduledPrompt(task.id, task.name, task.prompt, notePath, {
+      provider: task.provider,
+      model: task.model,
+    });
     await schedulerLog(`[${task.id}] completed (${output.length} chars)`);
   } catch (err) {
     success = false;
