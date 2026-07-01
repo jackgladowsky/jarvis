@@ -27,9 +27,10 @@ export const paths = {
   env: join(DATA_BASE, ".env"),
   configYaml: join(DATA_BASE, "config.yaml"),
 
-  // Hand-curated environment docs and the persona/system prompt.
+  // Hand-curated environment docs and host-local prompts.
   agentsMd: join(DATA_BASE, "AGENTS.md"),
   systemPrompt: join(DATA_BASE, "prompts", "system.md"),
+  adaptiveVoicePrompt: join(DATA_BASE, "prompts", "SOUL.md"),
 
   // Session JSONLs — Phase 4 wires these up. See DESIGN.md §10.
   sessions: join(DATA_BASE, "data", "sessions"),

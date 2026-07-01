@@ -36,7 +36,7 @@ import { model, resolveModel } from "./model.js";
 import { getReasoningLevel } from "./reasoning.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
-import { systemPrompt } from "./system-prompt.js";
+import { getSystemPrompt } from "./system-prompt.js";
 import { allTools } from "./tools/index.js";
 
 // Streaming callbacks invoked per assistant message. Tool-call messages are
@@ -180,12 +180,13 @@ function injectSkillNudge(messages: AgentMessage[]): void {
   });
 }
 
-// Build a fresh Agent for a given session. Tools, system prompt, and model
-// are constants for the process; transcript is per-session.
+// Build a fresh Agent for a given session. Tools and model are process-level;
+// the system prompt is reassembled per run so host-local prompt edits are live
+// on the next prompt/session.
 function buildAgent(messages: AgentMessage[], agentModel = model, telemetryScope?: LlmTelemetryScope): Agent {
   return new Agent({
     initialState: {
-      systemPrompt,
+      systemPrompt: getSystemPrompt(),
       model: agentModel,
       tools: allTools,
       messages,

@@ -90,7 +90,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 
 - Telegram bot interface with hard allowlisting by numeric Telegram user ID.
 - Persistent JSONL sessions with rotation, archival, and summaries.
-- Markdown memory notes under `~/.jarvis/data/notes/`.
+- Markdown memory notes under `~/.jarvis/data/notes/`, plus optional adaptive voice guidance in `~/.jarvis/prompts/SOUL.md`.
 - Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, and read-only browser workbench.
 - Telegram image input and optional local whisper.cpp voice/audio transcription.
 - Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.

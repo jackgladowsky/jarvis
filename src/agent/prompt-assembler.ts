@@ -1,20 +1,40 @@
 // Dynamic system prompt assembly.
 //
-// Takes the static base prompt (`~/.jarvis/prompts/system.md`) and appends
-// live-generated sections for available skills and MCP servers so JARVIS
-// always knows what capabilities are available without reading index files
-// on demand.
+// Takes the static base prompt (`~/.jarvis/prompts/system.md`), optional
+// host-local adaptive voice guidance (`~/.jarvis/prompts/SOUL.md`), and
+// appends live-generated sections for available skills and MCP servers so
+// JARVIS always knows what capabilities are available without reading index
+// files on demand.
 //
-// The base prompt is still the authoritative identity and rules; the
-// injected sections are purely informational reference.
+// The base prompt is still the authoritative identity and rules. SOUL.md is a
+// narrow host-local voice/personality memory; skills/MCP sections are
+// informational reference.
 //
-// Re-reads skills/MCP state every time it's called. Caching is not needed
-// because this is called once at startup.
+// Re-reads prompt/skills/MCP state every time it's called so host-local prompt
+// edits can affect the next agent run without a raw service restart.
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import { paths } from "../paths.js";
 import { log } from "../lib/logger.js";
+
+export interface PromptAssemblyPaths {
+  systemPrompt: string;
+  adaptiveVoicePrompt: string;
+  sourceSkills: string;
+  localSkills: string;
+  mcpConfig: string;
+}
+
+function defaultPromptAssemblyPaths(): PromptAssemblyPaths {
+  return {
+    systemPrompt: paths.systemPrompt,
+    adaptiveVoicePrompt: paths.adaptiveVoicePrompt,
+    sourceSkills: join(paths.repo, "skills"),
+    localSkills: join(paths.data, "skills"),
+    mcpConfig: join(paths.data, "mcp-servers.json"),
+  };
+}
 
 // ─── Skill index ──────────────────────────────────────────────────────────
 
@@ -76,9 +96,9 @@ function scanSkillTree(baseDir: string, source: "source" | "host-local"): SkillE
   return entries;
 }
 
-function buildSkillsPrompt(): string {
-  const sourceSkills = scanSkillTree(join(paths.repo, "skills"), "source");
-  const localSkills = scanSkillTree(join(paths.data, "skills"), "host-local");
+function buildSkillsPrompt(sourceSkillsDir: string, localSkillsDir: string): string {
+  const sourceSkills = scanSkillTree(sourceSkillsDir, "source");
+  const localSkills = scanSkillTree(localSkillsDir, "host-local");
 
   const allSkills = [...sourceSkills, ...localSkills];
   if (allSkills.length === 0) return "";
@@ -109,10 +129,34 @@ function buildSkillsPrompt(): string {
   return parts.join("\n");
 }
 
+// ─── Host-local adaptive voice memory ─────────────────────────────────────
+
+function readOptionalPromptFile(filePath: string, label: string): string {
+  if (!existsSync(filePath)) return "";
+  try {
+    return readFileSync(filePath, "utf-8").trim();
+  } catch (err) {
+    log.warn(`failed to read ${label}`, { path: filePath, err: String(err) });
+    return "";
+  }
+}
+
+function buildAdaptiveVoicePrompt(adaptiveVoicePromptPath: string): string {
+  const content = readOptionalPromptFile(adaptiveVoicePromptPath, "adaptive voice prompt");
+  if (!content) return "";
+
+  return [
+    "## Adaptive Voice Memory",
+    "Host-local file: `~/.jarvis/prompts/SOUL.md`.",
+    "These are concise style preferences learned over time. Treat them as current voice guidance unless they conflict with higher-priority safety, product, or explicit user instructions.",
+    "",
+    content,
+  ].join("\n");
+}
+
 // ─── MCP server index ─────────────────────────────────────────────────────
 
-function buildMcpPrompt(): string {
-  const mcpConfigPath = join(paths.data, "mcp-servers.json");
+function buildMcpPrompt(mcpConfigPath: string): string {
   if (!existsSync(mcpConfigPath)) return "";
 
   try {
@@ -138,14 +182,17 @@ function buildMcpPrompt(): string {
 
 // ─── Assembled prompt ─────────────────────────────────────────────────────
 
-export function buildSystemPrompt(): string {
-  const basePrompt = readFileSync(paths.systemPrompt, "utf-8").trim();
+export function buildSystemPrompt(assemblyPaths: PromptAssemblyPaths = defaultPromptAssemblyPaths()): string {
+  const basePrompt = readFileSync(assemblyPaths.systemPrompt, "utf-8").trim();
   const sections: string[] = [basePrompt];
 
-  const skillsPrompt = buildSkillsPrompt();
+  const adaptiveVoicePrompt = buildAdaptiveVoicePrompt(assemblyPaths.adaptiveVoicePrompt);
+  if (adaptiveVoicePrompt) sections.push(adaptiveVoicePrompt);
+
+  const skillsPrompt = buildSkillsPrompt(assemblyPaths.sourceSkills, assemblyPaths.localSkills);
   if (skillsPrompt) sections.push(skillsPrompt);
 
-  const mcpPrompt = buildMcpPrompt();
+  const mcpPrompt = buildMcpPrompt(assemblyPaths.mcpConfig);
   if (mcpPrompt) sections.push(mcpPrompt);
 
   return sections.join("\n\n");
