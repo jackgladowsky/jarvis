@@ -18,8 +18,9 @@
 // round-trip needed. Same heuristic pi uses.
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { completeSimple, type Model } from "@mariozechner/pi-ai";
+import { type Model } from "@mariozechner/pi-ai";
 import { config } from "../config.js";
+import { completeSimpleWithTelemetry } from "../observability/llm-telemetry.js";
 import { log } from "../lib/logger.js";
 import { getApiKeyForProvider } from "./auth.js";
 import * as sessions from "./session-manager.js";
@@ -226,6 +227,7 @@ function serializeForSummary(messages: AgentMessage[]): string {
 }
 
 async function generateSummary(
+  sessionId: string,
   toSummarize: AgentMessage[],
   model: Model<any>,
   previousSummary: string | undefined,
@@ -241,7 +243,7 @@ async function generateSummary(
     throw new Error(`no api key for provider ${model.provider} (compaction)`);
   }
 
-  const response = await completeSimple(
+  const response = await completeSimpleWithTelemetry(
     model,
     {
       systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
@@ -258,6 +260,11 @@ async function generateSummary(
       // Cap summary output well below reserve_tokens so the next turn has
       // breathing room — pi uses 0.8 of reserve, we follow.
       maxTokens: Math.floor(0.8 * config.compaction.reserve_tokens),
+    },
+    {
+      kind: "compaction",
+      session_id: sessionId,
+      message_ts: new Date().toISOString(),
     },
   );
 
@@ -333,7 +340,7 @@ export async function maybeCompactLoaded(
   });
 
   const toSummarize = loaded.tail.slice(0, cut);
-  const newSummary = await generateSummary(toSummarize, model, loaded.previousSummary);
+  const newSummary = await generateSummary(sessionId, toSummarize, model, loaded.previousSummary);
 
   const entry = {
     summary: newSummary,

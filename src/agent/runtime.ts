@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import { type ImageContent } from "@mariozechner/pi-ai";
 import { log } from "../lib/logger.js";
+import { createTelemetryStreamFn, hashTelemetryIdentifier, type LlmTelemetryScope } from "../observability/llm-telemetry.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
 import { estimateContextTokens, maybeCompact, maybeCompactLoaded } from "./compaction.js";
@@ -181,7 +182,7 @@ function injectSkillNudge(messages: AgentMessage[]): void {
 
 // Build a fresh Agent for a given session. Tools, system prompt, and model
 // are constants for the process; transcript is per-session.
-function buildAgent(messages: AgentMessage[], agentModel = model): Agent {
+function buildAgent(messages: AgentMessage[], agentModel = model, telemetryScope?: LlmTelemetryScope): Agent {
   return new Agent({
     initialState: {
       systemPrompt,
@@ -191,6 +192,8 @@ function buildAgent(messages: AgentMessage[], agentModel = model): Agent {
       thinkingLevel: getReasoningLevel(),
     },
     getApiKey: getApiKeyForProvider,
+    streamFn: telemetryScope ? createTelemetryStreamFn(telemetryScope) : undefined,
+    sessionId: telemetryScope?.session_id,
   });
 }
 
@@ -337,9 +340,18 @@ export async function handleMessage(
 
   let lastError = "agent message failed";
 
+  const messageTs = new Date().toISOString();
+
   for (let i = 0; i < attempts.length; i++) {
     const attempt = attempts[i];
-    const agent = buildAgent(compaction.messages.slice(), attempt.agentModel);
+    const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, {
+      kind: "chat",
+      session_id: session.sessionId,
+      chat_id_hash: hashTelemetryIdentifier(chatId),
+      attempt_label: attempt.label,
+      message_ts: messageTs,
+      source_path: join(paths.sessions, `${session.sessionId}.jsonl`),
+    });
     activeChatAgents.set(chatId, agent);
     let currentMsgIsAbandoned = false;
     let promptError: string | undefined;
@@ -467,7 +479,14 @@ export async function runScheduledPrompt(
     initialMessages = [];
   }
 
-  const agent = buildAgent(initialMessages);
+  const agent = buildAgent(initialMessages, model, {
+    kind: "scheduled",
+    session_id: `scheduled:${taskId}`,
+    task_id: taskId,
+    task_name: taskName,
+    source_path: scheduledSessionFile(taskId),
+    message_ts: new Date().toISOString(),
+  });
   const before = agent.state.messages.length;
   let finalText = "";
   let errorText = "";
@@ -539,7 +558,14 @@ export async function runBackgroundPrompt(
     initialMessages = [];
   }
 
-  const agent = buildAgent(initialMessages);
+  const agent = buildAgent(initialMessages, model, {
+    kind: "background",
+    session_id: `background:${taskId}`,
+    task_id: taskId,
+    task_name: taskName,
+    source_path: backgroundSessionFile(taskId),
+    message_ts: new Date().toISOString(),
+  });
   const before = agent.state.messages.length;
   let finalText = "";
   let errorText = "";

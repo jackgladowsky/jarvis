@@ -55,3 +55,31 @@ The observability cache is now schema version 2. The dashboard rebuilds old sche
 8. Source breakdown by sessions, tokens, cost, and tool volume.
 9. Trace event-type mix panel to show whether a slice is dominated by messages, tools, compactions, or model switches.
 10. Weighted attention queue ranking sessions by tool errors, fallback/retry signals, long idle gaps, compactions, and high spend.
+
+## Direct LLM telemetry (standalone AI Observatory)
+
+JARVIS can emit metadata-only LLM call events for chat, scheduled tasks, background workers, compaction, and session summarization. Events use stable `event_id` idempotency keys and a shared `call_id` across `started` / `first_token` / `finished` / `failed` records.
+
+Enable in `~/.jarvis/config.yaml` after the standalone AI Observatory ingest API is configured:
+
+```yaml
+observability:
+  llm_telemetry:
+    enabled: true
+    sink: both
+    events_dir: null
+    queue_dir: null
+    endpoint: http://127.0.0.1:8765/api/ingest/llm-events
+    content_mode: metadata
+    capture_raw_payload: false
+    max_preview_chars: 500
+    max_payload_bytes: 262144
+    queue_max_events: 10000
+    max_event_age_days: 14
+    drain_interval_ms: 10000
+    request_timeout_ms: 5000
+```
+
+Set `AI_OBSERVATORY_INGEST_TOKEN` in JARVIS's `.env` to match the Observatory service. The HTTP sink writes a durable queue under `~/.jarvis/data/observability/llm-telemetry-queue` and drains in the background; failures retry with backoff and never block model calls.
+
+Privacy defaults to `content_mode: metadata`: no prompt/response text or raw provider payload is written. Hashes, counts, model/provider, token usage, cost estimate, latency, and scope metadata are emitted. `preview` and `full` are explicit opt-ins and still run redaction before previews are stored.

@@ -8,6 +8,7 @@ import * as sessions from "./agent/session-manager.js";
 import { notifyPendingDeployComplete } from "./lib/deploy-notify.js";
 import { log } from "./lib/logger.js";
 import { collectVersionInfo, formatVersionInfo } from "./lib/version.js";
+import { startLlmTelemetryDrain } from "./observability/llm-telemetry.js";
 import { startScheduler } from "./scheduler.js";
 import { runTelegram } from "./transport/telegram.js";
 
@@ -17,6 +18,7 @@ async function main(): Promise<void> {
   // Crash recovery (replaying transcripts) happens lazily inside handleMessage.
   await sessions.init();
   await notifyPendingDeployComplete();
+  const stopTelemetryDrain = startLlmTelemetryDrain();
   const stopScheduler = await startScheduler();
   // runTelegram only resolves once the bot is stopped (via SIGINT/SIGTERM
   // handlers in transport/telegram.ts).
@@ -24,6 +26,7 @@ async function main(): Promise<void> {
     await runTelegram(handleMessage);
   } finally {
     stopScheduler();
+    stopTelemetryDrain();
   }
   log.info("jarvis exited cleanly");
 }
