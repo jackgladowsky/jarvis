@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+## 0.5.0
+
 - feat: add `/reasoning off|low|medium|high` to enable real model reasoning/thinking
-- feat: add local AI usage observability dashboard/API over JARVIS session JSONL
-- feat: retry failed chat model calls three times, then fall back to DeepSeek V4 Flash
+- feat: add local AI usage observability dashboard/API and trace analytics
+- feat: add DuckDB-backed live LLM telemetry with metadata-only JARVIS events, durable retry queue, and AI Observatory ingest/dashboard
+- feat: add adaptive SOUL.md voice memory loaded per agent run plus nightly voice review
+- feat: support per-scheduled-task model overrides
+- fix: retry failed chat model calls three times, then fall back to DeepSeek V4 Flash
 - fix: make `/usage` easier to scan with sections, context bar, and split totals
 
 ## 0.4.0
