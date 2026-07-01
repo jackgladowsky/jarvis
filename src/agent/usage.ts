@@ -7,7 +7,7 @@ import { paths } from "../paths.js";
 import { estimateContextTokens } from "./compaction.js";
 import { model, describeModel } from "./model.js";
 import * as sessions from "./session-manager.js";
-import { systemPrompt } from "./system-prompt.js";
+import { getSystemPrompt } from "./system-prompt.js";
 import { allTools } from "./tools/index.js";
 
 interface UsageTotals {
@@ -132,7 +132,7 @@ function makeSummaryMessage(summary: string): AgentMessage {
 }
 
 function estimateStaticContextTokens(): number {
-  const systemTokens = Math.ceil(systemPrompt.length / 4);
+  const systemTokens = Math.ceil(getSystemPrompt().length / 4);
   let toolsTokens = 0;
   try {
     toolsTokens = Math.ceil(JSON.stringify(allTools).length / 4);

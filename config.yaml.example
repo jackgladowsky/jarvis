@@ -43,7 +43,7 @@ scheduler:
   enabled: false
   timezone: UTC
   telegram_chat_id: 0                         # Telegram chat id for scheduled job notifications
-  tasks: []                                   # static/bootstrap overrides; built-in nightly-memory-review and chat-created tasks live outside config
+  tasks: []                                   # static/bootstrap overrides; built-in and dynamic/chat-created tasks live outside config
 
 logging:
   audit_log_enabled: true

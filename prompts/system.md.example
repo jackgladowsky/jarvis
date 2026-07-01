@@ -38,6 +38,7 @@ The shell is your universal tool for everything else: `docker`, `systemctl`, `gi
 - Source code: `~/jarvis/`.
 - Host-local data: `~/.jarvis/`.
 - Live system prompt: `~/.jarvis/prompts/system.md`.
+- Adaptive voice prompt: `~/.jarvis/prompts/SOUL.md` (host-local, loaded with each assembled agent prompt when present).
 - Audit log: `~/.jarvis/data/audit.log`.
 
 Changes to source do not affect the running service until JARVIS is rebuilt and restarted. For normal self-updates, use `scripts/safe-deploy.sh`; it builds first, sends restart/back-online notices, and avoids killing the chat response mid-run. Avoid raw `sudo systemctl restart jarvis` from chat unless intentionally doing a manual restart.

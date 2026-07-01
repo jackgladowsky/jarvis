@@ -39,7 +39,7 @@ This doc captures the original design rationale plus selected architecture notes
 - Custom note/memory tools. Notes are just files in a known directory.
 - Hot-reload of config. Restart the service.
 - **Confirmation flows for destructive operations.** JARVIS lives on a non-critical box and is allowed to do what it wants. The audit log is the safeguard, not prevention.
-- **Dynamic memory injection at session start.** The system prompt is a static reference document; JARVIS reads notes on demand.
+- **Broad dynamic memory injection at session start.** JARVIS reads notes on demand; the only prompt-time memory overlay is the small host-local adaptive voice file (`SOUL.md`).
 
 ---
 
@@ -120,19 +120,19 @@ JARVIS is competent, calm, concise, and dry. Familiar with the owner, not formal
 - "Of course! Here's what I'll do: [bulleted plan of obvious steps]"
 - Apologizing for things that aren't problems.
 
-### The system prompt is a standalone document
+### The system prompt is a standalone document plus narrow host-local overlays
 
-The system prompt lives in its own file at `~/.jarvis/prompts/system.md`. It is loaded verbatim at session start — **no dynamic injection, no content from notes pre-loaded into it**.
+The base system prompt lives in its own file at `~/.jarvis/prompts/system.md`. At agent-run time, JARVIS assembles that base prompt with narrow host-local overlays: `~/.jarvis/prompts/SOUL.md` for adaptive voice guidance, plus generated skills/MCP indexes.
 
-The prompt's job is to be the small core operating manual: persona, tools, host/source/data anchors, safety rules, and the instruction to read repo-local skills on demand. Detailed procedures live in `SKILLS.md` and `skills/*/SKILL.md`, which JARVIS reads with the normal file tools only when relevant.
+The prompt's job is to be the small core operating manual: persona, tools, host/source/data anchors, safety rules, and the instruction to read repo-local skills on demand. Detailed procedures live in `SKILLS.md` and `skills/*/SKILL.md`, which JARVIS reads with the normal file tools only when relevant. `SOUL.md` is deliberately small: durable style preferences and hard avoid-list items, not private content or broad memory.
 
 This means:
 
-- The prompt is a single artifact you edit. What you see in the file is exactly what JARVIS gets.
-- Token budget at session start is fixed and predictable. Memory and procedure docs do not bloat the prompt.
-- Behavior is specified by plain files read on demand. No "the prompt says X but the injection logic does Y."
+- The base prompt remains a single artifact you edit; `SOUL.md` is a separate host-local voice/personality memory.
+- Token budget at session start stays bounded because adaptive voice memory is concise and procedure/memory docs are not preloaded.
+- Behavior is specified by plain files read on demand, with one explicit adaptive-voice overlay.
 
-The canonical prompt lives in `~/.jarvis/prompts/system.md`; the repo template is `prompts/system.md.example`; repo skills live in `SKILLS.md` and `skills/*/SKILL.md`. JARVIS itself can edit the live prompt, though changes only take effect after a service restart.
+The canonical prompt lives in `~/.jarvis/prompts/system.md`; adaptive voice lives in `~/.jarvis/prompts/SOUL.md`; the repo template is `prompts/system.md.example`; repo skills live in `SKILLS.md` and `skills/*/SKILL.md`. JARVIS itself can edit the live prompt files. Prompt assembly is re-run for each agent run, so supported host-local prompt edits take effect on the next prompt without a raw service restart.
 
 ---
 
@@ -456,7 +456,7 @@ When a session rotates and `session.summarize_on_rotation` is true, run one LLM 
 
 ## 12. Memory Architecture
 
-Memory in JARVIS is _filesystem convention + prompt rules + on-demand retrieval_. There is no dynamic injection, no memory subsystem in code beyond the summarizer.
+Memory in JARVIS is _filesystem convention + prompt rules + on-demand retrieval_. There is no broad dynamic memory injection and no memory subsystem in code beyond the summarizer; the narrow exception is `~/.jarvis/prompts/SOUL.md`, a concise adaptive voice/personality overlay loaded with each assembled system prompt.
 
 ### How it works
 
@@ -485,7 +485,7 @@ Each file has a defined purpose, defined read trigger, defined write trigger, de
 
 ### Why this works
 
-- **Bounded context cost.** The system prompt is fixed-size, no matter how much memory accumulates.
+- **Bounded context cost.** The base system prompt is fixed-size, and `SOUL.md` is kept concise so adaptive voice memory does not grow into a transcript.
 - **Relevance via retrieval.** JARVIS reads only what the conversation needs.
 - **Inspectable and editable.** All memory is markdown. `cat ~/.jarvis/data/notes/projects/hockey-cv.md` and read what JARVIS knows.
 - **Self-organizing.** JARVIS extends and updates notes during conversations; the session-end summarizer keeps `recent.md` current as a TOC.
@@ -623,12 +623,13 @@ Codex OAuth was validated for server use: credentials can live under `~/.jarvis/
 - **2026-05-06** — Reactive only in initial v1; proactive scheduling deferred at launch. Scheduler support was added later.
 - **2026-05-06** — JARVIS lives on the trusted Linux host as a regular user with full shell access. Dedicated Pi 5 and Docker container both rejected. The box is non-critical and isolation that solves a non-problem is just complexity.
 - **2026-05-06** — Initial tool surface locked at four: `read`, `write`, `edit`, `bash`, mirroring `pi-coding-agent`. Later amended with Exa-backed `web_search`; no note tools — the filesystem is the note API.
+- **2026-07-01** — **Adaptive voice overlay added.** The assembled system prompt now includes `~/.jarvis/prompts/SOUL.md` on every agent run for concise, host-local voice/personality guidance. Broad memory remains on-demand via notes.
 - **2026-05-06** — `AGENTS.md` convention adopted from `pi-coding-agent`.
 - **2026-05-06** — SSH-out parked. JARVIS is an inhabitant of one box.
 - **2026-05-06** — Source/data separation: `~/jarvis/` source, `~/.jarvis/` data. Path resolution centralized in `src/paths.ts`. Updates: 4 commands, zero risk to data.
 - **2026-05-06** — Configuration: `.env` for secrets, `config.yaml` for tunables, `prompts/system.md` for the prompt. `zod`-validated, frozen at startup, no defaults in code.
 - **2026-05-06** — **No confirmation flow for destructive operations.** JARVIS executes what it decides to execute. The audit log is the safeguard, not prevention. The trusted Linux host is non-critical and the important local data has independent backups; protecting against agent mistakes adds complexity for risk that's already accepted.
-- **2026-05-06** — **System prompt is a static reference document, no dynamic injection.** Loaded verbatim at session start. Notes are read on demand by JARVIS using the `read` tool, governed by rules in the prompt itself. Token budget at session start is fixed and predictable; behavior is fully specified by one editable file.
+- **2026-05-06** — **System prompt started as a static reference document, no dynamic injection.** Loaded verbatim at session start. Notes are read on demand by JARVIS using the `read` tool, governed by rules in the prompt itself. Superseded in part by the 2026-07-01 adaptive voice overlay; broad memory remains on-demand.
 - **2026-05-06** — **Memory schema:** six files (`about`, `environment`, `recent`, `decisions`, `todo`, `preferences`) plus `projects/<slug>.md`. Each has a defined purpose, read trigger, write trigger, and format — all specified in the system prompt. The summarizer routes session content into these files mechanically; JARVIS reads them on demand.
 - **2026-05-06** — Audit log gets redaction + truncation + daily rotation. With confirmation gone, the log is the actual safeguard.
 - **2026-05-06** — Telegram initially defaulted to `parse_mode: none`; current default is `HTML` with a small markdown-to-HTML formatter. MarkdownV2 escaping remains a footgun.
