@@ -44,11 +44,10 @@ import {
   getStatusMode,
   setStopButtonMessage,
   clearStopButtonMessage,
-  consumePendingBackgroundAnswer,
 } from "./commands/handlers/state.js";
 import { dispatchCallback } from "./callbacks/dispatcher.js";
 import { setCallbackContext } from "./callbacks/context.js";
-import { registerAllCallbacks, buildBackgroundKeyboard } from "./callbacks/handlers/index.js";
+import { registerAllCallbacks } from "./callbacks/handlers/index.js";
 
 type Handler = typeof handleMessage;
 
@@ -264,17 +263,15 @@ async function sendAgentPromptToTelegram(bot: Bot, chatId: number, prompt: strin
   if (!sentText) throw new Error("agent produced no visible response for internal notification");
 }
 
-// Send a background task notification as a plain message with inline action
-// buttons (instead of routing through the agent pipeline). Jack taps a button
-// to direct JARVIS on how to handle the worker interaction.
+// Send background task notifications as plain text. Background task action
+// buttons were intentionally removed: direct commands are clearer and avoid
+// stale inline controls lingering in chat history.
 async function sendBackgroundNotification(bot: Bot, notification: InternalNotification): Promise<void> {
   const text = notification.fallback_text ?? `[${notification.source}] ${notification.title}\n\n${notification.body}`;
-  const keyboard = buildBackgroundKeyboard(notification);
   const formatted = format(text);
   await bot.api.sendMessage(notification.chat_id, formatted.text, {
     parse_mode: formatted.parse_mode,
     link_preview_options: { is_disabled: true },
-    ...(keyboard ? { reply_markup: keyboard } : {}),
   });
 }
 
@@ -293,8 +290,6 @@ function startInternalNotificationPump(bot: Bot, handle: Handler): () => void {
     if (!claimed) return;
     try {
       if (claimed.source === "background") {
-        // Background notifications get inline action buttons instead of an
-        // agent run — Jack directs the interaction via button taps.
         await sendBackgroundNotification(bot, claimed);
       } else {
         await withLock(claimed.chat_id, () =>
@@ -747,24 +742,6 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
     const imageCount = imageCandidateFileIds(ctx).length;
     const audioKind = selectTelegramAudioCandidate(ctx.message)?.kind;
     log.info("inbound", { chatId, userId, len: text.length, imageCount, audioKind });
-
-    // If a background task is waiting for Jack's answer (via the [🧑 Answer
-    // yourself] button), relay the next message to the worker instead of
-    // running the normal agent pipeline.
-    const pendingAnswerTaskId = consumePendingBackgroundAnswer(chatId);
-    if (pendingAnswerTaskId && text.trim()) {
-      try {
-        const { answerBackgroundTask } = await import("../background/manager.js");
-        await answerBackgroundTask(pendingAnswerTaskId, text.trim());
-        await safe("reply (answer relayed)", ctx.reply(`Answered ${pendingAnswerTaskId}.`));
-      } catch (err) {
-        await safe(
-          "reply (answer relay failed)",
-          ctx.reply(`Failed to relay answer: ${err instanceof Error ? err.message : String(err)}`),
-        );
-      }
-      return;
-    }
 
     // Control commands (those with `bypassLock: true`) must dispatch before the
     // per-chat lock; otherwise they queue behind the long run they are

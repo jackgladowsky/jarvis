@@ -12,16 +12,5 @@ export function registerAllCallbacks(): void {
   registerToggleCallback();
 }
 
-export {
-  buildBackgroundKeyboard,
-} from "./background.js";
-export {
-  buildFavoritesKeyboard,
-  getModelFavorites,
-} from "./model.js";
-export {
-  buildStatusToggleKeyboard,
-  statusToggleLabel,
-  buildReasoningToggleKeyboard,
-  reasoningToggleLabel,
-} from "./toggle.js";
+export { buildBackgroundKeyboard } from "./background.js";
+export { buildFavoritesKeyboard, getModelFavorites } from "./model.js";

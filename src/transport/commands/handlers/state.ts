@@ -45,19 +45,3 @@ export function clearStopButtonMessage(chatId: number): number | undefined {
   stopButtonMessages.delete(chatId);
   return id;
 }
-
-// ── Pending background answer ──────────────────────────────────────────────
-// When Jack taps [🧑 Answer yourself] on a background task notification,
-// the next message he sends should be relayed to the worker via
-// `answerBackgroundTask` instead of going to the normal agent pipeline.
-const pendingBackgroundAnswers = new Map<number, string>();
-
-export function setPendingBackgroundAnswer(chatId: number, taskId: string): void {
-  pendingBackgroundAnswers.set(chatId, taskId);
-}
-
-export function consumePendingBackgroundAnswer(chatId: number): string | undefined {
-  const taskId = pendingBackgroundAnswers.get(chatId);
-  pendingBackgroundAnswers.delete(chatId);
-  return taskId;
-}
