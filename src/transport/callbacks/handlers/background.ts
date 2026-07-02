@@ -21,8 +21,9 @@ import {
   resumeBackgroundTask,
 } from "../../../background/manager.js";
 import { log } from "../../../lib/logger.js";
-import { markdownToTelegramHtml } from "../../../lib/format.js";
+import { markdownToTelegramHtml, splitTelegramMarkdown } from "../../../lib/format.js";
 import { config } from "../../../config.js";
+import { withLock } from "../../../lib/mutex.js";
 import { getCallbackContext } from "../context.js";
 import { setPendingBackgroundAnswer } from "../../commands/handlers/state.js";
 import { registerCallback } from "../dispatcher.js";
@@ -65,12 +66,7 @@ export function buildBackgroundKeyboard(notification: {
       .text("❌ Cancel", `bg:cancel:${taskId}`);
   }
 
-  if (
-    lower.includes("done") ||
-    lower.includes("ready for pr") ||
-    lower.includes("ready") ||
-    lower.includes("finished")
-  ) {
+  if (lower.includes("done") || lower.includes("ready for pr")) {
     return new InlineKeyboard()
       .text("👁 Review", `bg:review:${taskId}`)
       .text("📋 Diff", `bg:diff:${taskId}`)
@@ -98,19 +94,26 @@ async function editToButtons(ctx: Context, text: string, keyboard: InlineKeyboar
     .catch(() => undefined);
 }
 
+function formatForTelegram(text: string): { text: string; parse_mode?: "HTML" | "MarkdownV2" } {
+  if (config.telegram.parse_mode === "HTML") return { text: markdownToTelegramHtml(text), parse_mode: "HTML" };
+  if (config.telegram.parse_mode === "MarkdownV2") return { text, parse_mode: "MarkdownV2" };
+  return { text };
+}
+
 async function synthesizeAgentRun(chatId: number, prompt: string): Promise<void> {
   const { bot, handle } = getCallbackContext();
-  // Run in background — don't block the callback response.
-  void (async () => {
+  // Run in background so callback queries are answered quickly, but serialize
+  // through the same per-chat lock as normal Telegram messages. This avoids a
+  // button-triggered helper run superseding/aborting an active chat run.
+  void withLock(chatId, async () => {
     try {
       let sentText = false;
       await handle(chatId, prompt, {
         onAssistantEnd: async (text: string) => {
-          for (const part of text.match(/[\s\S]{1,3200}/g) ?? [text]) {
-            const formatted =
-              config.telegram.parse_mode === "HTML" ? markdownToTelegramHtml(part) : part;
-            await bot.api.sendMessage(chatId, formatted, {
-              parse_mode: config.telegram.parse_mode === "none" ? undefined : config.telegram.parse_mode,
+          for (const part of splitTelegramMarkdown(text)) {
+            const formatted = formatForTelegram(part);
+            await bot.api.sendMessage(chatId, formatted.text, {
+              parse_mode: formatted.parse_mode,
               link_preview_options: { is_disabled: true },
             });
             sentText = true;
@@ -124,9 +127,11 @@ async function synthesizeAgentRun(chatId: number, prompt: string): Promise<void>
       if (!sentText) await bot.api.sendMessage(chatId, "(no response)");
     } catch (err) {
       log.warn("background callback agent run failed", { chatId, err: err instanceof Error ? err.message : err });
-      await bot.api.sendMessage(chatId, `Error: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined);
+      await bot.api
+        .sendMessage(chatId, `Error: ${err instanceof Error ? err.message : String(err)}`)
+        .catch(() => undefined);
     }
-  })();
+  });
 }
 
 async function handleBgCallback(ctx: Context, data: string): Promise<void> {

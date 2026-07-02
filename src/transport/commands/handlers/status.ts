@@ -69,13 +69,18 @@ export async function handleReasoning(ctx: Context, parsed: ParsedCommand): Prom
 
 export async function handleThinkingOrVerbose(ctx: Context, parsed: ParsedCommand): Promise<void> {
   const chatId = ctx.chat!.id;
-  const raw = `/${parsed.name}${parsed.args ? " " + parsed.args : ""}`;
-  const modeCommand = parseModeCommand(raw);
-  if (!modeCommand) {
+  if (!parsed.args.trim()) {
     // Show inline toggle panel.
     await ctx.reply(statusToggleLabel(chatId), {
       reply_markup: buildStatusToggleKeyboard(chatId),
     });
+    return;
+  }
+
+  const raw = `/${parsed.name}${parsed.args ? " " + parsed.args : ""}`;
+  const modeCommand = parseModeCommand(raw);
+  if (!modeCommand) {
+    await ctx.reply(`Usage: /${parsed.name} [on|off]`);
     return;
   }
   const next = resolveNextMode(modeCommand.command, modeCommand.arg);

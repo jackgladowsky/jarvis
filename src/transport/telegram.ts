@@ -686,6 +686,13 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
   // matches against registered prefixes.
   bot.on("callback_query:data", async (ctx) => {
     if (stopping || options.signal?.aborted) return;
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+    if (userId === undefined || !isAllowed(userId)) {
+      log.warn("dropped non-allowlisted callback query", { userId, chatId, data: ctx.callbackQuery.data });
+      await ctx.answerCallbackQuery({ text: "Not allowed." }).catch(() => undefined);
+      return;
+    }
     await dispatchCallback(ctx);
   });
 
