@@ -64,6 +64,15 @@ export const ConfigSchema = z.object({
     show_typing: z.boolean(),
     long_tool_call_seconds: z.number().int().positive(),
     parse_mode: z.enum(["none", "MarkdownV2", "HTML"]),
+    model_favorites: z
+      .array(
+        z.object({
+          label: z.string(),
+          provider: z.enum(["codex", "anthropic", "openrouter"]),
+          model_id: z.string(),
+        }),
+      )
+      .optional(),
   }),
   stt: z.object({
     provider: z.enum(["disabled", "local-whisper-cpp"]),

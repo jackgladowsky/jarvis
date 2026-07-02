@@ -15,6 +15,12 @@ import { parseModeCommand } from "../../commands.js";
 import type { StatusMode } from "../../../agent/runtime.js";
 import { getStatusMode, setStatusMode } from "./state.js";
 import type { CommandDef, ParsedCommand } from "../registry.js";
+import {
+  buildStatusToggleKeyboard,
+  statusToggleLabel,
+  buildReasoningToggleKeyboard,
+  reasoningToggleLabel,
+} from "../../callbacks/handlers/index.js";
 
 export async function handleUsage(ctx: Context): Promise<void> {
   const chatId = ctx.chat!.id;
@@ -43,7 +49,10 @@ function resolveNextMode(cmd: "thinking" | "verbose", arg: string): StatusMode |
 export async function handleReasoning(ctx: Context, parsed: ParsedCommand): Promise<void> {
   const arg = parsed.args.trim();
   if (!arg) {
-    await ctx.reply(`Reasoning: ${getReasoningLevel()}\nUsage: /reasoning off|low|medium|high`);
+    // Show inline toggle panel.
+    await ctx.reply(reasoningToggleLabel(), {
+      reply_markup: buildReasoningToggleKeyboard(),
+    });
     return;
   }
 
@@ -60,6 +69,14 @@ export async function handleReasoning(ctx: Context, parsed: ParsedCommand): Prom
 
 export async function handleThinkingOrVerbose(ctx: Context, parsed: ParsedCommand): Promise<void> {
   const chatId = ctx.chat!.id;
+  if (!parsed.args.trim()) {
+    // Show inline toggle panel.
+    await ctx.reply(statusToggleLabel(chatId), {
+      reply_markup: buildStatusToggleKeyboard(chatId),
+    });
+    return;
+  }
+
   const raw = `/${parsed.name}${parsed.args ? " " + parsed.args : ""}`;
   const modeCommand = parseModeCommand(raw);
   if (!modeCommand) {

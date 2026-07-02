@@ -12,7 +12,7 @@
 //      "let me check…" filler stay invisible.
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
-import { Bot, type Context } from "grammy";
+import { Bot, InlineKeyboard, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { handleMessage } from "../agent/runtime.js";
 import { config, env } from "../config.js";
@@ -39,7 +39,16 @@ import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
 import "./commands/handlers/index.js";
 import { botMenuCommands, findCommand } from "./commands/registry.js";
-import { consumeSttBenchmarkNext, getStatusMode } from "./commands/handlers/state.js";
+import {
+  consumeSttBenchmarkNext,
+  getStatusMode,
+  setStopButtonMessage,
+  clearStopButtonMessage,
+  consumePendingBackgroundAnswer,
+} from "./commands/handlers/state.js";
+import { dispatchCallback } from "./callbacks/dispatcher.js";
+import { setCallbackContext } from "./callbacks/context.js";
+import { registerAllCallbacks, buildBackgroundKeyboard } from "./callbacks/handlers/index.js";
 
 type Handler = typeof handleMessage;
 
@@ -59,6 +68,12 @@ const INTERNAL_NOTIFICATION_POLL_MS = 3000;
 const INTERNAL_NOTIFICATION_HEARTBEAT_MS = 5000;
 const MAX_TELEGRAM_IMAGES = 4;
 const MAX_TELEGRAM_IMAGE_BYTES = 10 * 1024 * 1024;
+
+// Inline keyboard with a single Stop button, attached to the status/working
+// message while the agent is processing so the user can cancel the run.
+function stopButtonKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text("⏹ Stop", "stop");
+}
 
 // Convert agent text to whatever Telegram expects, depending on parse_mode.
 // Skipping the conversion when parse_mode === "none" keeps the bot strictly
@@ -249,6 +264,20 @@ async function sendAgentPromptToTelegram(bot: Bot, chatId: number, prompt: strin
   if (!sentText) throw new Error("agent produced no visible response for internal notification");
 }
 
+// Send a background task notification as a plain message with inline action
+// buttons (instead of routing through the agent pipeline). Jack taps a button
+// to direct JARVIS on how to handle the worker interaction.
+async function sendBackgroundNotification(bot: Bot, notification: InternalNotification): Promise<void> {
+  const text = notification.fallback_text ?? `[${notification.source}] ${notification.title}\n\n${notification.body}`;
+  const keyboard = buildBackgroundKeyboard(notification);
+  const formatted = format(text);
+  await bot.api.sendMessage(notification.chat_id, formatted.text, {
+    parse_mode: formatted.parse_mode,
+    link_preview_options: { is_disabled: true },
+    ...(keyboard ? { reply_markup: keyboard } : {}),
+  });
+}
+
 function startInternalNotificationPump(bot: Bot, handle: Handler): () => void {
   let active = true;
   let processing = false;
@@ -263,9 +292,15 @@ function startInternalNotificationPump(bot: Bot, handle: Handler): () => void {
     const claimed = await claimInternalNotification(notification);
     if (!claimed) return;
     try {
-      await withLock(claimed.chat_id, () =>
-        sendAgentPromptToTelegram(bot, claimed.chat_id, renderInternalNotificationPrompt(claimed), handle),
-      );
+      if (claimed.source === "background") {
+        // Background notifications get inline action buttons instead of an
+        // agent run — Jack directs the interaction via button taps.
+        await sendBackgroundNotification(bot, claimed);
+      } else {
+        await withLock(claimed.chat_id, () =>
+          sendAgentPromptToTelegram(bot, claimed.chat_id, renderInternalNotificationPrompt(claimed), handle),
+        );
+      }
       await finishInternalNotification(claimed, "processed");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -406,6 +441,29 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
   let pendingStatusText = "";
   const startedAt = Date.now();
 
+  // ── Stop button ───────────────────────────────────────────────────────────
+  // When status mode is off, send a minimal "Working…" message with a stop
+  // button so the user can cancel the run. When status mode is active, the
+  // stop button is attached to the status message when it's first created.
+  let workingMessageId: number | undefined;
+  if (runStatusMode === "off") {
+    const sent = await safe("reply (working)", ctx.reply("Working…", { reply_markup: stopButtonKeyboard() }));
+    if (sent) {
+      workingMessageId = sent.message_id;
+      setStopButtonMessage(chatId, sent.message_id);
+    }
+  }
+
+  // Clean up the stop button + working message when the run finishes.
+  const cleanupStopButton = async (): Promise<void> => {
+    clearStopButtonMessage(chatId);
+    if (workingMessageId) {
+      const id = workingMessageId;
+      workingMessageId = undefined;
+      await safe("deleteMessage (working)", ctx.api.deleteMessage(chatId, id));
+    }
+  };
+
   const renderStatus = (lines: string[]): string => {
     const elapsed = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
     return [`Working… ${elapsed}s`, "", ...lines.slice(-4)].join("\n");
@@ -429,9 +487,10 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     const line = `→ ${text}`;
 
     if (!statusMessage) {
-      const sent = await safe("reply (status)", ctx.reply(renderStatus([line])));
+      const sent = await safe("reply (status)", ctx.reply(renderStatus([line]), { reply_markup: stopButtonKeyboard() }));
       if (sent) {
         statusMessage = { messageId: sent.message_id, lines: [line], lastEditAt: Date.now() };
+        setStopButtonMessage(chatId, sent.message_id);
       }
       return;
     }
@@ -524,6 +583,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         onAssistantEnd: async (text: string) => {
           cancelPendingEdit();
           await clearStatus();
+          await cleanupStopButton();
           await sendFinalChunks(text);
         },
 
@@ -539,6 +599,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         onError: async (text: string) => {
           cancelPendingEdit();
           await clearStatus();
+          await cleanupStopButton();
           const body = text === "Run aborted." ? "Cancelled." : `Error: ${text}`;
           if (placeholder) {
             const id = placeholder.messageId;
@@ -558,12 +619,14 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     log.error("handler error", { err: err instanceof Error ? err.message : err });
     cancelPendingEdit();
     await clearStatus();
+    await cleanupStopButton();
     await safe("reply (error)", ctx.reply("Something went wrong."));
   } finally {
     active = false;
     if (typingTimer) clearInterval(typingTimer);
     cancelPendingEdit();
     cancelPendingStatus();
+    await cleanupStopButton();
   }
 }
 
@@ -599,6 +662,40 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
     log.warn("setMyCommands failed", { err: err instanceof Error ? err.message : err });
   }
 
+  // Set the Telegram menu button (next to text input) to open the
+  // observability dashboard as a web app.
+  try {
+    await bot.api.setChatMenuButton({
+      menu_button: {
+        type: "web_app",
+        text: "Observability",
+        web_app: { url: "https://jacks-server.tail392f1d.ts.net" },
+      },
+    });
+    log.info("set telegram menu button to observability web app");
+  } catch (err) {
+    log.warn("setChatMenuButton failed", { err: err instanceof Error ? err.message : err });
+  }
+
+  // Initialize the callback query system: set the context (bot + handle)
+  // and register all callback handlers with the dispatcher.
+  setCallbackContext({ bot, handle });
+  registerAllCallbacks();
+
+  // Catch-all callback query handler — routes to the dispatcher which
+  // matches against registered prefixes.
+  bot.on("callback_query:data", async (ctx) => {
+    if (stopping || options.signal?.aborted) return;
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+    if (userId === undefined || !isAllowed(userId)) {
+      log.warn("dropped non-allowlisted callback query", { userId, chatId, data: ctx.callbackQuery.data });
+      await ctx.answerCallbackQuery({ text: "Not allowed." }).catch(() => undefined);
+      return;
+    }
+    await dispatchCallback(ctx);
+  });
+
   if (stopping || options.signal?.aborted) {
     options.signal?.removeEventListener("abort", abortListener);
     return;
@@ -616,6 +713,24 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
     const imageCount = imageCandidateFileIds(ctx).length;
     const audioKind = selectTelegramAudioCandidate(ctx.message)?.kind;
     log.info("inbound", { chatId, userId, len: text.length, imageCount, audioKind });
+
+    // If a background task is waiting for Jack's answer (via the [🧑 Answer
+    // yourself] button), relay the next message to the worker instead of
+    // running the normal agent pipeline.
+    const pendingAnswerTaskId = consumePendingBackgroundAnswer(chatId);
+    if (pendingAnswerTaskId && text.trim()) {
+      try {
+        const { answerBackgroundTask } = await import("../background/manager.js");
+        await answerBackgroundTask(pendingAnswerTaskId, text.trim());
+        await safe("reply (answer relayed)", ctx.reply(`Answered ${pendingAnswerTaskId}.`));
+      } catch (err) {
+        await safe(
+          "reply (answer relay failed)",
+          ctx.reply(`Failed to relay answer: ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }
+      return;
+    }
 
     // Control commands (those with `bypassLock: true`) must dispatch before the
     // per-chat lock; otherwise they queue behind the long run they are

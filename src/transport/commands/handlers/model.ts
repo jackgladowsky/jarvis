@@ -4,21 +4,16 @@
 import type { Context } from "grammy";
 import { describeModel, getSupportedProviders, switchModel } from "../../../agent/model.js";
 import type { CommandDef, ParsedCommand } from "../registry.js";
+import { buildFavoritesKeyboard } from "../../callbacks/handlers/index.js";
 
 export async function handleModel(ctx: Context, parsed: ParsedCommand): Promise<void> {
   const current = describeModel();
 
   if (parsed.parts.length === 0) {
-    await ctx.reply(
-      `Current model: ${current}\n\n` +
-        `Usage: /model <provider> <model-id>\n` +
-        `Providers: ${getSupportedProviders().join(", ")}\n\n` +
-        `Examples:\n` +
-        `  /model openrouter openai/gpt-4o\n` +
-        `  /model openrouter anthropic/claude-sonnet-4\n` +
-        `  /model codex gpt-5.4\n` +
-        `  /model anthropic claude-sonnet-4-6`,
-    );
+    // Show inline keyboard grid for quick model switching.
+    await ctx.reply(`Model: ${current}`, {
+      reply_markup: buildFavoritesKeyboard(),
+    });
     return;
   }
 
