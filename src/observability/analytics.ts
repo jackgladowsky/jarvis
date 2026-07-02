@@ -52,6 +52,7 @@ export interface SessionSummary {
   usage: UsageTotals;
   retryFallbackEvents: RetryFallbackEvent[];
   firstUserText?: string;
+  intent?: string;
   classification: ClassificationScaffold;
   displayName?: string;
   cwd?: string;
@@ -298,6 +299,74 @@ function textPreview(message: JsonRecord): string | undefined {
   return truncateText(messageText(message));
 }
 
+function cleanSingleLine(text: string, cap = 90): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (!line) return "";
+  return line.length > cap ? `${line.slice(0, cap - 1)}…` : line;
+}
+
+function firstNonEmptyLine(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean) ?? "";
+}
+
+function sectionText(text: string, heading: string, stopLabels: string[]): string {
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const stops = stopLabels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const stop = stops ? `(?=\\s+(?:${stops})|$)` : "(?=$)";
+  const pattern = new RegExp(`(?:^|\\s)${escapedHeading}:\\s*([\\s\\S]+?)${stop}`, "i");
+  return text.match(pattern)?.[1]?.trim() ?? "";
+}
+
+function labeledLine(text: string, label: string): string {
+  return sectionText(text, label, ["Task note:", "Original request:", "Before finishing"]);
+}
+
+function cleanTaskLine(text: string): string {
+  return text
+    .replace(/\s+\((?:researcher|implementer|reviewer|fixer)\)\s*\([^)]+\)\s*$/i, "")
+    .replace(/\s+\([a-z]+-[a-z]+\)\s*$/i, "")
+    .trim();
+}
+
+function stripPreamble(text: string): string {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+
+  if (lower.startsWith("internal scheduler notification:")) {
+    return firstNonEmptyLine(
+      trimmed
+        .slice("internal scheduler notification:".length)
+        .split(/\bHandle this as main JARVIS\b/i)[0] ?? "",
+    );
+  }
+
+  if (lower.startsWith("you are running as a background jarvis worker")) {
+    return (
+      firstNonEmptyLine(sectionText(trimmed, "Original request", ["IMPORTANT CONTEXT", "Task note:"])) ||
+      cleanTaskLine(labeledLine(trimmed, "Task"))
+    );
+  }
+
+  if (lower.startsWith("you are running as a scheduled jarvis task")) {
+    return cleanTaskLine(labeledLine(trimmed, "Task"));
+  }
+
+  return trimmed;
+}
+
+function deriveIntent(userTexts: string[], fallback: string): string {
+  for (const raw of userTexts) {
+    const stripped = stripPreamble(raw);
+    if (stripped.length >= 3) {
+      return cleanSingleLine(stripped, 90) || fallback;
+    }
+  }
+  return fallback;
+}
+
 function valuePreview(value: unknown, length = 260): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value === "string") return truncateText(value.replace(/\s+/g, " ").trim(), length);
@@ -402,6 +471,7 @@ async function parseSessionFile(
   let previousProvider: string | undefined;
   let traceIndex = 0;
   let previousTraceTimestamp: number | undefined;
+  const userTexts: string[] = [];
 
   function addTraceNode(input: Omit<TraceNode, "depth" | "id"> & { id?: string }): TraceNode {
     const timestamp = input.timestamp;
@@ -568,6 +638,7 @@ async function parseSessionFile(
     if (message.role === "user") {
       session.userMessages += 1;
       session.promptChars += text.length;
+      userTexts.push(text);
       session.firstUserText ??= session.displayName ?? textPreview(message);
     }
     if (message.role === "assistant") {
@@ -679,6 +750,7 @@ async function parseSessionFile(
   }
 
   session.firstUserText ??= session.displayName;
+  session.intent = deriveIntent(userTexts, session.id);
   session.models = [...modelSet].sort();
   session.providers = [...providerSet].sort();
   session.apis = [...apiSet].sort();

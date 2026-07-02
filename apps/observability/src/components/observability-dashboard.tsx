@@ -138,6 +138,7 @@ function sessionMatchesQuery(session: SessionSummary, query: string): boolean {
     session.path,
     session.relativePath,
     session.displayName,
+    session.intent,
     session.firstUserText,
     session.cwd,
     session.source,
@@ -916,7 +917,7 @@ function SessionTable({ sessions, compact = false }: { sessions: SessionSummary[
               </TableCell>
               <TableCell>
                 <div className="max-w-[760px] truncate font-medium">
-                  {short(session.displayName ?? session.firstUserText, compact ? 105 : 140)}
+                  {short(session.intent ?? session.displayName ?? session.firstUserText, compact ? 105 : 140)}
                 </div>
                 <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
                   {(session.models.length ? session.models : ["unknown"]).slice(0, 2).map((model) => (
@@ -986,7 +987,7 @@ function TraceTable({
               </TableCell>
               <TableCell>
                 <div className="max-w-[700px] truncate font-medium">
-                  {short(session.displayName ?? session.firstUserText, 130)}
+                  {short(session.intent ?? session.displayName ?? session.firstUserText, 130)}
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
                   {short(session.models.join(", ") || "unknown", 120)}
@@ -1010,7 +1011,12 @@ function TraceTable({
 
 function TraceTree({ session }: { session: SessionSummary | undefined }) {
   const [expanded, setExpanded] = React.useState<Set<string>>(
-    () => new Set((session?.traceNodes ?? []).slice(0, 80).map((node) => node.id)),
+    () =>
+      new Set(
+        (session?.traceNodes ?? [])
+          .filter((node) => node.kind !== "message" || node.isError === true)
+          .map((node) => node.id),
+      ),
   );
   if (!session) return <div className="text-sm text-muted-foreground">No trace session selected.</div>;
   const nodes = session.traceNodes.slice(0, 500);
@@ -1018,79 +1024,100 @@ function TraceTree({ session }: { session: SessionSummary | undefined }) {
   const visible = nodes.filter((node) => {
     let parentId = node.parentId;
     while (parentId) {
-      if (!expanded.has(parentId)) return false;
-      parentId = nodes.find((candidate) => candidate.id === parentId)?.parentId;
+      const parent = nodes.find((candidate) => candidate.id === parentId);
+      if (!parent) break;
+      // Message nodes are transparent for child visibility: collapsing a message hides its preview, not its signals.
+      if (parent.kind !== "message" && !expanded.has(parentId)) return false;
+      parentId = parent.parentId;
     }
     return true;
   });
   return (
-    <div className="max-h-[620px] overflow-auto border border-border/60 bg-background/40">
-      {visible.map((node) => {
-        const expandable = hasChildren.has(node.id);
-        return (
-          <div
-            key={node.id}
-            className={cn(
-              "border-b border-border/40 px-2 py-2 text-xs last:border-b-0",
-              node.isError && "bg-destructive/10",
-            )}
-            style={{ paddingLeft: `${8 + node.depth * 18}px` }}
-          >
-            <div className="flex items-start gap-2">
-              <button
-                type="button"
-                className={cn("mt-0.5 w-4 text-muted-foreground", !expandable && "opacity-30")}
-                onClick={() => {
-                  if (!expandable) return;
-                  setExpanded((current) => {
-                    const next = new Set(current);
-                    if (next.has(node.id)) next.delete(node.id);
-                    else next.add(node.id);
-                    return next;
-                  });
-                }}
-              >
-                {expandable ? (expanded.has(node.id) ? "▾" : "▸") : "•"}
-              </button>
-              <GitCommitVertical className="mt-0.5 size-3.5 text-muted-foreground" />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className="rounded-none text-[10px]">
-                    {node.kind.replaceAll("_", " ")}
-                  </Badge>
-                  {node.role ? (
-                    <span className="uppercase tracking-wide text-muted-foreground">{node.role}</span>
-                  ) : null}
-                  <span className="truncate font-medium">{node.title}</span>
-                  {node.toolName ? <span className="font-mono text-muted-foreground">{node.toolName}</span> : null}
-                  {node.tokens ? (
-                    <span className="font-mono text-muted-foreground">{compactNumber.format(node.tokens)} tok</span>
-                  ) : null}
-                  {node.cost ? <span className="font-mono text-muted-foreground">{money(node.cost)}</span> : null}
-                </div>
-                {node.preview ? (
-                  <div className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
-                    {short(node.preview, 260)}
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border/60 pb-2 text-xs">
+        <span className="truncate font-medium">
+          {short(session.intent ?? session.displayName ?? session.firstUserText, 80)}
+        </span>
+        <Badge variant="outline" className="rounded-none capitalize">
+          {session.source}
+        </Badge>
+        <span className="text-muted-foreground">{session.models.length} models</span>
+        <span className="font-mono text-muted-foreground">{compactNumber.format(session.usage.tokens.total)} tok</span>
+        <span className="font-mono text-muted-foreground">{money(session.usage.cost.total)}</span>
+      </div>
+      <div className="max-h-[620px] overflow-auto border border-border/60 bg-background/40">
+        {visible.map((node) => {
+          const isMessage = node.kind === "message";
+          const nodeExpanded = expanded.has(node.id);
+          const expandable = hasChildren.has(node.id) || Boolean(node.preview);
+          const showFooter = !isMessage || nodeExpanded;
+          return (
+            <div
+              key={node.id}
+              className={cn(
+                "border-b border-border/40 px-2 py-2 text-xs last:border-b-0",
+                node.isError && "bg-destructive/10",
+              )}
+              style={{ paddingLeft: `${8 + node.depth * 18}px` }}
+            >
+              <div className="flex items-start gap-2">
+                <button
+                  type="button"
+                  className={cn("mt-0.5 w-4 text-muted-foreground", !expandable && "opacity-30")}
+                  onClick={() => {
+                    if (!expandable) return;
+                    setExpanded((current) => {
+                      const next = new Set(current);
+                      if (next.has(node.id)) next.delete(node.id);
+                      else next.add(node.id);
+                      return next;
+                    });
+                  }}
+                >
+                  {expandable ? (nodeExpanded ? "▾" : "▸") : "•"}
+                </button>
+                <GitCommitVertical className="mt-0.5 size-3.5 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" className="rounded-none text-[10px]">
+                      {node.kind.replaceAll("_", " ")}
+                    </Badge>
+                    {node.role ? (
+                      <span className="uppercase tracking-wide text-muted-foreground">{node.role}</span>
+                    ) : null}
+                    <span className="truncate font-medium">{node.title}</span>
+                    {node.toolName ? <span className="font-mono text-muted-foreground">{node.toolName}</span> : null}
+                    {node.tokens ? (
+                      <span className="font-mono text-muted-foreground">{compactNumber.format(node.tokens)} tok</span>
+                    ) : null}
+                    {node.cost ? <span className="font-mono text-muted-foreground">{money(node.cost)}</span> : null}
                   </div>
-                ) : null}
-                <div className="mt-1 flex flex-wrap gap-2 font-mono text-[11px] text-muted-foreground">
-                  <span>{formatDate(node.timestamp)}</span>
-                  {node.durationFromPreviousMs !== undefined ? (
-                    <span>+{duration(node.durationFromPreviousMs)}</span>
+                  {node.preview && nodeExpanded ? (
+                    <div className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
+                      {short(node.preview, isMessage ? 160 : 260)}
+                    </div>
                   ) : null}
-                  {node.model ? <span>{short(node.model, 42)}</span> : null}
-                  {node.provider ? <span>{node.provider}</span> : null}
+                  {showFooter ? (
+                    <div className="mt-1 flex flex-wrap gap-2 font-mono text-[11px] text-muted-foreground">
+                      <span>{formatDate(node.timestamp)}</span>
+                      {node.durationFromPreviousMs !== undefined ? (
+                        <span>+{duration(node.durationFromPreviousMs)}</span>
+                      ) : null}
+                      {node.model ? <span>{short(node.model, 42)}</span> : null}
+                      {node.provider ? <span>{node.provider}</span> : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
+          );
+        })}
+        {session.traceNodes.length > nodes.length ? (
+          <div className="p-2 text-xs text-muted-foreground">
+            Showing first {nodes.length} of {session.traceNodes.length} trace nodes.
           </div>
-        );
-      })}
-      {session.traceNodes.length > nodes.length ? (
-        <div className="p-2 text-xs text-muted-foreground">
-          Showing first {nodes.length} of {session.traceNodes.length} trace nodes.
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1140,7 +1167,7 @@ function AttentionQueue({ sessions }: { sessions: SessionSummary[] }) {
       {sessions.map((session) => (
         <div key={session.path} className="border border-border/60 px-3 py-2">
           <div className="flex items-center justify-between gap-3 text-sm">
-            <span className="truncate font-medium">{short(session.displayName ?? session.firstUserText, 70)}</span>
+            <span className="truncate font-medium">{short(session.intent ?? session.displayName ?? session.firstUserText, 70)}</span>
             <Badge variant="outline" className="rounded-none">
               {session.attentionScore}
             </Badge>
@@ -1200,7 +1227,7 @@ function DenseSessionList({ sessions }: { sessions: SessionSummary[] }) {
       {sessions.map((session) => (
         <div key={session.path} className="border-l border-border pl-3">
           <div className="flex items-center justify-between gap-3 text-sm">
-            <span className="truncate font-medium">{short(session.displayName ?? session.firstUserText, 62)}</span>
+            <span className="truncate font-medium">{short(session.intent ?? session.displayName ?? session.firstUserText, 62)}</span>
             <span className="font-mono text-muted-foreground">{money(session.usage.cost.total)}</span>
           </div>
           <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
