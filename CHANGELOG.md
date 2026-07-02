@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.0
+
+- feat: add real `/cancel` for active chat runs
+- fix: abort active agent/model/tool work during shutdown to avoid SIGTERM timeout kills
+- fix: terminate cancellable bash subprocess groups and suppress stale cancelled results
+
 ## 0.5.0
 
 - feat: add `/reasoning off|low|medium|high` to enable real model reasoning/thinking
