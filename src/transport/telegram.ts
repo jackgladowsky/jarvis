@@ -569,7 +569,25 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
 
 export async function runTelegram(handle: Handler, options: TelegramOptions = {}): Promise<void> {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
-  let stopping = options.signal?.aborted ?? false;
+  let stopping = false;
+  let botStarted = false;
+  let stopInternalNotificationPump: () => void = () => undefined;
+
+  const shutdown = (sig: string) => {
+    if (stopping) return;
+    stopping = true;
+    log.info("telegram bot stopping", { sig });
+    stopInternalNotificationPump();
+    if (botStarted) void bot.stop();
+  };
+  const abortListener = () => shutdown("abort");
+  if (options.signal?.aborted) shutdown("abort");
+  else options.signal?.addEventListener("abort", abortListener, { once: true });
+
+  if (stopping || options.signal?.aborted) {
+    options.signal?.removeEventListener("abort", abortListener);
+    return;
+  }
 
   // Register the command menu so Telegram shows hints when users type `/`.
   // Failure here is non-fatal — the bot still works without menu hints.
@@ -579,6 +597,11 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
     log.info("registered telegram command menu", { count: menu.length });
   } catch (err) {
     log.warn("setMyCommands failed", { err: err instanceof Error ? err.message : err });
+  }
+
+  if (stopping || options.signal?.aborted) {
+    options.signal?.removeEventListener("abort", abortListener);
+    return;
   }
 
   bot.on("message", async (ctx) => {
@@ -607,23 +630,22 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
     await withLock(chatId, () => processMessage(ctx, handle, options.signal));
   });
 
-  const stopInternalNotificationPump = startInternalNotificationPump(bot, handle);
-  const shutdown = (sig: string) => {
-    if (stopping) return;
-    stopping = true;
-    log.info("telegram bot stopping", { sig });
+  stopInternalNotificationPump = startInternalNotificationPump(bot, handle);
+  if (stopping || options.signal?.aborted) {
     stopInternalNotificationPump();
-    void bot.stop();
-  };
-  options.signal?.addEventListener("abort", () => shutdown("abort"), { once: true });
-
-  if (stopping) return;
+    options.signal?.removeEventListener("abort", abortListener);
+    return;
+  }
 
   log.info("telegram bot starting (long-poll)");
+  botStarted = true;
   try {
+    if (stopping || options.signal?.aborted) return;
     await bot.start();
   } finally {
+    botStarted = false;
     stopInternalNotificationPump();
+    options.signal?.removeEventListener("abort", abortListener);
   }
   log.info("telegram bot stopped");
 }

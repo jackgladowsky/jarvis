@@ -78,6 +78,13 @@ export const bashTool: AgentTool<typeof schema> = {
       // the end is O(N) total instead of O(N²) appends.
       const chunks: Buffer[] = [];
       let timedOut = false;
+      let forceKillTimer: NodeJS.Timeout | undefined;
+
+      const clearForceKillTimer = (): void => {
+        if (!forceKillTimer) return;
+        clearTimeout(forceKillTimer);
+        forceKillTimer = undefined;
+      };
 
       const killProcessGroup = (signalName: NodeJS.Signals): void => {
         if (child.pid === undefined) return;
@@ -94,6 +101,15 @@ export const bashTool: AgentTool<typeof schema> = {
         }
       };
 
+      const scheduleForceKill = (): void => {
+        if (forceKillTimer) return;
+        forceKillTimer = setTimeout(() => {
+          forceKillTimer = undefined;
+          killProcessGroup("SIGKILL");
+        }, 1000);
+        forceKillTimer.unref();
+      };
+
       child.stdout.on("data", (b: Buffer) => chunks.push(b));
       child.stderr.on("data", (b: Buffer) => chunks.push(b));
 
@@ -103,17 +119,18 @@ export const bashTool: AgentTool<typeof schema> = {
       const timer = setTimeout(() => {
         timedOut = true;
         killProcessGroup("SIGTERM");
-        setTimeout(() => killProcessGroup("SIGKILL"), 1000).unref();
+        scheduleForceKill();
       }, timeoutSec * 1000);
 
       const onAbort = () => {
         killProcessGroup("SIGTERM");
-        setTimeout(() => killProcessGroup("SIGKILL"), 1000).unref();
+        scheduleForceKill();
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
       child.on("close", async (code) => {
         clearTimeout(timer);
+        clearForceKillTimer();
         signal?.removeEventListener("abort", onAbort);
 
         const combined = Buffer.concat(chunks);
@@ -155,6 +172,7 @@ export const bashTool: AgentTool<typeof schema> = {
       // handling so they don't get silently swallowed by the close path.
       child.on("error", async (err) => {
         clearTimeout(timer);
+        clearForceKillTimer();
         signal?.removeEventListener("abort", onAbort);
         await auditToolCall({
           tool: "bash",
