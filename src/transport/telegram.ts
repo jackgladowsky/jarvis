@@ -471,7 +471,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
 
   const flushStatus = async (text: string): Promise<void> => {
     if (!statusMessage) return;
-    await safe("editMessageText (status)", ctx.api.editMessageText(chatId, statusMessage.messageId, text));
+    await safe("editMessageText (status)", ctx.api.editMessageText(chatId, statusMessage.messageId, text, { reply_markup: stopButtonKeyboard() }));
     statusMessage.lastEditAt = Date.now();
   };
 
