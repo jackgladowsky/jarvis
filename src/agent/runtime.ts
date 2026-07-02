@@ -20,7 +20,7 @@
 import { mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type ImageContent } from "@mariozechner/pi-ai";
+import { type ImageContent, type Model } from "@mariozechner/pi-ai";
 import { log } from "../lib/logger.js";
 import {
   createTelemetryStreamFn,
@@ -38,12 +38,7 @@ import {
 } from "./job-session.js";
 import { model, resolveModel } from "./model.js";
 import { getReasoningLevel } from "./reasoning.js";
-import {
-  activeAgentRuns,
-  AgentRunAbortError,
-  isAgentRunAbortError,
-  type ActiveAgentRun,
-} from "./run-registry.js";
+import { activeAgentRuns, AgentRunAbortError, isAgentRunAbortError, type ActiveAgentRun } from "./run-registry.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { getSystemPrompt } from "./system-prompt.js";
@@ -69,6 +64,9 @@ export interface StreamCallbacks {
    *  "aborted". `text` is a user-facing summary — surface it instead of the
    *  empty assistant message that would otherwise be silent. */
   onError?: (text: string) => void | Promise<void>;
+  /** Called when the run was explicitly cancelled and a stopped marker has
+   *  been persisted to the current session. */
+  onCancelled?: (text: string) => void | Promise<void>;
   /** Optional coarse progress telemetry. This is observable state, not model
    *  chain-of-thought: loading context, calling tools, finishing, etc. */
   onStatus?: (text: string) => void | Promise<void>;
@@ -135,6 +133,86 @@ function extractText(content: ReadonlyArray<{ type: string; text?: string }>): s
 
 function hasToolCall(content: ReadonlyArray<{ type: string }>): boolean {
   return content.some((c) => c.type === "toolCall");
+}
+
+export const STOPPED_BY_USER_TEXT = "⏹ Stopped by user.";
+
+const ZERO_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function isAssistantMessage(message: AgentMessage): message is Extract<AgentMessage, { role: "assistant" }> {
+  return (message as { role?: string }).role === "assistant";
+}
+
+function isToolResultMessage(message: AgentMessage): message is Extract<AgentMessage, { role: "toolResult" }> {
+  return (message as { role?: string }).role === "toolResult";
+}
+
+function toolCallIds(message: AgentMessage): string[] {
+  if (!isAssistantMessage(message)) return [];
+  return ((message.content ?? []) as Array<{ type: string; id?: unknown }>)
+    .filter((content) => content.type === "toolCall" && typeof content.id === "string")
+    .map((content) => content.id as string);
+}
+
+function dropUnresolvedToolCallSuffix(messages: AgentMessage[]): AgentMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const calls = toolCallIds(messages[i]);
+    if (calls.length === 0) continue;
+
+    const pending = new Set(calls);
+    for (let j = i + 1; j < messages.length; j++) {
+      const message = messages[j];
+      if (!isToolResultMessage(message)) break;
+      pending.delete(message.toolCallId);
+    }
+
+    if (pending.size > 0) return messages.slice(0, i);
+  }
+  return messages;
+}
+
+function stoppedAssistantMessage(agentModel: Model<any>, reason = "Cancelled."): AgentMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: STOPPED_BY_USER_TEXT }],
+    api: agentModel.api,
+    provider: agentModel.provider,
+    model: agentModel.id,
+    usage: ZERO_USAGE,
+    stopReason: "aborted",
+    errorMessage: reason,
+    timestamp: Date.now(),
+  };
+}
+
+export function normalizeCancelledChatMessages(
+  messages: AgentMessage[],
+  agentModel: Model<any>,
+  reason = "Cancelled.",
+): AgentMessage[] {
+  const kept = dropUnresolvedToolCallSuffix(messages);
+  const last = kept.at(-1);
+  if (last && isAssistantMessage(last) && last.stopReason === "aborted") {
+    return [
+      ...kept.slice(0, -1),
+      {
+        ...last,
+        content: [{ type: "text", text: STOPPED_BY_USER_TEXT }],
+        stopReason: "aborted",
+        errorMessage: reason,
+        timestamp: last.timestamp ?? Date.now(),
+      },
+    ];
+  }
+
+  return [...kept, stoppedAssistantMessage(agentModel, reason)];
 }
 
 function compactJson(value: unknown): string {
@@ -458,7 +536,17 @@ export async function handleMessage(
       } catch (err) {
         unsubscribe();
         detachAgent();
-        if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+        if (run.signal.aborted || isAgentRunAbortError(err)) {
+          const cancelledMessages = normalizeCancelledChatMessages(
+            agent.state.messages.slice(before),
+            attempt.agentModel,
+            run.abortReason ?? "Cancelled.",
+          );
+          await sessions.appendMessages(session.sessionId, cancelledMessages);
+          await sessions.markActivity(chatId);
+          await callbacks.onCancelled?.(STOPPED_BY_USER_TEXT);
+          throw new AgentRunAbortError(run.abortReason);
+        }
         lastError = err instanceof Error ? err.message : String(err);
         log.warn("agent prompt attempt errored", {
           chatId,
@@ -472,7 +560,9 @@ export async function handleMessage(
         if (next) {
           if (!shouldSuppressForCancelledRun(run)) {
             await callbacks.onStatus?.(
-              next.label.startsWith("fallback") ? "Primary failed; trying fallback model" : "Model call failed; retrying",
+              next.label.startsWith("fallback")
+                ? "Primary failed; trying fallback model"
+                : "Model call failed; retrying",
             );
           }
           continue;

@@ -454,9 +454,12 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     }
   }
 
+  let stoppedStatusShown = false;
+
   // Clean up the stop button + working message when the run finishes.
   const cleanupStopButton = async (): Promise<void> => {
     clearStopButtonMessage(chatId);
+    if (stoppedStatusShown) return;
     if (workingMessageId) {
       const id = workingMessageId;
       workingMessageId = undefined;
@@ -471,7 +474,10 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
 
   const flushStatus = async (text: string): Promise<void> => {
     if (!statusMessage) return;
-    await safe("editMessageText (status)", ctx.api.editMessageText(chatId, statusMessage.messageId, text, { reply_markup: stopButtonKeyboard() }));
+    await safe(
+      "editMessageText (status)",
+      ctx.api.editMessageText(chatId, statusMessage.messageId, text, { reply_markup: stopButtonKeyboard() }),
+    );
     statusMessage.lastEditAt = Date.now();
   };
 
@@ -487,7 +493,10 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     const line = `→ ${text}`;
 
     if (!statusMessage) {
-      const sent = await safe("reply (status)", ctx.reply(renderStatus([line]), { reply_markup: stopButtonKeyboard() }));
+      const sent = await safe(
+        "reply (status)",
+        ctx.reply(renderStatus([line]), { reply_markup: stopButtonKeyboard() }),
+      );
       if (sent) {
         statusMessage = { messageId: sent.message_id, lines: [line], lastEditAt: Date.now() };
         setStopButtonMessage(chatId, sent.message_id);
@@ -518,6 +527,29 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     const id = statusMessage.messageId;
     statusMessage = undefined;
     await safe("deleteMessage (status)", ctx.api.deleteMessage(chatId, id));
+  };
+
+  const showStoppedStatus = async (text: string): Promise<void> => {
+    stoppedStatusShown = true;
+    cancelPendingStatus();
+    cancelPendingEdit();
+    clearStopButtonMessage(chatId);
+
+    if (statusMessage) {
+      const id = statusMessage.messageId;
+      statusMessage = undefined;
+      await safe("editMessageText (stopped status)", ctx.api.editMessageText(chatId, id, text));
+      return;
+    }
+
+    if (workingMessageId) {
+      const id = workingMessageId;
+      workingMessageId = undefined;
+      await safe("editMessageText (stopped working)", ctx.api.editMessageText(chatId, id, text));
+      return;
+    }
+
+    if (!sending) await safe("reply (stopped)", ctx.reply(text));
   };
 
   const cancelPendingEdit = () => {
@@ -609,6 +641,8 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
             await safe("reply (agent error)", ctx.reply(body));
           }
         },
+
+        onCancelled: showStoppedStatus,
 
         onStatus: pushStatus,
         statusMode: runStatusMode,
