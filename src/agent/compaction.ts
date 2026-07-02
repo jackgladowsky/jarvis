@@ -231,6 +231,7 @@ async function generateSummary(
   toSummarize: AgentMessage[],
   model: Model<any>,
   previousSummary: string | undefined,
+  signal?: AbortSignal,
 ): Promise<string> {
   const conversation = serializeForSummary(toSummarize);
   const basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : INITIAL_SUMMARIZATION_PROMPT;
@@ -238,7 +239,9 @@ async function generateSummary(
     ? `<conversation>\n${conversation}\n</conversation>\n\n<previous-summary>\n${previousSummary}\n</previous-summary>\n\n${basePrompt}`
     : `<conversation>\n${conversation}\n</conversation>\n\n${basePrompt}`;
 
+  if (signal?.aborted) throw new Error("aborted");
   const apiKey = await getApiKeyForProvider(model.provider);
+  if (signal?.aborted) throw new Error("aborted");
   if (!apiKey) {
     throw new Error(`no api key for provider ${model.provider} (compaction)`);
   }
@@ -257,6 +260,7 @@ async function generateSummary(
     },
     {
       apiKey,
+      signal,
       // Cap summary output well below reserve_tokens so the next turn has
       // breathing room — pi uses 0.8 of reserve, we follow.
       maxTokens: Math.floor(0.8 * config.compaction.reserve_tokens),
@@ -268,8 +272,10 @@ async function generateSummary(
     },
   );
 
-  if (response.stopReason === "error") {
-    throw new Error(`summarization failed: ${response.errorMessage ?? "unknown"}`);
+  if (signal?.aborted) throw new Error("aborted");
+
+  if (response.stopReason === "error" || response.stopReason === "aborted") {
+    throw new Error(`summarization failed: ${response.errorMessage ?? response.stopReason}`);
   }
 
   return response.content
@@ -304,6 +310,7 @@ export async function maybeCompactLoaded(
   model: Model<any>,
   makeSummaryMessage: (summary: string) => AgentMessage,
   store: CompactionStore,
+  signal?: AbortSignal,
 ): Promise<MaybeCompactResult> {
   // Build the effective list (what the agent would actually see this turn).
   const effective = loaded.previousSummary
@@ -340,7 +347,8 @@ export async function maybeCompactLoaded(
   });
 
   const toSummarize = loaded.tail.slice(0, cut);
-  const newSummary = await generateSummary(sessionId, toSummarize, model, loaded.previousSummary);
+  if (signal?.aborted) throw new Error("aborted");
+  const newSummary = await generateSummary(sessionId, toSummarize, model, loaded.previousSummary, signal);
 
   const entry = {
     summary: newSummary,
@@ -370,9 +378,17 @@ export async function maybeCompact(
   loaded: LoadedSession,
   model: Model<any>,
   makeSummaryMessage: (summary: string) => AgentMessage,
+  signal?: AbortSignal,
 ): Promise<MaybeCompactResult> {
-  return maybeCompactLoaded(sessionId, loaded, model, makeSummaryMessage, {
-    appendCompactionEntry: (entry) => sessions.appendCompactionEntry(sessionId, entry),
-    reload: () => sessions.load(sessionId),
-  });
+  return maybeCompactLoaded(
+    sessionId,
+    loaded,
+    model,
+    makeSummaryMessage,
+    {
+      appendCompactionEntry: (entry) => sessions.appendCompactionEntry(sessionId, entry),
+      reload: () => sessions.load(sessionId),
+    },
+    signal,
+  );
 }

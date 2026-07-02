@@ -14,7 +14,7 @@ export async function handleNew(ctx: Context): Promise<void> {
 export async function handleCancel(ctx: Context): Promise<void> {
   const chatId = ctx.chat!.id;
   const cancelled = cancelChatRun(chatId);
-  await ctx.reply(cancelled ? "Cancelling…" : "No active run to cancel.");
+  await ctx.reply(cancelled ? "Cancelled current run." : "No active run to cancel.");
 }
 
 export const sessionCommands: CommandDef[] = [

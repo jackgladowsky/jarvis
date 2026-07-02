@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import cron, { type ScheduledTask } from "node-cron";
 import { z } from "zod";
+import { isAgentRunAbortError } from "./agent/run-registry.js";
 import { runScheduledPrompt } from "./agent/runtime.js";
 import { config } from "./config.js";
 import { builtInScheduledTasks } from "./scheduled-defaults.js";
@@ -54,6 +55,7 @@ const DynamicTasksFileSchema = z.object({
 const TASK_RELOAD_MS = 30_000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const activeJobs = new Map<string, ActiveScheduledJob>();
+let stopping = false;
 
 type DynamicTask = z.infer<typeof DynamicTaskSchema>;
 
@@ -159,10 +161,16 @@ async function runTask(task: SchedulerJob): Promise<void> {
     });
     await schedulerLog(`[${task.id}] completed (${output.length} chars)`);
   } catch (err) {
+    if (stopping || isAgentRunAbortError(err)) {
+      await schedulerLog(`[${task.id}] cancelled during shutdown`);
+      return;
+    }
     success = false;
     output = `Task failed: ${err instanceof Error ? err.message : String(err)}`;
     await schedulerLog(`[${task.id}] failed: ${output}`);
   }
+
+  if (stopping) return;
 
   if (shouldNotify(task, success, output)) {
     const durationSec = Math.round((Date.now() - started) / 1000);
@@ -285,6 +293,7 @@ export async function startScheduler(): Promise<() => void> {
     return () => {};
   }
 
+  stopping = false;
   await mkdir(paths.scheduledJobSessions, { recursive: true });
   await mkdir(paths.scheduledJobNotes, { recursive: true });
   await ensureTasksFile();
@@ -303,6 +312,7 @@ export async function startScheduler(): Promise<() => void> {
   }, TASK_RELOAD_MS);
 
   return () => {
+    stopping = true;
     clearInterval(reloadTimer);
     for (const id of [...activeJobs.keys()]) stopTask(id);
   };
