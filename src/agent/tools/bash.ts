@@ -6,9 +6,9 @@
 // capped at config.tools.bash.max_timeout_seconds).
 //
 // Compared to pi-coding-agent's bash tool, this is intentionally minimal:
-// no process-tree-killing, no shell prefix, no pluggable spawn hook. JARVIS
-// runs as a single user on a single box; if a child outlives its parent it's
-// just `kill -9 <pid>`. Add the heavier machinery only when something breaks.
+// no shell prefix and no pluggable spawn hook. The child shell is spawned as
+// its own process group so cancellation/timeouts can terminate descendants
+// instead of only killing `/bin/bash` and orphaning grandchildren.
 //
 // Output is clipped to MAX_OUTPUT_BYTES with a head/tail preserved — the same
 // pattern as the audit logger's truncate(). Trailing exit-status info stays
@@ -70,6 +70,7 @@ export const bashTool: AgentTool<typeof schema> = {
       }
 
       const child = spawn("/bin/bash", ["-c", command], {
+        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -77,6 +78,21 @@ export const bashTool: AgentTool<typeof schema> = {
       // the end is O(N) total instead of O(N²) appends.
       const chunks: Buffer[] = [];
       let timedOut = false;
+
+      const killProcessGroup = (signalName: NodeJS.Signals): void => {
+        if (child.pid === undefined) return;
+        try {
+          process.kill(-child.pid, signalName);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+            try {
+              child.kill(signalName);
+            } catch {
+              // best effort
+            }
+          }
+        }
+      };
 
       child.stdout.on("data", (b: Buffer) => chunks.push(b));
       child.stderr.on("data", (b: Buffer) => chunks.push(b));
@@ -86,12 +102,13 @@ export const bashTool: AgentTool<typeof schema> = {
       // by itself if everything else is shutting down.
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 1000).unref();
+        killProcessGroup("SIGTERM");
+        setTimeout(() => killProcessGroup("SIGKILL"), 1000).unref();
       }, timeoutSec * 1000);
 
       const onAbort = () => {
-        child.kill("SIGTERM");
+        killProcessGroup("SIGTERM");
+        setTimeout(() => killProcessGroup("SIGKILL"), 1000).unref();
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 

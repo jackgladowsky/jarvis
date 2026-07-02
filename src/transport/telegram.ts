@@ -43,6 +43,10 @@ import { consumeSttBenchmarkNext, getStatusMode } from "./commands/handlers/stat
 
 type Handler = typeof handleMessage;
 
+interface TelegramOptions {
+  signal?: AbortSignal;
+}
+
 // Telegram expires the typing indicator after ~5s; re-fire every 4s while
 // the agent is working so it stays visible without flickering.
 const TYPING_REFIRE_MS = 4000;
@@ -306,7 +310,8 @@ function startInternalNotificationPump(bot: Bot, handle: Handler): () => void {
   };
 }
 
-async function processMessage(ctx: Context, handle: Handler): Promise<void> {
+async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: AbortSignal): Promise<void> {
+  if (shutdownSignal?.aborted) return;
   const chatId = ctx.chat!.id;
   const userText = ctx.message?.text ?? ctx.message?.caption ?? "";
 
@@ -490,6 +495,14 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
     }
   };
 
+  if (shutdownSignal?.aborted) {
+    active = false;
+    if (typingTimer) clearInterval(typingTimer);
+    cancelPendingEdit();
+    cancelPendingStatus();
+    return;
+  }
+
   // ── Run the agent with streaming callbacks ──────────────────────────────
   try {
     await handle(
@@ -554,8 +567,9 @@ async function processMessage(ctx: Context, handle: Handler): Promise<void> {
   }
 }
 
-export async function runTelegram(handle: Handler): Promise<void> {
+export async function runTelegram(handle: Handler, options: TelegramOptions = {}): Promise<void> {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
+  let stopping = options.signal?.aborted ?? false;
 
   // Register the command menu so Telegram shows hints when users type `/`.
   // Failure here is non-fatal — the bot still works without menu hints.
@@ -568,6 +582,7 @@ export async function runTelegram(handle: Handler): Promise<void> {
   }
 
   bot.on("message", async (ctx) => {
+    if (stopping || options.signal?.aborted) return;
     const userId = ctx.from?.id;
     const chatId = ctx.chat.id;
     if (userId === undefined || !isAllowed(userId)) {
@@ -589,17 +604,20 @@ export async function runTelegram(handle: Handler): Promise<void> {
     }
 
     // Per-chat serialization — see DESIGN.md §10.
-    await withLock(chatId, () => processMessage(ctx, handle));
+    await withLock(chatId, () => processMessage(ctx, handle, options.signal));
   });
 
   const stopInternalNotificationPump = startInternalNotificationPump(bot, handle);
   const shutdown = (sig: string) => {
+    if (stopping) return;
+    stopping = true;
     log.info("telegram bot stopping", { sig });
     stopInternalNotificationPump();
     void bot.stop();
   };
-  process.once("SIGINT", () => shutdown("SIGINT"));
-  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  options.signal?.addEventListener("abort", () => shutdown("abort"), { once: true });
+
+  if (stopping) return;
 
   log.info("telegram bot starting (long-poll)");
   try {

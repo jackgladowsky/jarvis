@@ -38,9 +38,16 @@ import {
 } from "./job-session.js";
 import { model, resolveModel } from "./model.js";
 import { getReasoningLevel } from "./reasoning.js";
+import {
+  activeAgentRuns,
+  AgentRunAbortError,
+  isAgentRunAbortError,
+  type ActiveAgentRun,
+} from "./run-registry.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { getSystemPrompt } from "./system-prompt.js";
+import { makeAbortableTool } from "./tools/abortable.js";
 import { allTools } from "./tools/index.js";
 
 // Streaming callbacks invoked per assistant message. Tool-call messages are
@@ -68,13 +75,30 @@ export interface StreamCallbacks {
   statusMode?: StatusMode;
 }
 
-const activeChatAgents = new Map<number, Agent>();
+const cancellableTools = allTools.map((tool) => makeAbortableTool(tool));
 
 export function cancelChatRun(chatId: number): boolean {
-  const agent = activeChatAgents.get(chatId);
-  if (!agent) return false;
-  agent.abort();
-  return true;
+  return activeAgentRuns.cancel("chat", chatId, "Cancelled.");
+}
+
+export function abortAllActiveRuns(reason = "Shutting down."): number {
+  return activeAgentRuns.abortAll(reason);
+}
+
+export function activeRunCount(): number {
+  return activeAgentRuns.activeCount();
+}
+
+export function waitForActiveRuns(timeoutMs: number): Promise<boolean> {
+  return activeAgentRuns.waitForIdle(timeoutMs);
+}
+
+function ensureNotAborted(run: ActiveAgentRun): void {
+  run.throwIfAborted();
+}
+
+function shouldSuppressForCancelledRun(run: ActiveAgentRun): boolean {
+  return run.signal.aborted || !run.isCurrent();
 }
 
 // Best-effort human-readable error text. Provider errors arrive as JSON-tail
@@ -192,7 +216,7 @@ function buildAgent(messages: AgentMessage[], agentModel = model, telemetryScope
     initialState: {
       systemPrompt: getSystemPrompt(),
       model: agentModel,
-      tools: allTools,
+      tools: cancellableTools,
       messages,
       thinkingLevel: getReasoningLevel(),
     },
@@ -299,149 +323,172 @@ export async function handleMessage(
   callbacks: StreamCallbacks = {},
   images: ImageContent[] = [],
 ): Promise<void> {
-  const session = await sessions.resolveSession(chatId);
-  log.debug("agent prompt", {
-    chatId,
-    sessionId: session.sessionId,
-    isNew: session.isNew,
-    length: text.length,
-    imageCount: images.length,
-  });
-  // If resolveSession just archived an old session, kick off the TOC
-  // summarizer in the background. Don't await — the user's new turn
-  // shouldn't wait on an extra LLM call. Errors are caught inside.
-  if (session.rotatedFrom) {
-    void summarizeArchived(session.rotatedFrom, model);
-  }
-
-  // Load the session and apply compaction if we're near the context window.
-  // `maybeCompact` may run an LLM call to produce a summary, persist a
-  // `compaction` entry to the JSONL, and return the trimmed message list.
-  const loaded = await sessions.load(session.sessionId);
-  const compaction = await maybeCompact(session.sessionId, loaded, model, makeSummaryMessage);
-  if (compaction.didCompact) {
-    log.info("compaction applied", {
+  const run = activeAgentRuns.start("chat", chatId);
+  try {
+    ensureNotAborted(run);
+    const session = await sessions.resolveSession(chatId);
+    ensureNotAborted(run);
+    log.debug("agent prompt", {
       chatId,
       sessionId: session.sessionId,
-      tokensBefore: compaction.tokensBefore,
+      isNew: session.isNew,
+      length: text.length,
+      imageCount: images.length,
     });
-  }
-  // Ephemeral skill nudge: inject before buildAgent so it enters the agent's
-  // context this turn. Never persisted to the session JSONL — recalculated
-  // fresh each turn from the actual tool-call count.
-  injectSkillNudge(compaction.messages);
-  const attempts = [
-    ...Array.from({ length: PRIMARY_RETRY_COUNT + 1 }, (_, i) => ({
-      label: i === 0 ? "primary" : `primary retry ${i}/${PRIMARY_RETRY_COUNT}`,
-      agentModel: model,
-    })),
-  ];
-  if (!isFallbackModelActive()) {
-    attempts.push({
-      label: `fallback ${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID}`,
-      agentModel: resolveModel(FALLBACK_PROVIDER, FALLBACK_MODEL_ID),
-    });
-  }
+    // If resolveSession just archived an old session, kick off the TOC
+    // summarizer in the background. Don't await — the user's new turn
+    // shouldn't wait on an extra LLM call. Errors are caught inside.
+    if (session.rotatedFrom) {
+      void summarizeArchived(session.rotatedFrom, model);
+    }
 
-  let lastError = "agent message failed";
-
-  const messageTs = new Date().toISOString();
-
-  for (let i = 0; i < attempts.length; i++) {
-    const attempt = attempts[i];
-    const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, {
-      kind: "chat",
-      session_id: session.sessionId,
-      chat_id_hash: hashTelemetryIdentifier(chatId),
-      attempt_label: attempt.label,
-      message_ts: messageTs,
-      source_path: join(paths.sessions, `${session.sessionId}.jsonl`),
-    });
-    activeChatAgents.set(chatId, agent);
-    let currentMsgIsAbandoned = false;
-    let promptError: string | undefined;
-
-    const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
-      const status = formatStatus(event, callbacks.statusMode ?? "off");
-      if (status) await callbacks.onStatus?.(status);
-
-      if (event.type === "message_start" && event.message.role === "assistant") {
-        currentMsgIsAbandoned = false;
-        return;
-      }
-
-      if (event.type === "message_update" && event.message.role === "assistant") {
-        const m = event.message;
-        if (hasToolCall(m.content)) {
-          if (!currentMsgIsAbandoned) {
-            currentMsgIsAbandoned = true;
-            await callbacks.onAbandon?.();
-          }
-          return;
-        }
-        const t = extractText(m.content).trim();
-        if (t) await callbacks.onAssistantUpdate?.(t);
-        return;
-      }
-
-      if (event.type === "message_end" && event.message.role === "assistant") {
-        const m = event.message;
-        if (hasToolCall(m.content)) return;
-        if (m.stopReason === "error" || m.stopReason === "aborted") {
-          promptError = formatAgentError(m.stopReason, m.errorMessage);
-          lastError = promptError;
-          log.warn("agent attempt failed", {
-            chatId,
-            sessionId: session.sessionId,
-            attempt: attempt.label,
-            model: `${attempt.agentModel.provider}/${attempt.agentModel.id}`,
-            stopReason: m.stopReason,
-            err: m.errorMessage ?? "",
-          });
-          if (currentMsgIsAbandoned) currentMsgIsAbandoned = false;
-          return;
-        }
-        const t = extractText(m.content).trim();
-        if (t) await callbacks.onAssistantEnd?.(t);
-        return;
-      }
-    });
-
-    const before = agent.state.messages.length;
-
-    try {
-      await agent.prompt(text, images);
-      if (promptError) throw new Error(promptError);
-
-      const newMessages = agent.state.messages.slice(before);
-      await sessions.appendMessages(session.sessionId, newMessages);
-      await sessions.markActivity(chatId);
-      unsubscribe();
-      if (activeChatAgents.get(chatId) === agent) activeChatAgents.delete(chatId);
-      return;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-      log.warn("agent prompt attempt errored", {
+    // Load the session and apply compaction if we're near the context window.
+    // `maybeCompact` may run an LLM call to produce a summary, persist a
+    // `compaction` entry to the JSONL, and return the trimmed message list.
+    const loaded = await sessions.load(session.sessionId);
+    ensureNotAborted(run);
+    const compaction = await maybeCompact(session.sessionId, loaded, model, makeSummaryMessage, run.signal);
+    ensureNotAborted(run);
+    if (compaction.didCompact) {
+      log.info("compaction applied", {
         chatId,
         sessionId: session.sessionId,
-        attempt: attempt.label,
-        model: `${attempt.agentModel.provider}/${attempt.agentModel.id}`,
-        err: lastError,
+        tokensBefore: compaction.tokensBefore,
       });
-      unsubscribe();
-      if (activeChatAgents.get(chatId) === agent) activeChatAgents.delete(chatId);
+    }
+    // Ephemeral skill nudge: inject before buildAgent so it enters the agent's
+    // context this turn. Never persisted to the session JSONL — recalculated
+    // fresh each turn from the actual tool-call count.
+    injectSkillNudge(compaction.messages);
+    const attempts = [
+      ...Array.from({ length: PRIMARY_RETRY_COUNT + 1 }, (_, i) => ({
+        label: i === 0 ? "primary" : `primary retry ${i}/${PRIMARY_RETRY_COUNT}`,
+        agentModel: model,
+      })),
+    ];
+    if (!isFallbackModelActive()) {
+      attempts.push({
+        label: `fallback ${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID}`,
+        agentModel: resolveModel(FALLBACK_PROVIDER, FALLBACK_MODEL_ID),
+      });
+    }
 
-      const next = attempts[i + 1];
-      if (next) {
-        await callbacks.onStatus?.(
-          next.label.startsWith("fallback") ? "Primary failed; trying fallback model" : "Model call failed; retrying",
-        );
-        continue;
+    let lastError = "agent message failed";
+
+    const messageTs = new Date().toISOString();
+
+    for (let i = 0; i < attempts.length; i++) {
+      ensureNotAborted(run);
+      const attempt = attempts[i];
+      const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, {
+        kind: "chat",
+        session_id: session.sessionId,
+        chat_id_hash: hashTelemetryIdentifier(chatId),
+        attempt_label: attempt.label,
+        message_ts: messageTs,
+        source_path: join(paths.sessions, `${session.sessionId}.jsonl`),
+      });
+      const detachAgent = run.attachAgent(agent);
+      let currentMsgIsAbandoned = false;
+      let promptError: string | undefined;
+
+      const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+        if (shouldSuppressForCancelledRun(run)) return;
+
+        const status = formatStatus(event, callbacks.statusMode ?? "off");
+        if (status) await callbacks.onStatus?.(status);
+
+        if (shouldSuppressForCancelledRun(run)) return;
+
+        if (event.type === "message_start" && event.message.role === "assistant") {
+          currentMsgIsAbandoned = false;
+          return;
+        }
+
+        if (event.type === "message_update" && event.message.role === "assistant") {
+          const m = event.message;
+          if (hasToolCall(m.content)) {
+            if (!currentMsgIsAbandoned) {
+              currentMsgIsAbandoned = true;
+              await callbacks.onAbandon?.();
+            }
+            return;
+          }
+          const t = extractText(m.content).trim();
+          if (t && !shouldSuppressForCancelledRun(run)) await callbacks.onAssistantUpdate?.(t);
+          return;
+        }
+
+        if (event.type === "message_end" && event.message.role === "assistant") {
+          const m = event.message;
+          if (hasToolCall(m.content)) return;
+          if (m.stopReason === "error" || m.stopReason === "aborted") {
+            promptError = formatAgentError(m.stopReason, m.errorMessage);
+            lastError = promptError;
+            log.warn("agent attempt failed", {
+              chatId,
+              sessionId: session.sessionId,
+              attempt: attempt.label,
+              model: `${attempt.agentModel.provider}/${attempt.agentModel.id}`,
+              stopReason: m.stopReason,
+              err: m.errorMessage ?? "",
+            });
+            if (currentMsgIsAbandoned) currentMsgIsAbandoned = false;
+            return;
+          }
+          const t = extractText(m.content).trim();
+          if (t && !shouldSuppressForCancelledRun(run)) await callbacks.onAssistantEnd?.(t);
+          return;
+        }
+      });
+
+      const before = agent.state.messages.length;
+
+      try {
+        await agent.prompt(text, images);
+        ensureNotAborted(run);
+        if (promptError) throw new Error(promptError);
+
+        const newMessages = agent.state.messages.slice(before);
+        await sessions.appendMessages(session.sessionId, newMessages);
+        await sessions.markActivity(chatId);
+        unsubscribe();
+        detachAgent();
+        return;
+      } catch (err) {
+        unsubscribe();
+        detachAgent();
+        if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+        lastError = err instanceof Error ? err.message : String(err);
+        log.warn("agent prompt attempt errored", {
+          chatId,
+          sessionId: session.sessionId,
+          attempt: attempt.label,
+          model: `${attempt.agentModel.provider}/${attempt.agentModel.id}`,
+          err: lastError,
+        });
+
+        const next = attempts[i + 1];
+        if (next) {
+          if (!shouldSuppressForCancelledRun(run)) {
+            await callbacks.onStatus?.(
+              next.label.startsWith("fallback") ? "Primary failed; trying fallback model" : "Model call failed; retrying",
+            );
+          }
+          continue;
+        }
       }
     }
-  }
 
-  await callbacks.onError?.(`Model call failed after retries and fallback: ${lastError}`);
+    if (!shouldSuppressForCancelledRun(run)) {
+      await callbacks.onError?.(`Model call failed after retries and fallback: ${lastError}`);
+    }
+  } catch (err) {
+    if (!run.signal.aborted && !isAgentRunAbortError(err)) throw err;
+    log.info("agent run cancelled", { chatId, reason: run.abortReason ?? "aborted" });
+  } finally {
+    run.finish();
+  }
 }
 
 // Force-rotate a chat's session — bound to the `/new` command in the
@@ -464,79 +511,103 @@ export async function runScheduledPrompt(
   taskNotePath: string,
   modelOverride: { provider?: string; model?: string } = {},
 ): Promise<string> {
-  const taskModel =
-    modelOverride.provider && modelOverride.model ? resolveModel(modelOverride.provider, modelOverride.model) : model;
-  const loaded = await loadScheduledMessages(taskId);
-  let initialMessages: AgentMessage[];
+  const run = activeAgentRuns.start("scheduled", taskId);
   try {
-    const compaction = await maybeCompactLoaded(`scheduled:${taskId}`, loaded, taskModel, makeSummaryMessage, {
-      rewriteWithCompaction: (entry, keptTail) => rewriteScheduledSessionWithCompaction(taskId, entry, keptTail),
-      reload: () => loadScheduledMessages(taskId),
+    const taskModel =
+      modelOverride.provider && modelOverride.model ? resolveModel(modelOverride.provider, modelOverride.model) : model;
+    ensureNotAborted(run);
+    const loaded = await loadScheduledMessages(taskId);
+    ensureNotAborted(run);
+    let initialMessages: AgentMessage[];
+    try {
+      const compaction = await maybeCompactLoaded(
+        `scheduled:${taskId}`,
+        loaded,
+        taskModel,
+        makeSummaryMessage,
+        {
+          rewriteWithCompaction: (entry, keptTail) => rewriteScheduledSessionWithCompaction(taskId, entry, keptTail),
+          reload: () => loadScheduledMessages(taskId),
+        },
+        run.signal,
+      );
+      ensureNotAborted(run);
+      if (compaction.didCompact) {
+        log.info("scheduled compaction applied", {
+          taskId,
+          tokensBefore: compaction.tokensBefore,
+          tokensAfter: estimateContextTokens(compaction.messages),
+        });
+      }
+      initialMessages = compaction.messages;
+    } catch (err) {
+      if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+      const reason = `scheduled compaction failed: ${err instanceof Error ? err.message : String(err)}`;
+      await archiveScheduledSession(taskId, reason);
+      initialMessages = [];
+    }
+
+    const agent = buildAgent(initialMessages, taskModel, {
+      kind: "scheduled",
+      session_id: `scheduled:${taskId}`,
+      task_id: taskId,
+      task_name: taskName,
+      source_path: scheduledSessionFile(taskId),
+      message_ts: new Date().toISOString(),
     });
-    if (compaction.didCompact) {
-      log.info("scheduled compaction applied", {
-        taskId,
-        tokensBefore: compaction.tokensBefore,
-        tokensAfter: estimateContextTokens(compaction.messages),
-      });
+    const detachAgent = run.attachAgent(agent);
+    const before = agent.state.messages.length;
+    let finalText = "";
+    let errorText = "";
+
+    const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+      if (shouldSuppressForCancelledRun(run)) return;
+      if (event.type !== "message_end" || event.message.role !== "assistant") return;
+      if (hasToolCall(event.message.content)) return;
+      if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+        errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
+        log.warn("scheduled agent error", {
+          taskId,
+          stopReason: event.message.stopReason,
+          err: event.message.errorMessage ?? "",
+        });
+        return;
+      }
+      finalText = extractText(event.message.content).trim();
+    });
+
+    const taskPrompt = [
+      "You are running as a scheduled JARVIS task.",
+      "Your output may be sent to the owner as a Telegram notification, so be concise and focus on what is actionable.",
+      "Compare against previous runs when relevant.",
+      "",
+      `Task: ${taskName} (${taskId})`,
+      `Task note: ${taskNotePath}`,
+      "",
+      "Before finishing, update the task note markdown file with the current status, latest run summary, useful observations, and next things to watch. Keep it concise and preserve durable context across runs.",
+      "",
+      prompt,
+    ].join("\n");
+
+    try {
+      ensureNotAborted(run);
+      await agent.prompt(taskPrompt);
+      ensureNotAborted(run);
+    } finally {
+      unsubscribe();
+      detachAgent();
     }
-    initialMessages = compaction.messages;
+
+    await appendScheduledMessages(taskId, agent.state.messages.slice(before));
+    if (errorText) throw new Error(errorText);
+    if (!finalText) throw new Error("scheduled agent produced no final output");
+    return finalText;
   } catch (err) {
-    const reason = `scheduled compaction failed: ${err instanceof Error ? err.message : String(err)}`;
-    await archiveScheduledSession(taskId, reason);
-    initialMessages = [];
-  }
-
-  const agent = buildAgent(initialMessages, taskModel, {
-    kind: "scheduled",
-    session_id: `scheduled:${taskId}`,
-    task_id: taskId,
-    task_name: taskName,
-    source_path: scheduledSessionFile(taskId),
-    message_ts: new Date().toISOString(),
-  });
-  const before = agent.state.messages.length;
-  let finalText = "";
-  let errorText = "";
-
-  const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
-    if (event.type !== "message_end" || event.message.role !== "assistant") return;
-    if (hasToolCall(event.message.content)) return;
-    if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
-      errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
-      log.warn("scheduled agent error", {
-        taskId,
-        stopReason: event.message.stopReason,
-        err: event.message.errorMessage ?? "",
-      });
-      return;
-    }
-    finalText = extractText(event.message.content).trim();
-  });
-
-  const taskPrompt = [
-    "You are running as a scheduled JARVIS task.",
-    "Your output may be sent to the owner as a Telegram notification, so be concise and focus on what is actionable.",
-    "Compare against previous runs when relevant.",
-    "",
-    `Task: ${taskName} (${taskId})`,
-    `Task note: ${taskNotePath}`,
-    "",
-    "Before finishing, update the task note markdown file with the current status, latest run summary, useful observations, and next things to watch. Keep it concise and preserve durable context across runs.",
-    "",
-    prompt,
-  ].join("\n");
-
-  try {
-    await agent.prompt(taskPrompt);
+    if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+    throw err;
   } finally {
-    unsubscribe();
+    run.finish();
   }
-
-  await appendScheduledMessages(taskId, agent.state.messages.slice(before));
-  if (errorText) throw new Error(errorText);
-  if (!finalText) throw new Error("scheduled agent produced no final output");
-  return finalText;
 }
 
 export async function runBackgroundPrompt(
@@ -545,76 +616,100 @@ export async function runBackgroundPrompt(
   prompt: string,
   taskNotePath: string,
 ): Promise<string> {
-  const loaded = await loadBackgroundMessages(taskId);
-  let initialMessages: AgentMessage[];
+  const run = activeAgentRuns.start("background", taskId);
   try {
-    const compaction = await maybeCompactLoaded(`background:${taskId}`, loaded, model, makeSummaryMessage, {
-      rewriteWithCompaction: (entry, keptTail) => rewriteBackgroundSessionWithCompaction(taskId, entry, keptTail),
-      reload: () => loadBackgroundMessages(taskId),
+    ensureNotAborted(run);
+    const loaded = await loadBackgroundMessages(taskId);
+    ensureNotAborted(run);
+    let initialMessages: AgentMessage[];
+    try {
+      const compaction = await maybeCompactLoaded(
+        `background:${taskId}`,
+        loaded,
+        model,
+        makeSummaryMessage,
+        {
+          rewriteWithCompaction: (entry, keptTail) => rewriteBackgroundSessionWithCompaction(taskId, entry, keptTail),
+          reload: () => loadBackgroundMessages(taskId),
+        },
+        run.signal,
+      );
+      ensureNotAborted(run);
+      if (compaction.didCompact) {
+        log.info("background compaction applied", {
+          taskId,
+          tokensBefore: compaction.tokensBefore,
+          tokensAfter: estimateContextTokens(compaction.messages),
+        });
+      }
+      initialMessages = compaction.messages;
+    } catch (err) {
+      if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+      const reason = `background compaction failed: ${err instanceof Error ? err.message : String(err)}`;
+      await archiveBackgroundSession(taskId, reason);
+      initialMessages = [];
+    }
+
+    const agent = buildAgent(initialMessages, model, {
+      kind: "background",
+      session_id: `background:${taskId}`,
+      task_id: taskId,
+      task_name: taskName,
+      source_path: backgroundSessionFile(taskId),
+      message_ts: new Date().toISOString(),
     });
-    if (compaction.didCompact) {
-      log.info("background compaction applied", {
-        taskId,
-        tokensBefore: compaction.tokensBefore,
-        tokensAfter: estimateContextTokens(compaction.messages),
-      });
+    const detachAgent = run.attachAgent(agent);
+    const before = agent.state.messages.length;
+    let finalText = "";
+    let errorText = "";
+
+    const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+      if (shouldSuppressForCancelledRun(run)) return;
+      if (event.type !== "message_end" || event.message.role !== "assistant") return;
+      if (hasToolCall(event.message.content)) return;
+      if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+        errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
+        log.warn("background agent error", {
+          taskId,
+          stopReason: event.message.stopReason,
+          err: event.message.errorMessage ?? "",
+        });
+        return;
+      }
+      finalText = extractText(event.message.content).trim();
+    });
+
+    const taskPrompt = [
+      "You are running as a background JARVIS worker.",
+      "You have one long-running task. Work autonomously, but do not make product/security/destructive decisions by guessing.",
+      "If blocked, write a question to the task mailbox, set the task status to waiting_on_main in its task JSON, and stop.",
+      "If finished, update the task note and task JSON with status awaiting_review. Do not push, merge, deploy, or edit the main checkout unless explicitly instructed.",
+      "Use the assigned git worktree for repo changes.",
+      "Your final response is a concise handoff summary for main JARVIS.",
+      "",
+      `Task: ${taskName} (${taskId})`,
+      `Task note: ${taskNotePath}`,
+      "",
+      prompt,
+    ].join("\n");
+
+    try {
+      ensureNotAborted(run);
+      await agent.prompt(taskPrompt);
+      ensureNotAborted(run);
+    } finally {
+      unsubscribe();
+      detachAgent();
     }
-    initialMessages = compaction.messages;
+
+    await appendBackgroundMessages(taskId, agent.state.messages.slice(before));
+    if (errorText) throw new Error(errorText);
+    if (!finalText) throw new Error("background agent produced no final output");
+    return finalText;
   } catch (err) {
-    const reason = `background compaction failed: ${err instanceof Error ? err.message : String(err)}`;
-    await archiveBackgroundSession(taskId, reason);
-    initialMessages = [];
-  }
-
-  const agent = buildAgent(initialMessages, model, {
-    kind: "background",
-    session_id: `background:${taskId}`,
-    task_id: taskId,
-    task_name: taskName,
-    source_path: backgroundSessionFile(taskId),
-    message_ts: new Date().toISOString(),
-  });
-  const before = agent.state.messages.length;
-  let finalText = "";
-  let errorText = "";
-
-  const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
-    if (event.type !== "message_end" || event.message.role !== "assistant") return;
-    if (hasToolCall(event.message.content)) return;
-    if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
-      errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
-      log.warn("background agent error", {
-        taskId,
-        stopReason: event.message.stopReason,
-        err: event.message.errorMessage ?? "",
-      });
-      return;
-    }
-    finalText = extractText(event.message.content).trim();
-  });
-
-  const taskPrompt = [
-    "You are running as a background JARVIS worker.",
-    "You have one long-running task. Work autonomously, but do not make product/security/destructive decisions by guessing.",
-    "If blocked, write a question to the task mailbox, set the task status to waiting_on_main in its task JSON, and stop.",
-    "If finished, update the task note and task JSON with status awaiting_review. Do not push, merge, deploy, or edit the main checkout unless explicitly instructed.",
-    "Use the assigned git worktree for repo changes.",
-    "Your final response is a concise handoff summary for main JARVIS.",
-    "",
-    `Task: ${taskName} (${taskId})`,
-    `Task note: ${taskNotePath}`,
-    "",
-    prompt,
-  ].join("\n");
-
-  try {
-    await agent.prompt(taskPrompt);
+    if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+    throw err;
   } finally {
-    unsubscribe();
+    run.finish();
   }
-
-  await appendBackgroundMessages(taskId, agent.state.messages.slice(before));
-  if (errorText) throw new Error(errorText);
-  if (!finalText) throw new Error("background agent produced no final output");
-  return finalText;
 }
