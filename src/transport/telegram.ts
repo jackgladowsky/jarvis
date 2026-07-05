@@ -12,7 +12,7 @@
 //      "let me check…" filler stay invisible.
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
-import { Bot, InlineKeyboard, type Context } from "grammy";
+import { Bot, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { handleMessage } from "../agent/runtime.js";
 import { config, env } from "../config.js";
@@ -39,12 +39,7 @@ import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
 import "./commands/handlers/index.js";
 import { botMenuCommands, findCommand } from "./commands/registry.js";
-import {
-  consumeSttBenchmarkNext,
-  getStatusMode,
-  setStopButtonMessage,
-  clearStopButtonMessage,
-} from "./commands/handlers/state.js";
+import { consumeSttBenchmarkNext, getStatusMode } from "./commands/handlers/state.js";
 import { dispatchCallback } from "./callbacks/dispatcher.js";
 import { setCallbackContext } from "./callbacks/context.js";
 import { registerAllCallbacks } from "./callbacks/handlers/index.js";
@@ -67,12 +62,6 @@ const INTERNAL_NOTIFICATION_POLL_MS = 3000;
 const INTERNAL_NOTIFICATION_HEARTBEAT_MS = 5000;
 const MAX_TELEGRAM_IMAGES = 4;
 const MAX_TELEGRAM_IMAGE_BYTES = 10 * 1024 * 1024;
-
-// Inline keyboard with a single Stop button, attached to the status/working
-// message while the agent is processing so the user can cancel the run.
-function stopButtonKeyboard(): InlineKeyboard {
-  return new InlineKeyboard().text("⏹ Stop", "stop");
-}
 
 // Convert agent text to whatever Telegram expects, depending on parse_mode.
 // Skipping the conversion when parse_mode === "none" keeps the bot strictly
@@ -436,24 +425,15 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
   let pendingStatusText = "";
   const startedAt = Date.now();
 
-  // ── Stop button ───────────────────────────────────────────────────────────
-  // When status mode is off, send a minimal "Working…" message with a stop
-  // button so the user can cancel the run. When status mode is active, the
-  // stop button is attached to the status message when it's first created.
   let workingMessageId: number | undefined;
   if (runStatusMode === "off") {
-    const sent = await safe("reply (working)", ctx.reply("Working…", { reply_markup: stopButtonKeyboard() }));
-    if (sent) {
-      workingMessageId = sent.message_id;
-      setStopButtonMessage(chatId, sent.message_id);
-    }
+    const sent = await safe("reply (working)", ctx.reply("Working…"));
+    if (sent) workingMessageId = sent.message_id;
   }
 
   let stoppedStatusShown = false;
 
-  // Clean up the stop button + working message when the run finishes.
-  const cleanupStopButton = async (): Promise<void> => {
-    clearStopButtonMessage(chatId);
+  const cleanupRunIndicator = async (): Promise<void> => {
     if (stoppedStatusShown) return;
     if (workingMessageId) {
       const id = workingMessageId;
@@ -469,10 +449,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
 
   const flushStatus = async (text: string): Promise<void> => {
     if (!statusMessage) return;
-    await safe(
-      "editMessageText (status)",
-      ctx.api.editMessageText(chatId, statusMessage.messageId, text, { reply_markup: stopButtonKeyboard() }),
-    );
+    await safe("editMessageText (status)", ctx.api.editMessageText(chatId, statusMessage.messageId, text));
     statusMessage.lastEditAt = Date.now();
   };
 
@@ -488,14 +465,8 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     const line = `→ ${text}`;
 
     if (!statusMessage) {
-      const sent = await safe(
-        "reply (status)",
-        ctx.reply(renderStatus([line]), { reply_markup: stopButtonKeyboard() }),
-      );
-      if (sent) {
-        statusMessage = { messageId: sent.message_id, lines: [line], lastEditAt: Date.now() };
-        setStopButtonMessage(chatId, sent.message_id);
-      }
+      const sent = await safe("reply (status)", ctx.reply(renderStatus([line])));
+      if (sent) statusMessage = { messageId: sent.message_id, lines: [line], lastEditAt: Date.now() };
       return;
     }
 
@@ -528,7 +499,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     stoppedStatusShown = true;
     cancelPendingStatus();
     cancelPendingEdit();
-    clearStopButtonMessage(chatId);
 
     if (statusMessage) {
       const id = statusMessage.messageId;
@@ -610,7 +580,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         onAssistantEnd: async (text: string) => {
           cancelPendingEdit();
           await clearStatus();
-          await cleanupStopButton();
+          await cleanupRunIndicator();
           await sendFinalChunks(text);
         },
 
@@ -626,7 +596,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         onError: async (text: string) => {
           cancelPendingEdit();
           await clearStatus();
-          await cleanupStopButton();
+          await cleanupRunIndicator();
           const body = text === "Run aborted." ? "Cancelled." : `Error: ${text}`;
           if (placeholder) {
             const id = placeholder.messageId;
@@ -648,14 +618,14 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     log.error("handler error", { err: err instanceof Error ? err.message : err });
     cancelPendingEdit();
     await clearStatus();
-    await cleanupStopButton();
+    await cleanupRunIndicator();
     await safe("reply (error)", ctx.reply("Something went wrong."));
   } finally {
     active = false;
     if (typingTimer) clearInterval(typingTimer);
     cancelPendingEdit();
     cancelPendingStatus();
-    await cleanupStopButton();
+    await cleanupRunIndicator();
   }
 }
 
@@ -691,17 +661,12 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
     log.warn("setMyCommands failed", { err: err instanceof Error ? err.message : err });
   }
 
-  // Set the Telegram menu button (next to text input) to open the
-  // observability dashboard as a web app.
+  // Set the Telegram menu button (next to text input) to open the commands list.
   try {
     await bot.api.setChatMenuButton({
-      menu_button: {
-        type: "web_app",
-        text: "Observability",
-        web_app: { url: "https://jacks-server.tail392f1d.ts.net" },
-      },
+      menu_button: { type: "commands" },
     });
-    log.info("set telegram menu button to observability web app");
+    log.info("set telegram menu button to commands list");
   } catch (err) {
     log.warn("setChatMenuButton failed", { err: err instanceof Error ? err.message : err });
   }

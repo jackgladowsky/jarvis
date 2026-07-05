@@ -1,11 +1,9 @@
-// Stop button callback handler.
+// Legacy stop button callback handler.
 //
-// When the [⏹ Stop] button is tapped during an active agent run:
-//   1. Cancel the run via `cancelChatRun(chatId)`.
-//   2. Answer the callback query with a toast.
-//   3. Update the button message immediately so the tap has visible feedback.
-//
-// If the run already finished (race condition), answer with "Already finished."
+// New active chat runs no longer render a stop/cancel inline button, but keep
+// this compatibility handler for stale buttons already in chat history.
+// If a stale button is tapped during an active run, cancel it and give
+// immediate visible feedback; otherwise just remove the old keyboard.
 import type { Context } from "grammy";
 import { cancelChatRun } from "../../../agent/runtime.js";
 import { clearStopButtonMessage } from "../../commands/handlers/state.js";
