@@ -50,9 +50,9 @@ interface TelegramOptions {
   signal?: AbortSignal;
 }
 
-// Telegram expires the typing indicator after ~5s; re-fire every 4s while
-// the agent is working so it stays visible without flickering.
-const TYPING_REFIRE_MS = 4000;
+// Telegram expires the typing indicator after ~5s; re-fire frequently while
+// the request is queued/processing so it stays visible until the final reply lands.
+const TYPING_REFIRE_MS = 2500;
 
 // Minimum spacing between consecutive `editMessageText` calls on the same
 // placeholder. Telegram's per-chat edit rate limit is ~1/sec; 1.5s gives us
@@ -87,6 +87,27 @@ async function safe<T>(label: string, p: Promise<T>): Promise<T | undefined> {
     log.debug("telegram call failed", { label, err: err instanceof Error ? err.message : err });
     return undefined;
   }
+}
+
+function startTypingIndicator(ctx: Context): () => void {
+  if (!config.telegram.show_typing) return () => undefined;
+
+  let stopped = false;
+  let inFlight = false;
+  const fire = () => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    void safe("typing", ctx.replyWithChatAction("typing")).finally(() => {
+      inFlight = false;
+    });
+  };
+
+  fire();
+  const timer = setInterval(fire, TYPING_REFIRE_MS);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 function imageCandidateFileIds(ctx: Context): Array<{ fileId: string; mimeType: string; fileSize?: number }> {
@@ -394,17 +415,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
   }
   const promptText = transcribedPrompt ?? (userText.trim() || "Describe the attached image(s).");
 
-  // ── Typing indicator ────────────────────────────────────────────────────
-  // Fires immediately and then on a 4s loop until the agent run resolves.
-  let active = true;
-  const fireTyping = () => safe("typing", ctx.replyWithChatAction("typing"));
-  if (config.telegram.show_typing) void fireTyping();
-  const typingTimer = config.telegram.show_typing
-    ? setInterval(() => {
-        if (active) void fireTyping();
-      }, TYPING_REFIRE_MS)
-    : undefined;
-
   // ── Streaming placeholder state ─────────────────────────────────────────
   // `placeholder` is undefined until we send the first reply for the current
   // assistant message. After that, subsequent text updates are folded into
@@ -425,22 +435,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
   let pendingStatusText = "";
   const startedAt = Date.now();
 
-  let workingMessageId: number | undefined;
-  if (runStatusMode === "off") {
-    const sent = await safe("reply (working)", ctx.reply("Working…"));
-    if (sent) workingMessageId = sent.message_id;
-  }
-
   let stoppedStatusShown = false;
-
-  const cleanupRunIndicator = async (): Promise<void> => {
-    if (stoppedStatusShown) return;
-    if (workingMessageId) {
-      const id = workingMessageId;
-      workingMessageId = undefined;
-      await safe("deleteMessage (working)", ctx.api.deleteMessage(chatId, id));
-    }
-  };
 
   const renderStatus = (lines: string[]): string => {
     const elapsed = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
@@ -507,13 +502,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
       return;
     }
 
-    if (workingMessageId) {
-      const id = workingMessageId;
-      workingMessageId = undefined;
-      await safe("editMessageText (stopped working)", ctx.api.editMessageText(chatId, id, text));
-      return;
-    }
-
     if (!sending) await safe("reply (stopped)", ctx.reply(text));
   };
 
@@ -552,8 +540,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
   };
 
   if (shutdownSignal?.aborted) {
-    active = false;
-    if (typingTimer) clearInterval(typingTimer);
     cancelPendingEdit();
     cancelPendingStatus();
     return;
@@ -580,7 +566,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         onAssistantEnd: async (text: string) => {
           cancelPendingEdit();
           await clearStatus();
-          await cleanupRunIndicator();
           await sendFinalChunks(text);
         },
 
@@ -596,7 +581,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         onError: async (text: string) => {
           cancelPendingEdit();
           await clearStatus();
-          await cleanupRunIndicator();
           const body = text === "Run aborted." ? "Cancelled." : `Error: ${text}`;
           if (placeholder) {
             const id = placeholder.messageId;
@@ -618,14 +602,10 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     log.error("handler error", { err: err instanceof Error ? err.message : err });
     cancelPendingEdit();
     await clearStatus();
-    await cleanupRunIndicator();
     await safe("reply (error)", ctx.reply("Something went wrong."));
   } finally {
-    active = false;
-    if (typingTimer) clearInterval(typingTimer);
     cancelPendingEdit();
     cancelPendingStatus();
-    await cleanupRunIndicator();
   }
 }
 
@@ -717,8 +697,14 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
       return;
     }
 
-    // Per-chat serialization — see DESIGN.md §10.
-    await withLock(chatId, () => processMessage(ctx, handle, options.signal));
+    // Per-chat serialization — see DESIGN.md §10. Keep Telegram's native
+    // typing state alive while the message is queued and until the reply sends.
+    const stopTyping = startTypingIndicator(ctx);
+    try {
+      await withLock(chatId, () => processMessage(ctx, handle, options.signal));
+    } finally {
+      stopTyping();
+    }
   });
 
   stopInternalNotificationPump = startInternalNotificationPump(bot, handle);
