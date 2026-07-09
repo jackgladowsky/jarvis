@@ -12,7 +12,7 @@ export type BackgroundTaskStatus =
   | "cancelled"
   | "done";
 
-export type BackgroundRole = "researcher" | "implementer" | "reviewer" | "fixer";
+export type BackgroundRole = "planner" | "researcher" | "implementer" | "reviewer" | "fixer";
 export type BackgroundStageStatus = "queued" | "running" | "done" | "failed" | "skipped";
 
 export interface BackgroundStage {
@@ -22,6 +22,9 @@ export interface BackgroundStage {
   finished_at?: string;
   summary?: string;
   error?: string;
+  /** Model route selected for this stage, when one was explicitly configured. */
+  model_provider?: string;
+  model_id?: string;
 }
 
 export interface BackgroundTask {
@@ -39,6 +42,8 @@ export interface BackgroundTask {
   pipeline: BackgroundStage[];
   /** Optional parent autonomous goal id; used only for traceability/advancement. */
   goal_id?: string;
+  /** Ensures review-triggered remediation runs at most once automatically. */
+  automatic_fix_attempted?: boolean;
   current_role?: BackgroundRole;
   pid?: number;
   created_at: string;

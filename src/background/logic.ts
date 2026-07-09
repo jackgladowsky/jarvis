@@ -107,6 +107,78 @@ export function choosePipeline(prompt: string): BackgroundStage[] {
   ];
 }
 
+export interface BackgroundModelOverride {
+  provider: "codex";
+  model: "gpt-5.6-sol" | "gpt-5.6-terra";
+}
+
+/**
+ * Keep worker-stage routing local to background runs. Undefined deliberately
+ * falls back to the active model rather than changing the main chat model.
+ */
+export function backgroundModelOverrideForRole(role: string): BackgroundModelOverride | undefined {
+  switch (role) {
+    case "planner":
+    case "researcher":
+    case "reviewer":
+      return { provider: "codex", model: "gpt-5.6-sol" };
+    case "implementer":
+    case "fixer":
+      return { provider: "codex", model: "gpt-5.6-terra" };
+    default:
+      return undefined;
+  }
+}
+
+export function backgroundWorkerInstructions(role: string): string[] {
+  switch (role) {
+    case "planner":
+    case "researcher":
+      return [
+        `Role: ${role}.`,
+        "Understand the repo/problem and produce a concise implementation plan, risks, and files likely involved.",
+        "Do not edit files. Do not push, merge, deploy, or restart services.",
+        "If this is purely a research task, produce the final answer and mark the stage done.",
+      ];
+    case "implementer":
+      return [
+        "Role: implementer.",
+        "Implement the requested change in the assigned worktree only.",
+        "Use prior researcher output/mailbox context if present.",
+        "Run reasonable build/typecheck/tests and record exact commands/results.",
+        "Do not push, merge, deploy, or restart services.",
+      ];
+    case "reviewer":
+      return [
+        "Role: reviewer.",
+        "Review the completed work skeptically. Do not edit files.",
+        "Inspect task note, mailbox, git status, git diff/stat, and rerun reasonable checks.",
+        "Your final response must start with exactly `VERDICT: ready` or `VERDICT: needs_fix`.",
+        "Then summarize scope, checks, risks, and concrete fix instructions if needed.",
+      ];
+    case "fixer":
+      return [
+        "Role: fixer.",
+        "Make the smallest changes needed to address reviewer feedback in the worktree only.",
+        "Run reasonable checks. Do not push, merge, deploy, or restart services.",
+      ];
+    default:
+      return [
+        `Role: ${role}.`,
+        "No specialized instructions exist for this role; use the original request and prior stage context.",
+        "Work only in the assigned worktree and do not push, merge, deploy, or restart services.",
+      ];
+  }
+}
+
+/** Appends the single bounded automatic remediation cycle after a failed review. */
+export function appendAutomaticFixerCycle(task: Pick<BackgroundTask, "pipeline" | "automatic_fix_attempted">): boolean {
+  if (task.automatic_fix_attempted) return false;
+  task.automatic_fix_attempted = true;
+  task.pipeline.push({ role: "fixer", status: "queued" }, { role: "reviewer", status: "queued" });
+  return true;
+}
+
 export function nextQueuedRole(task: Pick<BackgroundTask, "pipeline">): BackgroundRole | undefined {
   return task.pipeline.find((stage) => stage.status === "queued")?.role;
 }
