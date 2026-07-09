@@ -19,11 +19,11 @@ interface FavoriteModel {
 }
 
 const DEFAULT_FAVORITES: FavoriteModel[] = [
-  { label: "GPT-5.5", provider: "openrouter", model_id: "openai/gpt-5.5" },
-  { label: "GPT-5.4 Codex", provider: "codex", model_id: "gpt-5.4" },
+  { label: "GPT-5.6 Terra", provider: "codex", model_id: "gpt-5.6-terra" },
+  { label: "GPT-5.6 Sol", provider: "codex", model_id: "gpt-5.6-sol" },
+  { label: "GPT-5.6 Luna", provider: "codex", model_id: "gpt-5.6-luna" },
   { label: "DeepSeek V4 Pro", provider: "openrouter", model_id: "deepseek/deepseek-v4-pro" },
   { label: "Qwen3.7 Max", provider: "openrouter", model_id: "qwen/qwen3.7-max" },
-  { label: "GLM 5.2", provider: "openrouter", model_id: "z-ai/glm-5.2" },
   { label: "Gemini 3.5 Flash", provider: "openrouter", model_id: "google/gemini-3.5-flash" },
 ];
 

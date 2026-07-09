@@ -166,6 +166,45 @@ const PROVIDER_KEY: Record<string, string> = {
   openrouter: "openrouter",
 };
 
+const CUSTOM_CODEX_MODELS: Record<
+  string,
+  {
+    name: string;
+    cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  }
+> = {
+  "gpt-5.6-sol": {
+    name: "GPT-5.6 Sol",
+    cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+  },
+  "gpt-5.6-terra": {
+    name: "GPT-5.6 Terra",
+    cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+  },
+  "gpt-5.6-luna": {
+    name: "GPT-5.6 Luna",
+    cost: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 0 },
+  },
+};
+
+function resolveCustomCodexModel(modelId: string): Model<any> | undefined {
+  const custom = CUSTOM_CODEX_MODELS[modelId];
+  if (!custom) return undefined;
+  return {
+    id: modelId,
+    name: custom.name,
+    api: "openai-codex-responses",
+    provider: "openai-codex",
+    baseUrl: "https://chatgpt.com/backend-api",
+    reasoning: true,
+    thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
+    input: ["text", "image"],
+    cost: custom.cost,
+    contextWindow: 1_050_000,
+    maxTokens: 128_000,
+  } as Model<any>;
+}
+
 // Persisted runtime choice (set by /model) so the selection survives restarts.
 const RUNTIME_MODEL_PATH = join(paths.data, "runtime-model.json");
 
@@ -232,6 +271,9 @@ export function resolveModel(provider: string, modelId: string): Model<any> {
       },
     } as Model<any>;
   }
+
+  const customCodexModel = provider === "codex" ? resolveCustomCodexModel(modelId) : undefined;
+  if (customCodexModel) return customCodexModel;
 
   const m = getModel(providerKey as any, modelId as any);
   if (!m) {
