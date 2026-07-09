@@ -13,7 +13,7 @@ import {
   spawnBackgroundWorker,
   writeBackgroundTask,
 } from "./manager.js";
-import { backgroundModelOverrideForRole } from "./logic.js";
+import { appendAutomaticFixerCycle, backgroundModelOverrideForRole, backgroundWorkerInstructions } from "./logic.js";
 import type { BackgroundRole, BackgroundStage, BackgroundTask, BackgroundTaskStatus } from "./types.js";
 
 async function notify(chatId: number, title: string, body: string): Promise<void> {
@@ -28,44 +28,10 @@ async function notify(chatId: number, title: string, body: string): Promise<void
 }
 
 function statusForRole(role: BackgroundRole): BackgroundTaskStatus {
-  if (role === "researcher") return "researching";
+  if (role === "planner" || role === "researcher") return "researching";
   if (role === "implementer") return "implementing";
   if (role === "reviewer") return "reviewing";
   return "implementing";
-}
-
-function roleInstructions(role: BackgroundRole): string[] {
-  switch (role) {
-    case "researcher":
-      return [
-        "Role: researcher.",
-        "Understand the repo/problem and produce a concise implementation plan, risks, and files likely involved.",
-        "Do not edit files. Do not push, merge, deploy, or restart services.",
-        "If this is purely a research task, produce the final answer and mark the stage done.",
-      ];
-    case "implementer":
-      return [
-        "Role: implementer.",
-        "Implement the requested change in the assigned worktree only.",
-        "Use prior researcher output/mailbox context if present.",
-        "Run reasonable build/typecheck/tests and record exact commands/results.",
-        "Do not push, merge, deploy, or restart services.",
-      ];
-    case "reviewer":
-      return [
-        "Role: reviewer.",
-        "Review the completed work skeptically. Do not edit files.",
-        "Inspect task note, mailbox, git status, git diff/stat, and rerun reasonable checks.",
-        "Your final response must start with exactly `VERDICT: ready` or `VERDICT: needs_fix`.",
-        "Then summarize scope, checks, risks, and concrete fix instructions if needed.",
-      ];
-    case "fixer":
-      return [
-        "Role: fixer.",
-        "Make the smallest changes needed to address reviewer feedback in the worktree only.",
-        "Run reasonable checks. Do not push, merge, deploy, or restart services.",
-      ];
-  }
 }
 
 function parseReviewVerdict(output: string): "ready" | "needs_fix" {
@@ -122,7 +88,7 @@ function buildPrompt(
     mailText,
     "",
     "Role instructions:",
-    ...roleInstructions(role),
+    ...backgroundWorkerInstructions(role),
     "",
     "Shared rules:",
     "- Do repo work inside the assigned worktree, not the main checkout.",
@@ -147,9 +113,16 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
   task.status = statusForRole(role);
   task.started_at = task.started_at ?? new Date().toISOString();
   task.pid = process.pid;
-  await writeBackgroundTask(task);
-
   const notePath = join(paths.backgroundNotes, `${task.id}.md`);
+  await writeBackgroundTask(task);
+  if (modelOverride) {
+    await appendFile(
+      notePath,
+      `- ${new Date().toISOString()}: ${role} stage routed to ${modelOverride.provider}/${modelOverride.model}.\n`,
+      "utf-8",
+    );
+  }
+
   const mailboxPath = join(paths.backgroundMail, `${task.id}.jsonl`);
   const mail = await readBackgroundMail(task.id, 40);
   const mailText = mail.length
@@ -175,10 +148,25 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     body: `${role}:\n${output}`,
   });
 
-  const nextRole = nextQueuedRole(latest);
   if (role === "reviewer") {
     const verdict = parseReviewVerdict(output);
     latest.review_summary = output;
+    if (verdict === "needs_fix" && appendAutomaticFixerCycle(latest)) {
+      const fixerRole = nextQueuedRole(latest);
+      if (!fixerRole) throw new Error(`automatic fixer cycle has no queued stage for ${latest.id}`);
+      latest.current_role = fixerRole;
+      latest.status = statusForRole(fixerRole);
+      await writeBackgroundTask(latest);
+      latest.pid = spawnBackgroundWorker(latest.id, fixerRole);
+      await writeBackgroundTask(latest);
+      await notify(
+        latest.chat_id,
+        `${latest.id}: review needs fixes; starting automatic fixer`,
+        `Background task ${latest.id}: review needs fixes; starting its one automatic fixer + final review cycle.`,
+      );
+      return;
+    }
+
     latest.current_role = undefined;
     latest.finished_at = new Date().toISOString();
     latest.status = verdict === "ready" ? "ready_for_pr" : "needs_fix";
@@ -189,9 +177,11 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     return;
   }
 
+  const nextRole = nextQueuedRole(latest);
   if (nextRole) {
     latest.current_role = nextRole;
     latest.status = statusForRole(nextRole);
+    await writeBackgroundTask(latest);
     latest.pid = spawnBackgroundWorker(latest.id, nextRole);
     await writeBackgroundTask(latest);
     await notify(

@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  appendAutomaticFixerCycle,
   backgroundModelOverrideForRole,
+  backgroundWorkerInstructions,
   choosePipeline,
   friendlyIdFromUuid,
   nextQueuedRole,
@@ -36,8 +38,25 @@ test("background model routing selects Codex models by worker role", () => {
   assert.deepEqual(backgroundModelOverrideForRole("fixer"), terra);
 });
 
-test("background model routing falls back to the active model for unknown roles", () => {
+test("unknown roles use active-model routing and generic worker instructions", () => {
   assert.equal(backgroundModelOverrideForRole("unknown"), undefined);
+  assert.match(backgroundWorkerInstructions("unknown").join("\n"), /Role: unknown\./);
+  assert.match(backgroundWorkerInstructions("unknown").join("\n"), /No specialized instructions exist/);
+});
+
+test("automatic fixer cycle appends exactly one fixer and final reviewer", () => {
+  const task: Pick<BackgroundTask, "pipeline" | "automatic_fix_attempted"> = {
+    pipeline: [{ role: "reviewer", status: "done" }],
+  };
+
+  assert.equal(appendAutomaticFixerCycle(task), true);
+  assert.equal(task.automatic_fix_attempted, true);
+  assert.deepEqual(
+    task.pipeline.map((stage) => stage.role),
+    ["reviewer", "fixer", "reviewer"],
+  );
+  assert.equal(appendAutomaticFixerCycle(task), false);
+  assert.equal(task.pipeline.length, 3);
 });
 
 test("nextQueuedRole returns the first queued stage", () => {

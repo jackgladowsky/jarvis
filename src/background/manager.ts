@@ -252,6 +252,7 @@ export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer
         ]
       : [{ role: "reviewer", status: "queued" }];
   task.pipeline.push(...stages);
+  if (role === "fixer") task.automatic_fix_attempted = true;
   task.current_role = role;
   task.status = statusForResumeRole(role);
   task.finished_at = undefined;
