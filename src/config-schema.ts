@@ -19,41 +19,6 @@ export const ConfigSchema = z.object({
     reserve_tokens: z.number().int().positive(),
     keep_recent_tokens: z.number().int().positive(),
   }),
-  observability: z
-    .object({
-      llm_telemetry: z.object({
-        enabled: z.boolean(),
-        sink: z.enum(["off", "file", "http", "both"]),
-        events_dir: z.string().min(1).nullable(),
-        queue_dir: z.string().min(1).nullable(),
-        endpoint: z.string().url().nullable(),
-        content_mode: z.enum(["metadata", "preview", "full"]),
-        capture_raw_payload: z.boolean(),
-        max_preview_chars: z.number().int().positive(),
-        max_payload_bytes: z.number().int().positive(),
-        queue_max_events: z.number().int().positive(),
-        max_event_age_days: z.number().int().positive(),
-        drain_interval_ms: z.number().int().positive(),
-        request_timeout_ms: z.number().int().positive(),
-      }),
-    })
-    .default({
-      llm_telemetry: {
-        enabled: false,
-        sink: "off",
-        events_dir: null,
-        queue_dir: null,
-        endpoint: null,
-        content_mode: "metadata",
-        capture_raw_payload: false,
-        max_preview_chars: 500,
-        max_payload_bytes: 262144,
-        queue_max_events: 10000,
-        max_event_age_days: 14,
-        drain_interval_ms: 10000,
-        request_timeout_ms: 5000,
-      },
-    }),
   tools: z.object({
     bash: z.object({
       default_timeout_seconds: z.number().int().positive(),
@@ -118,8 +83,6 @@ export const EnvSchema = z.object({
   CODEX_OAUTH_CREDS_PATH: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENROUTER_API_KEY: z.string().optional(),
-  // Optional bearer for posting metadata-only LLM telemetry to AI Observatory.
-  AI_OBSERVATORY_INGEST_TOKEN: z.string().optional(),
   // Required: powers the `web_search` tool. Search and page-fetch both go
   // through Exa — without this key the tool throws on every call. Treated
   // as load-bearing rather than optional so startup fails fast if missing.

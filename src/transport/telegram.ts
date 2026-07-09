@@ -435,8 +435,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
   let pendingStatusText = "";
   const startedAt = Date.now();
 
-  let stoppedStatusShown = false;
-
   const renderStatus = (lines: string[]): string => {
     const elapsed = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
     return [`Working… ${elapsed}s`, "", ...lines.slice(-4)].join("\n");
@@ -491,7 +489,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
   };
 
   const showStoppedStatus = async (text: string): Promise<void> => {
-    stoppedStatusShown = true;
     cancelPendingStatus();
     cancelPendingEdit();
 

@@ -22,11 +22,6 @@ import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import { type ImageContent, type Model } from "@mariozechner/pi-ai";
 import { log } from "../lib/logger.js";
-import {
-  createTelemetryStreamFn,
-  hashTelemetryIdentifier,
-  type LlmTelemetryScope,
-} from "../observability/llm-telemetry.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
 import { estimateContextTokens, maybeCompact, maybeCompactLoaded } from "./compaction.js";
@@ -72,7 +67,7 @@ export interface StreamCallbacks {
   /** Called when the run was explicitly cancelled and a stopped marker has
    *  been persisted to the current session. */
   onCancelled?: (text: string) => void | Promise<void>;
-  /** Optional coarse progress telemetry. This is observable state, not model
+  /** Optional coarse progress updates. This is observable state, not model
    *  chain-of-thought: loading context, calling tools, finishing, etc. */
   onStatus?: (text: string) => void | Promise<void>;
   statusMode?: StatusMode;
@@ -294,7 +289,7 @@ function injectSkillNudge(messages: AgentMessage[]): void {
 // Build a fresh Agent for a given session. Tools and model are process-level;
 // the system prompt is reassembled per run so host-local prompt edits are live
 // on the next prompt/session.
-function buildAgent(messages: AgentMessage[], agentModel = model, telemetryScope?: LlmTelemetryScope): Agent {
+function buildAgent(messages: AgentMessage[], agentModel = model, sessionId?: string): Agent {
   return new Agent({
     initialState: {
       systemPrompt: getSystemPrompt(),
@@ -304,8 +299,7 @@ function buildAgent(messages: AgentMessage[], agentModel = model, telemetryScope
       thinkingLevel: getReasoningLevel(),
     },
     getApiKey: getApiKeyForProvider,
-    streamFn: telemetryScope ? createTelemetryStreamFn(telemetryScope) : undefined,
-    sessionId: telemetryScope?.session_id,
+    sessionId,
   });
 }
 
@@ -458,19 +452,10 @@ export async function handleMessage(
 
     let lastError = "agent message failed";
 
-    const messageTs = new Date().toISOString();
-
     for (let i = 0; i < attempts.length; i++) {
       ensureNotAborted(run);
       const attempt = attempts[i];
-      const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, {
-        kind: "chat",
-        session_id: session.sessionId,
-        chat_id_hash: hashTelemetryIdentifier(chatId),
-        attempt_label: attempt.label,
-        message_ts: messageTs,
-        source_path: join(paths.sessions, `${session.sessionId}.jsonl`),
-      });
+      const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, session.sessionId);
       const detachAgent = run.attachAgent(agent);
       let currentMsgIsAbandoned = false;
       let promptError: string | undefined;
@@ -642,14 +627,7 @@ export async function runScheduledPrompt(
       initialMessages = [];
     }
 
-    const agent = buildAgent(initialMessages, taskModel, {
-      kind: "scheduled",
-      session_id: `scheduled:${taskId}`,
-      task_id: taskId,
-      task_name: taskName,
-      source_path: scheduledSessionFile(taskId),
-      message_ts: new Date().toISOString(),
-    });
+    const agent = buildAgent(initialMessages, taskModel, `scheduled:${taskId}`);
     const detachAgent = run.attachAgent(agent);
     const before = agent.state.messages.length;
     let finalText = "";
@@ -760,14 +738,7 @@ export async function runBackgroundPrompt(
       const attemptModel = retryModels[attempt];
       log.info("background prompt attempt", { taskId, attempt, model: attemptModel.id });
 
-      const agent = buildAgent(initialMessages, attemptModel, {
-        kind: "background",
-        session_id: `background:${taskId}`,
-        task_id: taskId,
-        task_name: taskName,
-        source_path: backgroundSessionFile(taskId),
-        message_ts: new Date().toISOString(),
-      });
+      const agent = buildAgent(initialMessages, attemptModel, `background:${taskId}`);
       const detachAgent = run.attachAgent(agent);
       const before = agent.state.messages.length;
       let finalText = "";

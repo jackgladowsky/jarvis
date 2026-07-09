@@ -18,22 +18,6 @@ compaction:
   reserve_tokens: 16384                       # compact when context_tokens > (window - reserve_tokens)
   keep_recent_tokens: 20000                   # always preserve this much of the tail uncompacted
 
-observability:
-  llm_telemetry:
-    enabled: false                            # set true to emit metadata-only LLM call telemetry
-    sink: off                                 # "off" / "file" / "http" / "both"
-    events_dir: null                          # default: ~/.jarvis/data/observability/llm-events
-    queue_dir: null                           # default: ~/.jarvis/data/observability/llm-telemetry-queue
-    endpoint: null                            # e.g. http://127.0.0.1:8765/api/ingest/llm-events
-    content_mode: metadata                    # "metadata" keeps prompts/responses out; "preview"/"full" are explicit opt-ins
-    capture_raw_payload: false                # only honored with content_mode=full
-    max_preview_chars: 500
-    max_payload_bytes: 262144
-    queue_max_events: 10000
-    max_event_age_days: 14
-    drain_interval_ms: 10000
-    request_timeout_ms: 5000
-
 tools:
   bash:
     default_timeout_seconds: 60

@@ -8,12 +8,10 @@ import * as sessions from "./agent/session-manager.js";
 import { notifyPendingDeployComplete } from "./lib/deploy-notify.js";
 import { log } from "./lib/logger.js";
 import { collectVersionInfo, formatVersionInfo } from "./lib/version.js";
-import { drainLlmTelemetryQueueOnce, startLlmTelemetryDrain } from "./observability/llm-telemetry.js";
 import { startScheduler } from "./scheduler.js";
 import { runTelegram } from "./transport/telegram.js";
 
 const ACTIVE_RUN_SHUTDOWN_WAIT_MS = 8_000;
-const TELEMETRY_SHUTDOWN_DRAIN_LIMIT = 25;
 
 async function main(): Promise<void> {
   log.info("jarvis starting", { version: formatVersionInfo(collectVersionInfo()) });
@@ -25,7 +23,6 @@ async function main(): Promise<void> {
   const shutdownController = new AbortController();
   let shuttingDown = false;
 
-  const stopTelemetryDrain = startLlmTelemetryDrain();
   const stopScheduler = await startScheduler();
 
   const beginShutdown = (sig: NodeJS.Signals): void => {
@@ -49,8 +46,6 @@ async function main(): Promise<void> {
     abortAllActiveRuns("Process exiting.");
     const drainedRuns = await waitForActiveRuns(ACTIVE_RUN_SHUTDOWN_WAIT_MS);
     if (!drainedRuns) log.warn("timed out waiting for active agent runs to stop");
-    stopTelemetryDrain();
-    await drainLlmTelemetryQueueOnce(TELEMETRY_SHUTDOWN_DRAIN_LIMIT);
     process.removeListener("SIGINT", beginShutdown);
     process.removeListener("SIGTERM", beginShutdown);
   }
