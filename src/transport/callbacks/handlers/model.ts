@@ -9,7 +9,6 @@ import type { Context } from "grammy";
 import { InlineKeyboard } from "grammy";
 import { describeModel, switchModel, getSupportedProviders } from "../../../agent/model.js";
 import { config } from "../../../config.js";
-import { log } from "../../../lib/logger.js";
 import { registerCallback } from "../dispatcher.js";
 
 interface FavoriteModel {
@@ -111,9 +110,7 @@ async function handleModelCallback(ctx: Context, data: string): Promise<void> {
       try {
         switchModel(parsed.provider, parsed.modelId);
         const favs = getModelFavorites();
-        const fav = favs.find(
-          (f) => f.provider === parsed.provider && f.model_id === parsed.modelId,
-        );
+        const fav = favs.find((f) => f.provider === parsed.provider && f.model_id === parsed.modelId);
         const label = fav?.label ?? describeModel();
         await ctx.answerCallbackQuery({ text: `Switched to ${label}` }).catch(() => undefined);
         // Re-render the favorites keyboard with updated highlighting.

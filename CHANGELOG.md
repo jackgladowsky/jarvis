@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- remove the standalone observability dashboard and its LLM telemetry integration
+
 ## 0.6.0
 
 - feat: add real `/cancel` for active chat runs

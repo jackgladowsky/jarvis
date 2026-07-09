@@ -2,7 +2,7 @@
  * Model switching: `/model [provider] [model-id]`.
  */
 import type { Context } from "grammy";
-import { describeModel, getSupportedProviders, switchModel } from "../../../agent/model.js";
+import { describeModel, switchModel } from "../../../agent/model.js";
 import type { CommandDef, ParsedCommand } from "../registry.js";
 import { buildFavoritesKeyboard } from "../../callbacks/handlers/index.js";
 

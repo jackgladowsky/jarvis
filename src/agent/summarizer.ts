@@ -17,9 +17,8 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Model } from "@mariozechner/pi-ai";
 import { config } from "../config.js";
-import { completeSimpleWithTelemetry } from "../observability/llm-telemetry.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
@@ -125,19 +124,13 @@ async function generateLine(
   // archived JSONL.
   const promptText = `<context>\n${conversation}\n</context>\n\nSession id: ${sessionId}\nThe session ended at ${isoDate(rotatedAt)} (${partOfDay(rotatedAt)}). Generate the TOC line, copying the session id verbatim into the parenthetical.`;
 
-  const response = await completeSimpleWithTelemetry(
+  const response = await completeSimple(
     model,
     {
       systemPrompt: SUMMARIZER_SYSTEM_PROMPT,
       messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
     },
     { apiKey, maxTokens: 200 },
-    {
-      kind: "summarizer",
-      session_id: sessionId,
-      source_path: join(paths.sessionsArchive, `${sessionId}.jsonl`),
-      message_ts: new Date().toISOString(),
-    },
   );
 
   if (response.stopReason === "error") {
