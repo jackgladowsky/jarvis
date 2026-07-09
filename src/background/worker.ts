@@ -13,6 +13,7 @@ import {
   spawnBackgroundWorker,
   writeBackgroundTask,
 } from "./manager.js";
+import { backgroundModelOverrideForRole } from "./logic.js";
 import type { BackgroundRole, BackgroundStage, BackgroundTask, BackgroundTaskStatus } from "./types.js";
 
 async function notify(chatId: number, title: string, body: string): Promise<void> {
@@ -135,8 +136,13 @@ function buildPrompt(
 async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
   const task = await readBackgroundTask(taskId);
   const stage = stageForRole(task, role);
+  const modelOverride = backgroundModelOverrideForRole(role);
   stage.status = "running";
   stage.started_at = stage.started_at ?? new Date().toISOString();
+  if (modelOverride) {
+    stage.model_provider = modelOverride.provider;
+    stage.model_id = modelOverride.model;
+  }
   task.current_role = role;
   task.status = statusForRole(role);
   task.started_at = task.started_at ?? new Date().toISOString();
@@ -155,6 +161,7 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     `${task.name} (${role})`,
     buildPrompt(task, role, notePath, mailboxPath, mailText),
     notePath,
+    modelOverride,
   );
   const latest = await readBackgroundTask(task.id);
   const latestStage = stageForRole(latest, role);

@@ -107,6 +107,29 @@ export function choosePipeline(prompt: string): BackgroundStage[] {
   ];
 }
 
+export interface BackgroundModelOverride {
+  provider: "codex";
+  model: "gpt-5.6-sol" | "gpt-5.6-terra";
+}
+
+/**
+ * Keep worker-stage routing local to background runs. Undefined deliberately
+ * falls back to the active model rather than changing the main chat model.
+ */
+export function backgroundModelOverrideForRole(role: string): BackgroundModelOverride | undefined {
+  switch (role) {
+    case "planner":
+    case "researcher":
+    case "reviewer":
+      return { provider: "codex", model: "gpt-5.6-sol" };
+    case "implementer":
+    case "fixer":
+      return { provider: "codex", model: "gpt-5.6-terra" };
+    default:
+      return undefined;
+  }
+}
+
 export function nextQueuedRole(task: Pick<BackgroundTask, "pipeline">): BackgroundRole | undefined {
   return task.pipeline.find((stage) => stage.status === "queued")?.role;
 }

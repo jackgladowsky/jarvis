@@ -22,6 +22,9 @@ export interface BackgroundStage {
   finished_at?: string;
   summary?: string;
   error?: string;
+  /** Model route selected for this stage, when one was explicitly configured. */
+  model_provider?: string;
+  model_id?: string;
 }
 
 export interface BackgroundTask {

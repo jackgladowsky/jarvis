@@ -49,6 +49,11 @@ import { allTools } from "./tools/index.js";
 // filtered out before any callback fires — see the listener below.
 export type StatusMode = "off" | "thinking" | "verbose";
 
+export interface ModelOverride {
+  provider?: string;
+  model?: string;
+}
+
 export interface StreamCallbacks {
   /** Called repeatedly as a text-only assistant message streams in. `text`
    *  is the full accumulated text so far (not a delta). */
@@ -599,7 +604,7 @@ export async function runScheduledPrompt(
   taskName: string,
   prompt: string,
   taskNotePath: string,
-  modelOverride: { provider?: string; model?: string } = {},
+  modelOverride: ModelOverride = {},
 ): Promise<string> {
   const run = activeAgentRuns.start("scheduled", taskId);
   try {
@@ -705,9 +710,12 @@ export async function runBackgroundPrompt(
   taskName: string,
   prompt: string,
   taskNotePath: string,
+  modelOverride: ModelOverride = {},
 ): Promise<string> {
   const run = activeAgentRuns.start("background", taskId);
   try {
+    const taskModel =
+      modelOverride.provider && modelOverride.model ? resolveModel(modelOverride.provider, modelOverride.model) : model;
     ensureNotAborted(run);
     const loaded = await loadBackgroundMessages(taskId);
     ensureNotAborted(run);
@@ -716,7 +724,7 @@ export async function runBackgroundPrompt(
       const compaction = await maybeCompactLoaded(
         `background:${taskId}`,
         loaded,
-        model,
+        taskModel,
         makeSummaryMessage,
         {
           rewriteWithCompaction: (entry, keptTail) => rewriteBackgroundSessionWithCompaction(taskId, entry, keptTail),
@@ -740,7 +748,7 @@ export async function runBackgroundPrompt(
       initialMessages = [];
     }
 
-    const agent = buildAgent(initialMessages, model, {
+    const agent = buildAgent(initialMessages, taskModel, {
       kind: "background",
       session_id: `background:${taskId}`,
       task_id: taskId,

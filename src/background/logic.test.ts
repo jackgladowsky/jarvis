@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { choosePipeline, friendlyIdFromUuid, nextQueuedRole, renderTask, renderTaskList } from "./logic.js";
+import {
+  backgroundModelOverrideForRole,
+  choosePipeline,
+  friendlyIdFromUuid,
+  nextQueuedRole,
+  renderTask,
+  renderTaskList,
+} from "./logic.js";
 import type { BackgroundTask } from "./types.js";
 
 function roles(prompt: string): string[] {
@@ -16,6 +23,21 @@ test("choosePipeline routes research, implementation, and mixed prompts", () => 
 test("friendlyIdFromUuid is stable and human-shaped", () => {
   assert.equal(friendlyIdFromUuid("93226887-6c09-4b49-96a1-72815b018cf1"), "fern-sparrow");
   assert.match(friendlyIdFromUuid("00000000-0000-0000-0000-000000000000"), /^[a-z]+-[a-z]+$/);
+});
+
+test("background model routing selects Codex models by worker role", () => {
+  const sol = { provider: "codex", model: "gpt-5.6-sol" };
+  const terra = { provider: "codex", model: "gpt-5.6-terra" };
+
+  assert.deepEqual(backgroundModelOverrideForRole("planner"), sol);
+  assert.deepEqual(backgroundModelOverrideForRole("researcher"), sol);
+  assert.deepEqual(backgroundModelOverrideForRole("reviewer"), sol);
+  assert.deepEqual(backgroundModelOverrideForRole("implementer"), terra);
+  assert.deepEqual(backgroundModelOverrideForRole("fixer"), terra);
+});
+
+test("background model routing falls back to the active model for unknown roles", () => {
+  assert.equal(backgroundModelOverrideForRole("unknown"), undefined);
 });
 
 test("nextQueuedRole returns the first queued stage", () => {
