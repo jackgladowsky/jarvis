@@ -89,3 +89,22 @@ tail -f ~/.jarvis/data/jobs/scheduler.log
 jq . ~/.jarvis/data/jobs/tasks.json
 journalctl -fu jarvis
 ```
+
+### Context-window failures
+
+If a scheduled task fails with `input exceeds the context window` / token-limit errors:
+
+1. Inspect the log and session size:
+   ```bash
+   tail -n 120 ~/.jarvis/data/jobs/scheduler.log
+   ls -lh ~/.jarvis/data/jobs/sessions/<task-id>.jsonl
+   ```
+2. Preserve debugging context but reset the next run by moving the oversized session:
+   ```bash
+   mkdir -p ~/.jarvis/data/jobs/sessions/archive
+   mv ~/.jarvis/data/jobs/sessions/<task-id>.jsonl \
+     ~/.jarvis/data/jobs/sessions/archive/<task-id>-context-overflow-$(date -u +%Y-%m-%dT%H-%M-%SZ).jsonl
+   ```
+3. Add a terse note in `~/.jarvis/data/jobs/notes/<task-id>.md` with the failure time, archive path, and whether a durable code fix is pending.
+
+Task notes are the durable cross-run state; transcripts are safe to archive/reset when oversized.
