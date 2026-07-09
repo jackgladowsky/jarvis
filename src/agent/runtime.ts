@@ -740,62 +740,105 @@ export async function runBackgroundPrompt(
       initialMessages = [];
     }
 
-    const agent = buildAgent(initialMessages, model, {
-      kind: "background",
-      session_id: `background:${taskId}`,
-      task_id: taskId,
-      task_name: taskName,
-      source_path: backgroundSessionFile(taskId),
-      message_ts: new Date().toISOString(),
-    });
-    const detachAgent = run.attachAgent(agent);
-    const before = agent.state.messages.length;
-    let finalText = "";
-    let errorText = "";
+    // Retry chain: same model once, then GLM 5.2 via OpenRouter as a fallback
+    // for transient Codex server errors. GLM 5.2 is cheap and competent enough
+    // for coding — Jack explicitly trusts its output here.
+    const FALLBACK_MODEL = resolveModel("openrouter", "z-ai/glm-5.2");
+    const retryModels = [model, model, FALLBACK_MODEL];
 
-    const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
-      if (shouldSuppressForCancelledRun(run)) return;
-      if (event.type !== "message_end" || event.message.role !== "assistant") return;
-      if (hasToolCall(event.message.content)) return;
-      if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
-        errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
-        log.warn("background agent error", {
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      ensureNotAborted(run);
+      const attemptModel = retryModels[attempt];
+      log.info("background prompt attempt", { taskId, attempt, model: attemptModel.id });
+
+      const agent = buildAgent(initialMessages, attemptModel, {
+        kind: "background",
+        session_id: `background:${taskId}`,
+        task_id: taskId,
+        task_name: taskName,
+        source_path: backgroundSessionFile(taskId),
+        message_ts: new Date().toISOString(),
+      });
+      const detachAgent = run.attachAgent(agent);
+      const before = agent.state.messages.length;
+      let finalText = "";
+      let errorText = "";
+
+      const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+        if (shouldSuppressForCancelledRun(run)) return;
+        if (event.type !== "message_end" || event.message.role !== "assistant") return;
+        if (hasToolCall(event.message.content)) return;
+        if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+          errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
+          log.warn("background agent error", {
+            taskId,
+            stopReason: event.message.stopReason,
+            err: event.message.errorMessage ?? "",
+          });
+          return;
+        }
+        finalText = extractText(event.message.content).trim();
+      });
+
+      const taskPrompt = [
+        "You are running as a background JARVIS worker.",
+        "You have one long-running task. Work autonomously, but do not make product/security/destructive decisions by guessing.",
+        "If blocked, write a question to the task mailbox, set the task status to waiting_on_main in its task JSON, and stop.",
+        "If finished, update the task note and task JSON with status awaiting_review. Do not push, merge, deploy, or edit the main checkout unless explicitly instructed.",
+        "Use the assigned git worktree for repo changes.",
+        "Your final response is a concise handoff summary for main JARVIS.",
+        "",
+        `Task: ${taskName} (${taskId})`,
+        `Task note: ${taskNotePath}`,
+        "",
+        prompt,
+      ].join("\n");
+
+      try {
+        ensureNotAborted(run);
+        await agent.prompt(taskPrompt);
+        ensureNotAborted(run);
+      } catch (err) {
+        unsubscribe();
+        detachAgent();
+        if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+        lastError = err instanceof Error ? err : new Error(String(err));
+        log.warn("background prompt attempt failed", {
           taskId,
-          stopReason: event.message.stopReason,
-          err: event.message.errorMessage ?? "",
+          attempt,
+          model: attemptModel.id,
+          err: lastError.message,
         });
-        return;
+        // Only retry on server-side errors — not auth, bad request, etc.
+        const msg = lastError.message.toLowerCase();
+        const retryable =
+          msg.includes("server_error") ||
+          msg.includes("server error") ||
+          msg.includes("overloaded") ||
+          msg.includes("try again later") ||
+          msg.includes("500") ||
+          msg.includes("502") ||
+          msg.includes("503");
+        if (!retryable || attempt >= 2) {
+          throw lastError;
+        }
+        // Sleep 2s before the retry so transient overload has a moment to clear.
+        await new Promise((r) => setTimeout(r, 2000));
+        continue; // next attempt
       }
-      finalText = extractText(event.message.content).trim();
-    });
 
-    const taskPrompt = [
-      "You are running as a background JARVIS worker.",
-      "You have one long-running task. Work autonomously, but do not make product/security/destructive decisions by guessing.",
-      "If blocked, write a question to the task mailbox, set the task status to waiting_on_main in its task JSON, and stop.",
-      "If finished, update the task note and task JSON with status awaiting_review. Do not push, merge, deploy, or edit the main checkout unless explicitly instructed.",
-      "Use the assigned git worktree for repo changes.",
-      "Your final response is a concise handoff summary for main JARVIS.",
-      "",
-      `Task: ${taskName} (${taskId})`,
-      `Task note: ${taskNotePath}`,
-      "",
-      prompt,
-    ].join("\n");
-
-    try {
-      ensureNotAborted(run);
-      await agent.prompt(taskPrompt);
-      ensureNotAborted(run);
-    } finally {
+      // Success on this attempt
       unsubscribe();
       detachAgent();
+      await appendBackgroundMessages(taskId, agent.state.messages.slice(before));
+      if (errorText) throw new Error(errorText);
+      if (!finalText) throw new Error("background agent produced no final output");
+      return finalText;
     }
 
-    await appendBackgroundMessages(taskId, agent.state.messages.slice(before));
-    if (errorText) throw new Error(errorText);
-    if (!finalText) throw new Error("background agent produced no final output");
-    return finalText;
+    throw lastError ?? new Error("background prompt exhausted retries");
   } catch (err) {
     if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
     throw err;
