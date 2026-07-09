@@ -22,7 +22,9 @@ async function notify(chatId: number, title: string, body: string): Promise<void
     title,
     body,
     prompt: body,
-    fallback_text: `Background task ${title}.\n\n${body}`,
+    // The title already summarizes the body for progress updates; repeating
+    // both in a fallback produced visibly duplicated Telegram notifications.
+    fallback_text: body,
   });
 }
 
