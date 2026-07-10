@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ModelThinkingLevel } from "@mariozechner/pi-ai";
 import { paths } from "../paths.js";
+import { atomicWriteJsonSync } from "../lib/durable-file.js";
 import { log } from "../lib/logger.js";
 
 export type ReasoningLevel = Extract<ModelThinkingLevel, "off" | "low" | "medium" | "high">;
@@ -26,8 +27,7 @@ function loadRuntimeReasoning(): ReasoningLevel {
 
 function saveRuntimeReasoning(level: ReasoningLevel): void {
   try {
-    mkdirSync(dirname(RUNTIME_REASONING_PATH), { recursive: true });
-    writeFileSync(RUNTIME_REASONING_PATH, JSON.stringify({ level }, null, 2) + "\n", "utf-8");
+    atomicWriteJsonSync(RUNTIME_REASONING_PATH, { level });
   } catch (err) {
     log.warn("failed to persist runtime reasoning level", { err: String(err) });
   }

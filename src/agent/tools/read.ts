@@ -14,9 +14,9 @@ import { type Static, Type } from "typebox";
 import { auditToolCall } from "../../lib/logger.js";
 
 const schema = Type.Object({
-  path: Type.String({ description: "Absolute or relative path to the file to read." }),
-  offset: Type.Optional(Type.Number({ description: "1-indexed line to start at." })),
-  limit: Type.Optional(Type.Number({ description: "Max number of lines to return." })),
+  path: Type.String({ description: "Absolute or relative path to the file to read.", minLength: 1 }),
+  offset: Type.Optional(Type.Integer({ description: "1-indexed line to start at.", minimum: 1 })),
+  limit: Type.Optional(Type.Integer({ description: "Max number of lines to return.", minimum: 1, maximum: 10_000 })),
 });
 
 export const readTool: AgentTool<typeof schema> = {

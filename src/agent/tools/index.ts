@@ -16,13 +16,21 @@
 // with one — add it only when the shell genuinely can't do the job.
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { withToolAudit } from "./audited.js";
 import { bashTool } from "./bash.js";
 import { browserWorkbenchTool } from "./browser-workbench.js";
 import { editTool } from "./edit.js";
-import { mcpCallTool } from "./mcp.js";
+import { mcpCallTool, summarizeMcpAuditArgs, summarizeMcpAuditError } from "./mcp.js";
 import { readTool } from "./read.js";
 import { webSearchTool } from "./web-search.js";
 import { writeTool } from "./write.js";
+
+// MCP arguments are arbitrary and may contain file bodies, credentials, or
+// other secrets. Audit only routing metadata and argument names, never values.
+const auditedMcpCallTool = withToolAudit(mcpCallTool, {
+  summarizeArgs: summarizeMcpAuditArgs,
+  summarizeError: summarizeMcpAuditError,
+});
 
 export const allTools: AgentTool<any>[] = [
   readTool,
@@ -31,5 +39,5 @@ export const allTools: AgentTool<any>[] = [
   bashTool,
   webSearchTool,
   browserWorkbenchTool,
-  mcpCallTool,
+  auditedMcpCallTool,
 ];

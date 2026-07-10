@@ -21,10 +21,11 @@ import { config } from "../../config.js";
 import { auditToolCall } from "../../lib/logger.js";
 
 const schema = Type.Object({
-  command: Type.String({ description: "Bash command to run. Has full shell access." }),
+  command: Type.String({ description: "Bash command to run. Has full shell access.", minLength: 1 }),
   timeout: Type.Optional(
     Type.Number({
       description: "Timeout in seconds. Defaults to config.tools.bash.default_timeout_seconds.",
+      minimum: 1,
     }),
   ),
 });
@@ -32,19 +33,56 @@ const schema = Type.Object({
 // 100KB is enough to see typical command output without flooding the model
 // context. Tools that produce more than this should be re-run with `| head`,
 // `| tail`, or redirection to a file the model can read later.
-const MAX_OUTPUT_BYTES = 100_000;
+export const MAX_BASH_OUTPUT_BYTES = 100_000;
 
-function clipOutput(buf: Buffer): { text: string; truncated: boolean } {
-  if (buf.byteLength <= MAX_OUTPUT_BYTES) {
-    return { text: buf.toString("utf-8"), truncated: false };
+// Streaming head/tail buffer. It never retains more than MAX_BASH_OUTPUT_BYTES
+// even if a command prints indefinitely; clipping only after Buffer.concat
+// would let a noisy process exhaust the Node heap before it exits.
+export class BoundedBashOutput {
+  private readonly headParts: Buffer[] = [];
+  private headBytes = 0;
+  private tail = Buffer.alloc(0);
+  private totalBytes = 0;
+  private readonly headLimit = Math.floor(MAX_BASH_OUTPUT_BYTES / 2);
+  private readonly tailLimit = MAX_BASH_OUTPUT_BYTES - this.headLimit;
+
+  push(value: Buffer | Uint8Array): void {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    this.totalBytes += chunk.byteLength;
+
+    let offset = 0;
+    if (this.headBytes < this.headLimit) {
+      const take = Math.min(this.headLimit - this.headBytes, chunk.byteLength);
+      if (take > 0) {
+        this.headParts.push(chunk.subarray(0, take));
+        this.headBytes += take;
+        offset = take;
+      }
+    }
+
+    if (offset < chunk.byteLength) {
+      const remainder = chunk.subarray(offset);
+      if (remainder.byteLength >= this.tailLimit) {
+        this.tail = Buffer.from(remainder.subarray(remainder.byteLength - this.tailLimit));
+      } else {
+        const combined = Buffer.concat([this.tail, remainder]);
+        this.tail =
+          combined.byteLength <= this.tailLimit ? combined : combined.subarray(combined.byteLength - this.tailLimit);
+      }
+    }
   }
-  const half = Math.floor(MAX_OUTPUT_BYTES / 2);
-  const head = buf.subarray(0, half).toString("utf-8");
-  const tail = buf.subarray(buf.byteLength - half).toString("utf-8");
-  return {
-    text: `${head}\n...[truncated ${buf.byteLength - MAX_OUTPUT_BYTES} bytes]...\n${tail}`,
-    truncated: true,
-  };
+
+  finish(): { text: string; truncated: boolean; totalBytes: number } {
+    const head = Buffer.concat(this.headParts, this.headBytes).toString("utf-8");
+    const tail = this.tail.toString("utf-8");
+    const keptBytes = this.headBytes + this.tail.byteLength;
+    const truncated = this.totalBytes > keptBytes;
+    return {
+      text: truncated ? `${head}\n...[truncated ${this.totalBytes - keptBytes} bytes]...\n${tail}` : `${head}${tail}`,
+      truncated,
+      totalBytes: this.totalBytes,
+    };
+  }
 }
 
 export const bashTool: AgentTool<typeof schema> = {
@@ -74,11 +112,10 @@ export const bashTool: AgentTool<typeof schema> = {
         stdio: ["ignore", "pipe", "pipe"],
       });
 
-      // Buffer chunks rather than concatenating each time — Buffer.concat at
-      // the end is O(N) total instead of O(N²) appends.
-      const chunks: Buffer[] = [];
+      const output = new BoundedBashOutput();
       let timedOut = false;
       let forceKillTimer: NodeJS.Timeout | undefined;
+      let settled = false;
 
       const clearForceKillTimer = (): void => {
         if (!forceKillTimer) return;
@@ -110,8 +147,8 @@ export const bashTool: AgentTool<typeof schema> = {
         forceKillTimer.unref();
       };
 
-      child.stdout.on("data", (b: Buffer) => chunks.push(b));
-      child.stderr.on("data", (b: Buffer) => chunks.push(b));
+      child.stdout.on("data", (b: Buffer) => output.push(b));
+      child.stderr.on("data", (b: Buffer) => output.push(b));
 
       // SIGTERM first, then SIGKILL after a grace period if the process
       // ignores SIGTERM. unref() so the kill timer doesn't keep Node alive
@@ -128,19 +165,41 @@ export const bashTool: AgentTool<typeof schema> = {
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
-      child.on("close", async (code) => {
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         clearForceKillTimer();
         signal?.removeEventListener("abort", onAbort);
 
-        const combined = Buffer.concat(chunks);
-        const { text, truncated } = clipOutput(combined);
+        const { text, truncated } = output.finish();
         // -1 is a sentinel for "process exited via signal, no exit code".
         const exit = code ?? -1;
         const status = timedOut ? `timed out after ${timeoutSec}s` : `exit ${exit}`;
         const out = text || "(no output)";
 
-        await auditToolCall({
+        // Keep the audit record ordered and durable before exposing the tool
+        // result. auditToolCall itself failure-isolates disk errors, so an
+        // audit outage still cannot make a completed command look retryable.
+        const finishAfterAudit = (): void => {
+          // If the agent aborted us mid-flight, surface that as a rejection
+          // so the agent loop sees a tool error rather than partial output.
+          if (signal?.aborted) {
+            reject(new Error("aborted"));
+            return;
+          }
+
+          resolve({
+            content: [
+              {
+                type: "text",
+                text: `$ ${command}\n${out}\n[${status}${truncated ? "; output truncated" : ""}]`,
+              },
+            ],
+            details: { exit, timedOut, truncated },
+          });
+        };
+        void auditToolCall({
           tool: "bash",
           args: { command, timeout: timeoutSec },
           // Only outcome=ok if the process actually finished cleanly with 0.
@@ -148,40 +207,25 @@ export const bashTool: AgentTool<typeof schema> = {
           exit,
           duration_ms: Date.now() - t0,
           ...(timedOut ? { error: "timeout" } : {}),
-        });
-
-        // If the agent aborted us mid-flight, surface that as a rejection
-        // so the agent loop sees a tool error rather than partial output.
-        if (signal?.aborted) {
-          reject(new Error("aborted"));
-          return;
-        }
-
-        resolve({
-          content: [
-            {
-              type: "text",
-              text: `$ ${command}\n${out}\n[${status}${truncated ? "; output truncated" : ""}]`,
-            },
-          ],
-          details: { exit, timedOut, truncated },
-        });
+        }).then(finishAfterAudit, finishAfterAudit);
       });
 
       // Spawn-level errors (e.g. /bin/bash missing). Rare but worth distinct
       // handling so they don't get silently swallowed by the close path.
-      child.on("error", async (err) => {
+      child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         clearForceKillTimer();
         signal?.removeEventListener("abort", onAbort);
-        await auditToolCall({
+        const rejectAfterAudit = (): void => reject(err);
+        void auditToolCall({
           tool: "bash",
           args: { command, timeout: timeoutSec },
           outcome: "error",
           duration_ms: Date.now() - t0,
           error: err.message,
-        });
-        reject(err);
+        }).then(rejectAfterAudit, rejectAfterAudit);
       });
     });
   },

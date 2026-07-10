@@ -14,10 +14,11 @@
 //
 // The Anthropic path is straightforward — just hand back the env-stored API key.
 
-import { chmod, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { openaiCodexOAuthProvider, type OAuthCredentials } from "@mariozechner/pi-ai/oauth";
 import { env } from "../config.js";
+import { atomicWriteJson, withFileLock } from "../lib/durable-file.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
 
@@ -66,9 +67,25 @@ async function loadCreds(): Promise<OAuthCredentials> {
 
 async function persistCreds(creds: OAuthCredentials): Promise<void> {
   const path = credsPath();
-  await writeFile(path, JSON.stringify(creds, null, 2), "utf-8");
-  // Re-tighten perms after every write — the file holds a refresh token.
-  await chmod(path, 0o600);
+  await atomicWriteJson(path, creds, { mode: 0o600 });
+}
+
+let refreshInFlight: Promise<OAuthCredentials> | undefined;
+
+async function refreshCredsIfNeeded(): Promise<OAuthCredentials> {
+  const path = credsPath();
+  return withFileLock(path, async () => {
+    // Another JARVIS process may have refreshed while this process waited.
+    // Re-reading under the cross-process lock avoids reusing a rotated refresh
+    // token or overwriting the newer credential set.
+    const current = await loadCreds();
+    if (current.expires >= Date.now() + REFRESH_BUFFER_MS) return current;
+
+    log.info("refreshing codex oauth token");
+    const refreshed = await openaiCodexOAuthProvider.refreshToken(current);
+    await persistCreds(refreshed);
+    return refreshed;
+  });
 }
 
 // Returns a usable access token, refreshing if we're inside the buffer window.
@@ -77,9 +94,10 @@ export async function getCodexAccessToken(): Promise<string> {
   if (!cached) cached = await loadCreds();
 
   if (cached.expires < Date.now() + REFRESH_BUFFER_MS) {
-    log.info("refreshing codex oauth token");
-    cached = await openaiCodexOAuthProvider.refreshToken(cached);
-    await persistCreds(cached);
+    refreshInFlight ??= refreshCredsIfNeeded().finally(() => {
+      refreshInFlight = undefined;
+    });
+    cached = await refreshInFlight;
   }
 
   return openaiCodexOAuthProvider.getApiKey(cached);

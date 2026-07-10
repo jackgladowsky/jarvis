@@ -6,7 +6,8 @@
 
 set -euo pipefail
 
-DEFAULT_REPO="$HOME/jarvis"
+SCRIPT_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_REPO="${JARVIS_SOURCE_ROOT:-$SCRIPT_REPO_ROOT}"
 DEFAULT_DATA_DIR="${JARVIS_DATA_DIR:-$HOME/.jarvis}/data/background"
 DEFAULT_WORKTREES_DIR="$HOME/jarvis-worktrees"
 
@@ -33,7 +34,7 @@ Options:
   --dry-run                 Print actions only (default).
   --apply                   Actually remove eligible worktrees and prune metadata.
   --age-days N              Minimum terminal task age in days (default: 14).
-  --repo PATH               Main git repository (default: ~/jarvis).
+  --repo PATH               Main git repository (default: this script's checkout or JARVIS_SOURCE_ROOT).
   --data-dir PATH           Background data dir (default: ${JARVIS_DATA_DIR:-~/.jarvis}/data/background).
   --worktrees-dir PATH      Background worktrees dir (default: ~/jarvis-worktrees).
   --include-orphans         Also remove clean orphan directories in --worktrees-dir older than --age-days.

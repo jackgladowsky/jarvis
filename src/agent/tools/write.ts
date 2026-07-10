@@ -5,14 +5,13 @@
 // There's no append mode — if the model wants to add to a file, it should
 // `read` then `write` (or use `edit` for surgical changes).
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "typebox";
+import { atomicWriteFile, withFileLock } from "../../lib/durable-file.js";
 import { auditToolCall } from "../../lib/logger.js";
 
 const schema = Type.Object({
-  path: Type.String({ description: "Path to the file to create or overwrite." }),
+  path: Type.String({ description: "Path to the file to create or overwrite.", minLength: 1 }),
   content: Type.String({ description: "Full file contents to write (UTF-8)." }),
 });
 
@@ -25,9 +24,9 @@ export const writeTool: AgentTool<typeof schema> = {
   async execute(_id, { path, content }: Static<typeof schema>) {
     const t0 = Date.now();
     try {
-      // mkdir -p semantics. Cheap if the dir already exists.
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, content, "utf-8");
+      // Serialize JARVIS writers across processes and replace atomically so a
+      // crash can never leave the destination truncated or half-written.
+      await withFileLock(path, () => atomicWriteFile(path, content));
 
       const bytes = Buffer.byteLength(content, "utf-8");
       // Same as `read`: log path + byte count, never contents.

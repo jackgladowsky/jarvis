@@ -17,12 +17,15 @@
 // JSONL, builds an Agent with those messages, runs the loop, then appends
 // any new messages produced. No long-lived in-memory Agent map.
 
-import { randomBytes } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { access, mkdir, open, readFile, readdir, rename } from "node:fs/promises";
+import { constants } from "node:fs";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
+import { atomicWriteFile, atomicWriteJson, withFileLock } from "../lib/durable-file.js";
+import { appendJsonLinesDurable, readJsonLinesRecovering } from "../lib/json-lines.js";
 import { paths } from "../paths.js";
 
 // Per-chat metadata stored in active.json. Keyed by chat id (stringified, since
@@ -39,68 +42,145 @@ type ActiveSessions = Record<string, ActiveSessionEntry>;
 // on every change.
 let active: ActiveSessions = {};
 
-// Format: YYYY-MM-DD_HHMM_<4 hex chars> — date-prefixed for grep-friendliness,
-// hash suffix to disambiguate same-minute starts. (DESIGN.md open question #2.)
+// Format: YYYY-MM-DD_HHMM_<UUID> — date-prefixed for grep-friendliness with
+// 122 random UUIDv4 bits and an exclusive file reservation for collision safety.
 function newSessionId(now: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   const time = `${pad(now.getHours())}${pad(now.getMinutes())}`;
-  const hash = randomBytes(2).toString("hex");
-  return `${date}_${time}_${hash}`;
+  return `${date}_${time}_${randomUUID()}`;
 }
 
 function sessionFile(id: string): string {
+  assertSessionId(id);
   return join(paths.sessions, `${id}.jsonl`);
 }
 
 function archivedSessionFile(id: string): string {
+  assertSessionId(id);
   return join(paths.sessionsArchive, `${id}.jsonl`);
+}
+
+function assertSessionId(id: string): void {
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`invalid session id: ${id}`);
 }
 
 // Shared parser used by both `load` (active session) and `loadArchived`
 // (already-rotated session). Walks forward applying compaction entries.
 async function loadFile(filePath: string): Promise<LoadedSession> {
-  let raw: string;
-  try {
-    raw = await readFile(filePath, "utf-8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { tail: [] };
-    }
-    throw err;
-  }
-
+  const records = await readJsonLinesRecovering<unknown>(filePath);
   let previousSummary: string | undefined;
   let tail: AgentMessage[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    const parsed = JSON.parse(line) as unknown;
+  for (const [index, parsed] of records.entries()) {
     if (isCompactionEntry(parsed)) {
       previousSummary = parsed.summary;
       tail = []; // everything before this is now folded into the summary
-    } else {
+    } else if (isAgentMessage(parsed)) {
       tail.push(parsed as AgentMessage);
+    } else {
+      throw new SyntaxError(`invalid session JSONL record at line ${index + 1}`);
     }
   }
 
   return { previousSummary, tail: dropDanglingToolCalls(tail) };
 }
 
-async function loadActive(): Promise<void> {
+async function readActive(): Promise<ActiveSessions> {
   try {
     const raw = await readFile(paths.activeSessions, "utf-8");
-    active = JSON.parse(raw) as ActiveSessions;
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new SyntaxError(`malformed active sessions at ${paths.activeSessions}`);
+    }
+    const validated: ActiveSessions = {};
+    for (const [chatId, value] of Object.entries(parsed)) {
+      const candidate = value as Partial<ActiveSessionEntry> | null;
+      if (
+        !/^-?\d+$/.test(chatId) ||
+        typeof candidate !== "object" ||
+        candidate === null ||
+        typeof candidate.sessionId !== "string" ||
+        !/^[A-Za-z0-9_-]+$/.test(candidate.sessionId) ||
+        typeof candidate.startedAt !== "number" ||
+        !Number.isFinite(candidate.startedAt) ||
+        typeof candidate.lastMessageAt !== "number" ||
+        !Number.isFinite(candidate.lastMessageAt)
+      ) {
+        throw new SyntaxError(`malformed active session entry for chat ${chatId}`);
+      }
+      validated[chatId] = {
+        sessionId: candidate.sessionId,
+        startedAt: candidate.startedAt,
+        lastMessageAt: candidate.lastMessageAt,
+      };
+    }
+    return validated;
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      active = {};
-      return;
+      return {};
     }
     throw err;
   }
 }
 
-async function persistActive(): Promise<void> {
-  await writeFile(paths.activeSessions, JSON.stringify(active, null, 2), "utf-8");
+async function persistActive(next: ActiveSessions): Promise<void> {
+  await atomicWriteJson(paths.activeSessions, next);
+  active = next;
+}
+
+async function reserveSession(now: Date): Promise<string> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const sessionId = newSessionId(now);
+    let handle;
+    try {
+      handle = await open(sessionFile(sessionId), "wx", 0o600);
+      await handle.sync();
+      await handle.close();
+      return sessionId;
+    } catch (err) {
+      await handle?.close().catch(() => undefined);
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+  throw new Error("unable to reserve a unique session id after 10 attempts");
+}
+
+async function sessionExists(sessionId: string): Promise<boolean> {
+  try {
+    await access(sessionFile(sessionId), constants.F_OK);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
+  }
+}
+
+async function archiveUnreferencedSessions(next: ActiveSessions): Promise<void> {
+  const referenced = new Set(Object.values(next).map((entry) => entry.sessionId));
+  const entries = await readdir(paths.sessions, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    const sessionId = entry.name.slice(0, -".jsonl".length);
+    if (referenced.has(sessionId)) continue;
+    try {
+      await access(archivedSessionFile(sessionId), constants.F_OK);
+      const conflict = join(paths.sessionsArchive, `${sessionId}.conflict-${Date.now()}-${randomUUID()}.jsonl`);
+      await rename(sessionFile(sessionId), conflict);
+      log.warn("preserved conflicting unreferenced session under a unique archive name", {
+        sessionId,
+        conflict,
+      });
+      continue;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    await archive(sessionId).catch((err) =>
+      log.warn("failed to reconcile unreferenced live session", {
+        sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
 }
 
 async function archive(sessionId: string): Promise<void> {
@@ -138,7 +218,25 @@ export interface ResolvedSession {
 export async function init(): Promise<void> {
   await mkdir(paths.sessions, { recursive: true });
   await mkdir(paths.sessionsArchive, { recursive: true });
-  await loadActive();
+  await withFileLock(paths.activeSessions, async () => {
+    const next = await readActive();
+    let repaired = false;
+    for (const [chatId, entry] of Object.entries(next)) {
+      if (await sessionExists(entry.sessionId)) continue;
+      const timestamp = Date.now();
+      const sessionId = await reserveSession(new Date(timestamp));
+      next[chatId] = { sessionId, startedAt: timestamp, lastMessageAt: timestamp };
+      repaired = true;
+      log.warn("repaired active session with missing live transcript", {
+        chatId,
+        missingSessionId: entry.sessionId,
+        sessionId,
+      });
+    }
+    if (repaired) await persistActive(next);
+    else active = next;
+    await archiveUnreferencedSessions(next);
+  });
   log.info("session manager loaded", {
     activeSessions: Object.keys(active).length,
   });
@@ -152,41 +250,62 @@ export function getActiveSession(chatId: number): ActiveSessionEntry | undefined
 }
 
 export async function resolveSession(chatId: number): Promise<ResolvedSession> {
-  const key = String(chatId);
-  const now = Date.now();
-  const current = active[key];
+  return withFileLock(paths.activeSessions, async () => {
+    const key = String(chatId);
+    const timestamp = Date.now();
+    const next = await readActive();
+    active = next;
+    const current = next[key];
 
-  if (current && !isStale(current, now)) {
-    return { sessionId: current.sessionId, isNew: false };
-  }
+    if (current && !isStale(current, timestamp) && (await sessionExists(current.sessionId))) {
+      return { sessionId: current.sessionId, isNew: false };
+    }
 
-  // Either no active session or it aged out — rotate.
-  const rotatedFrom = current?.sessionId;
-  if (rotatedFrom) {
-    log.info("rotating session (auto)", { chatId: key, sessionId: rotatedFrom });
-    await archive(rotatedFrom);
-  }
-
-  const sessionId = newSessionId(new Date(now));
-  active[key] = { sessionId, startedAt: now, lastMessageAt: now };
-  await persistActive();
-  log.info("created session", { chatId: key, sessionId });
-  return { sessionId, isNew: true, rotatedFrom };
+    const rotatedFrom = current?.sessionId;
+    const sessionId = await reserveSession(new Date(timestamp));
+    next[key] = { sessionId, startedAt: timestamp, lastMessageAt: timestamp };
+    await persistActive(next);
+    if (rotatedFrom) {
+      log.info("rotating session (auto)", { chatId: key, sessionId: rotatedFrom });
+      await archive(rotatedFrom).catch((err) =>
+        log.warn("session archive deferred after active-session rotation", {
+          chatId: key,
+          sessionId: rotatedFrom,
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+    log.info("created session", { chatId: key, sessionId });
+    return { sessionId, isNew: true, rotatedFrom };
+  });
 }
 
 // `/new` command path — force-rotate regardless of staleness. Returns the
 // fresh session along with the id of whatever it replaced (Phase 5's
 // summarizer will use `rotatedFrom` to append a `recent.md` entry).
 export async function forceRotate(chatId: number): Promise<ResolvedSession> {
-  const key = String(chatId);
-  const previous = active[key]?.sessionId;
-  if (previous) {
-    log.info("rotating session (manual)", { chatId: key, sessionId: previous });
-    await archive(previous);
-    delete active[key];
-  }
-  const fresh = await resolveSession(chatId);
-  return { ...fresh, rotatedFrom: previous ?? fresh.rotatedFrom };
+  return withFileLock(paths.activeSessions, async () => {
+    const key = String(chatId);
+    const next = await readActive();
+    active = next;
+    const previous = next[key]?.sessionId;
+    const timestamp = Date.now();
+    const sessionId = await reserveSession(new Date(timestamp));
+    next[key] = { sessionId, startedAt: timestamp, lastMessageAt: timestamp };
+    await persistActive(next);
+    if (previous) {
+      log.info("rotating session (manual)", { chatId: key, sessionId: previous });
+      await archive(previous).catch((err) =>
+        log.warn("session archive deferred after active-session rotation", {
+          chatId: key,
+          sessionId: previous,
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+    log.info("created session", { chatId: key, sessionId });
+    return { sessionId, isNew: true, rotatedFrom: previous };
+  });
 }
 
 // Compaction entry stored inline in the session JSONL — DESIGN.md §10.
@@ -209,7 +328,19 @@ export interface LoadedSession {
 }
 
 function isCompactionEntry(parsed: unknown): parsed is CompactionEntry {
-  return typeof parsed === "object" && parsed !== null && (parsed as { type?: string }).type === "compaction";
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    (parsed as { type?: string }).type === "compaction" &&
+    typeof (parsed as { summary?: unknown }).summary === "string" &&
+    typeof (parsed as { tokensBefore?: unknown }).tokensBefore === "number"
+  );
+}
+
+function isAgentMessage(parsed: unknown): parsed is AgentMessage {
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const role = (parsed as { role?: unknown }).role;
+  return ["user", "assistant", "toolResult"].includes(String(role));
 }
 
 // Read the active session's JSONL, applying any compaction entries. Walk
@@ -238,15 +369,23 @@ export async function loadArchived(sessionId: string): Promise<LoadedSession> {
 // case (which is what we care about), any trailing assistant-with-toolCall
 // is dangling because nothing follows it.
 function dropDanglingToolCalls(messages: AgentMessage[]): AgentMessage[] {
-  const out = messages.slice();
-  while (out.length > 0) {
-    const last = out[out.length - 1];
-    if (last.role !== "assistant") break;
-    const hasToolCall = (last.content ?? []).some((c: { type: string }) => c.type === "toolCall");
-    if (!hasToolCall) break;
-    out.pop();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    const callIds = ((message.content ?? []) as Array<{ type: string; id?: unknown }>)
+      .filter((item) => item.type === "toolCall" && typeof item.id === "string")
+      .map((item) => item.id as string);
+    if (callIds.length === 0) continue;
+
+    const pending = new Set(callIds);
+    for (let resultIndex = index + 1; resultIndex < messages.length; resultIndex += 1) {
+      const result = messages[resultIndex];
+      if (result.role !== "toolResult") break;
+      pending.delete((result as { toolCallId?: string }).toolCallId ?? "");
+    }
+    if (pending.size > 0) return messages.slice(0, index);
   }
-  return out;
+  return messages.slice();
 }
 
 // Append a batch of new messages to the session's JSONL. Single fs call
@@ -254,31 +393,41 @@ function dropDanglingToolCalls(messages: AgentMessage[]): AgentMessage[] {
 export async function appendMessages(sessionId: string, messages: AgentMessage[]): Promise<void> {
   if (messages.length === 0) return;
   const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-  await appendFile(sessionFile(sessionId), lines, "utf-8");
+  await appendJsonLinesDurable(sessionFile(sessionId), lines);
 }
 
-// Append a compaction entry to the session's JSONL. Once written, the next
-// `load` will surface the summary as `previousSummary` and treat any
-// subsequent messages as the new tail.
-export async function appendCompactionEntry(
+// Atomically replace a chat transcript with its newest compaction checkpoint
+// followed by the recent messages that were deliberately kept. Appending the
+// checkpoint at EOF would make the forward loader reset `tail` after those
+// messages and silently discard them on the next load.
+export async function rewriteSessionWithCompaction(
   sessionId: string,
   entry: { summary: string; tokensBefore: number },
+  keptTail: AgentMessage[],
 ): Promise<void> {
-  const line: CompactionEntry = {
+  const file = sessionFile(sessionId);
+  const compaction: CompactionEntry = {
     type: "compaction",
     timestamp: Date.now(),
     summary: entry.summary,
     tokensBefore: entry.tokensBefore,
   };
-  await appendFile(sessionFile(sessionId), JSON.stringify(line) + "\n", "utf-8");
+  const lines = [JSON.stringify(compaction), ...keptTail.map((message) => JSON.stringify(message))];
+  await withFileLock(file, () => atomicWriteFile(file, `${lines.join("\n")}\n`));
 }
 
 // Stamp lastMessageAt after a successful turn so the inactivity rotation
 // timer resets. Called by the runtime after appendMessages.
 export async function markActivity(chatId: number): Promise<void> {
-  const key = String(chatId);
-  const entry = active[key];
-  if (!entry) return;
-  entry.lastMessageAt = Date.now();
-  await persistActive();
+  await withFileLock(paths.activeSessions, async () => {
+    const key = String(chatId);
+    const next = await readActive();
+    const entry = next[key];
+    if (!entry) {
+      active = next;
+      return;
+    }
+    entry.lastMessageAt = Date.now();
+    await persistActive(next);
+  });
 }

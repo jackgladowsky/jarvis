@@ -31,6 +31,43 @@ test("config parser accepts per-scheduled-task model overrides", async () => {
   assert.equal(parseConfig(config, "task-model").scheduler.tasks[0]?.model, "google/gemini-2.5-flash");
 });
 
+test("config parser requires scheduled provider and model overrides together", async () => {
+  const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
+  const config = parseYaml(raw) as any;
+  config.scheduler.tasks = [
+    {
+      id: "broken-override",
+      name: "Broken override",
+      schedule: "0 1 * * *",
+      prompt: "test",
+      notify: "never",
+      provider: "anthropic",
+    },
+  ];
+
+  assert.throws(() => parseConfig(config), /provider and model must be configured together/);
+});
+
+test("config parser validates bash timeout ordering and scheduler timezone", async () => {
+  const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
+  const timeoutConfig = parseYaml(raw) as any;
+  timeoutConfig.tools.bash.default_timeout_seconds = 30;
+  timeoutConfig.tools.bash.max_timeout_seconds = 10;
+  assert.throws(() => parseConfig(timeoutConfig), /default_timeout_seconds/);
+
+  const timezoneConfig = parseYaml(raw) as any;
+  timezoneConfig.scheduler.timezone = "Mars/Olympus_Mons";
+  assert.throws(() => parseConfig(timezoneConfig), /IANA timezone/);
+});
+
+test("config parser requires a notification chat when scheduler is enabled", async () => {
+  const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
+  const config = parseYaml(raw) as any;
+  config.scheduler.enabled = true;
+  config.scheduler.telegram_chat_id = 0;
+  assert.throws(() => parseConfig(config), /telegram_chat_id must be non-zero/);
+});
+
 test("config parser rejects missing required tunables", () => {
   assert.throws(
     () => parseConfig({ agent: { provider: "codex", model: "gpt" } }, "test-config"),

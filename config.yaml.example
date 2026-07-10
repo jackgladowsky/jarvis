@@ -23,6 +23,13 @@ tools:
     default_timeout_seconds: 60
     max_timeout_seconds: 600
 
+# Background roles inherit the active model unless explicitly routed here.
+# This keeps Anthropic/OpenRouter-only installations working without hidden
+# Codex credential requirements.
+background:
+  max_concurrent_workers: 2
+  role_models: {}
+
 telegram:
   show_typing: true                           # 4s re-fire while the agent is working
   long_tool_call_seconds: 5                   # reserved for future progress UX

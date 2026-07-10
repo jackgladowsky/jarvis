@@ -178,3 +178,26 @@ test("cancel normalization preserves completed tool result before stopped marker
   assert.equal((normalized[3] as { stopReason: string }).stopReason, "aborted");
   assert.equal(textOf(normalized[3]), runtime.STOPPED_BY_USER_TEXT);
 });
+
+test("retry classification is narrow and provider-aware", async () => {
+  const runtime = await prepareRuntime();
+
+  assert.equal(runtime.classifyAgentFailure("server_error: overloaded (503)"), "transient");
+  assert.equal(runtime.classifyAgentFailure("fetch failed: ECONNRESET"), "transient");
+  assert.equal(runtime.classifyAgentFailure("usage_limit_reached"), "provider_unavailable");
+  assert.equal(runtime.classifyAgentFailure("invalid request: context too long"), "permanent");
+});
+
+test("inference replay stops at either tool or visible-output boundary", async () => {
+  const runtime = await prepareRuntime();
+
+  assert.equal(runtime.isInferenceReplaySafe({ toolStarted: false, visibleAssistantOutput: false }), true);
+  assert.equal(runtime.isInferenceReplaySafe({ toolStarted: true, visibleAssistantOutput: false }), false);
+  assert.equal(runtime.isInferenceReplaySafe({ toolStarted: false, visibleAssistantOutput: true }), false);
+});
+
+test("agent_end-only failure messages are detected", async () => {
+  const runtime = await prepareRuntime();
+
+  assert.equal(runtime.failureFromMessages([abortedAssistant()]), "aborted");
+});

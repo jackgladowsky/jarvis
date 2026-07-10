@@ -6,6 +6,27 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_BASE="${JARVIS_DATA_DIR:-$HOME/.jarvis}"
 
+if ! command -v node >/dev/null 2>&1 || ! node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>20 || (a===20 && (b>18 || (b===18 && c>=1))) ? 0 : 1)'; then
+  echo "Node 20.18.1+ is required." >&2
+  exit 1
+fi
+if [[ "$(node -p "require(process.argv[1]).packageManager || ''" "$REPO_ROOT/package.json")" != "pnpm@10.26.2" ]]; then
+  echo "package.json must declare packageManager pnpm@10.26.2." >&2
+  exit 1
+fi
+if ! command -v pnpm >/dev/null 2>&1 || [[ "$(pnpm --version)" != "10.26.2" ]]; then
+  if ! command -v corepack >/dev/null 2>&1; then
+    echo "pnpm 10.26.2 is required and corepack is unavailable." >&2
+    exit 1
+  fi
+  corepack enable
+  corepack prepare pnpm@10.26.2 --activate
+fi
+if [[ "$(pnpm --version)" != "10.26.2" ]]; then
+  echo "Could not activate pnpm 10.26.2; found $(pnpm --version)." >&2
+  exit 1
+fi
+
 echo "Setting up JARVIS data tree at: $DATA_BASE"
 
 mkdir -p "$DATA_BASE/prompts"
@@ -33,10 +54,10 @@ copy_if_missing "$REPO_ROOT/prompts/system.md.example"  "$DATA_BASE/prompts/syst
 chmod 600 "$DATA_BASE/.env"
 
 echo "Installing deps..."
-( cd "$REPO_ROOT" && pnpm install )
+( cd "$REPO_ROOT" && pnpm install --frozen-lockfile )
 
 echo "Building..."
-( cd "$REPO_ROOT" && pnpm run build )
+( cd "$REPO_ROOT" && pnpm run build -- --noEmitOnError )
 
 cat <<EOF
 

@@ -9,9 +9,9 @@
 //
 // Both are configured via `config.logging` in config.yaml.
 
-import { appendFile } from "node:fs/promises";
 import { config } from "../config.js";
 import { paths } from "../paths.js";
+import { appendFileDurable } from "./durable-file.js";
 
 // ─── App log ────────────────────────────────────────────────────────────────
 //
@@ -143,9 +143,13 @@ export interface AuditEntry {
   error?: string; // populated on outcome="error"
 }
 
-// One JSONL line per call. `appendFile` is atomic up to PIPE_BUF on POSIX
-// (~4KB) — at our typical entry sizes that's more than enough for concurrent
-// tool calls not to interleave mid-line.
+// Serialize audit writes. Besides keeping oversized JSONL records from
+// interleaving, using a recovery tail means one disk error cannot poison all
+// later writes.
+let auditWriteTail: Promise<void> = Promise.resolve();
+
+// One JSONL line per call. Writes flow through the serialized tail above so
+// concurrent tool completions cannot interleave records.
 export async function auditToolCall(partial: Omit<AuditEntry, "ts" | "args"> & { args: unknown }): Promise<void> {
   if (!config.logging.audit_log_enabled) return;
   const entry: AuditEntry = {
@@ -153,5 +157,21 @@ export async function auditToolCall(partial: Omit<AuditEntry, "ts" | "args"> & {
     ...partial,
     args: sanitize(partial.args),
   };
-  await appendFile(paths.audit, JSON.stringify(entry) + "\n", "utf-8");
+  const write = auditWriteTail.then(async () => {
+    await appendFileDurable(paths.audit, JSON.stringify(entry) + "\n");
+  });
+  auditWriteTail = write.catch(() => undefined);
+
+  try {
+    await write;
+  } catch (err) {
+    // Auditing happens after a tool operation. A full/read-only disk must not
+    // turn a successful side effect into an apparent tool failure, because
+    // the model could then repeat it. Keep the operational result intact and
+    // make the loss of audit durability loud in the application log.
+    log.error("failed to append tool audit entry", {
+      tool: partial.tool,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

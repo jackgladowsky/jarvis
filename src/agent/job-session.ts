@@ -5,8 +5,10 @@
 // so recurring jobs do not grow without bound on disk.
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { appendFile, mkdir, readFile, rename, writeFile } from "fs/promises";
-import { dirname } from "path";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+import { atomicWriteFile, withFileLock } from "../lib/durable-file.js";
+import { appendJsonLinesDurable, readJsonLinesRecovering } from "../lib/json-lines.js";
 
 export interface JobLoadedSession {
   previousSummary?: string;
@@ -33,15 +35,23 @@ export function isJobCompactionEntry(parsed: unknown): parsed is StoredCompactio
 }
 
 export function dropDanglingToolCalls(messages: AgentMessage[]): AgentMessage[] {
-  const out = messages.slice();
-  while (out.length > 0) {
-    const last = out[out.length - 1];
-    if (last.role !== "assistant") break;
-    const hasToolCall = (last.content ?? []).some((c: { type: string }) => c.type === "toolCall");
-    if (!hasToolCall) break;
-    out.pop();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    const callIds = ((message.content ?? []) as Array<{ type: string; id?: unknown }>)
+      .filter((item) => item.type === "toolCall" && typeof item.id === "string")
+      .map((item) => item.id as string);
+    if (callIds.length === 0) continue;
+
+    const pending = new Set(callIds);
+    for (let resultIndex = index + 1; resultIndex < messages.length; resultIndex += 1) {
+      const result = messages[resultIndex];
+      if (result.role !== "toolResult") break;
+      pending.delete((result as { toolCallId?: string }).toolCallId ?? "");
+    }
+    if (pending.size > 0) return messages.slice(0, index);
   }
-  return out;
+  return messages.slice();
 }
 
 export function loadJobSessionLines(lines: string[]): JobLoadedSession {
@@ -63,22 +73,15 @@ export function loadJobSessionLines(lines: string[]): JobLoadedSession {
 }
 
 export async function loadJobSession(file: string): Promise<JobLoadedSession> {
-  let raw: string;
-  try {
-    raw = await readFile(file, "utf-8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { tail: [] };
-    throw err;
-  }
-
-  return loadJobSessionLines(raw.split("\n"));
+  const records = await readJsonLinesRecovering<unknown>(file);
+  return loadJobSessionLines(records.map((record) => JSON.stringify(record)));
 }
 
 export async function appendJobMessages(file: string, messages: AgentMessage[]): Promise<void> {
   if (messages.length === 0) return;
   await mkdir(dirname(file), { recursive: true });
   const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-  await appendFile(file, lines, "utf-8");
+  await appendJsonLinesDurable(file, lines);
 }
 
 function makeCompactionLine(entry: JobCompactionEntry): StoredCompactionEntry {
@@ -92,7 +95,7 @@ function makeCompactionLine(entry: JobCompactionEntry): StoredCompactionEntry {
 
 export async function appendJobCompactionEntry(file: string, entry: JobCompactionEntry): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
-  await appendFile(file, JSON.stringify(makeCompactionLine(entry)) + "\n", "utf-8");
+  await appendJsonLinesDurable(file, JSON.stringify(makeCompactionLine(entry)) + "\n");
 }
 
 export async function rewriteJobSessionWithCompaction(
@@ -102,7 +105,5 @@ export async function rewriteJobSessionWithCompaction(
 ): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
   const lines = [JSON.stringify(makeCompactionLine(entry)), ...keptTail.map((message) => JSON.stringify(message))];
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, lines.join("\n") + "\n", "utf-8");
-  await rename(tmp, file);
+  await withFileLock(file, () => atomicWriteFile(file, lines.join("\n") + "\n"));
 }

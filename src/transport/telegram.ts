@@ -29,14 +29,18 @@ import { markdownToTelegramHtml, splitTelegramMarkdown } from "../lib/format.js"
 import {
   claimInternalNotification,
   finishInternalNotification,
+  InternalNotificationClaimLostError,
   listPendingInternalNotifications,
+  renewInternalNotificationClaim,
   renderInternalNotificationPrompt,
   sendTelegramFallback,
+  TelegramPartialDeliveryError,
   writeInternalNotificationHeartbeat,
   type InternalNotification,
 } from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
+import { readResponseBodyLimited, withTelegramRetry } from "../lib/telegram-delivery.js";
 import "./commands/handlers/index.js";
 import { botMenuCommands, findCommand } from "./commands/registry.js";
 import { consumeSttBenchmarkNext, getStatusMode } from "./commands/handlers/state.js";
@@ -48,6 +52,8 @@ type Handler = typeof handleMessage;
 
 interface TelegramOptions {
   signal?: AbortSignal;
+  /** Runs only after grammY has completed polling initialization. */
+  onStarted?: () => void | Promise<void>;
 }
 
 // Telegram expires the typing indicator after ~5s; re-fire frequently while
@@ -62,6 +68,7 @@ const INTERNAL_NOTIFICATION_POLL_MS = 3000;
 const INTERNAL_NOTIFICATION_HEARTBEAT_MS = 5000;
 const MAX_TELEGRAM_IMAGES = 4;
 const MAX_TELEGRAM_IMAGE_BYTES = 10 * 1024 * 1024;
+const TELEGRAM_MEDIA_TIMEOUT_MS = 20_000;
 
 // Convert agent text to whatever Telegram expects, depending on parse_mode.
 // Skipping the conversion when parse_mode === "none" keeps the bot strictly
@@ -86,6 +93,51 @@ async function safe<T>(label: string, p: Promise<T>): Promise<T | undefined> {
   } catch (err) {
     log.debug("telegram call failed", { label, err: err instanceof Error ? err.message : err });
     return undefined;
+  }
+}
+
+function deliveryTimeout<T>(promise: Promise<T>, label: string, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    void promise.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
+async function replyReliably(
+  ctx: Context,
+  text: string,
+  options: Parameters<Context["reply"]>[1] = {},
+  plainText = text,
+): Promise<Awaited<ReturnType<Context["reply"]>>> {
+  try {
+    return await withTelegramRetry(() => ctx.reply(text, options));
+  } catch (err) {
+    if (!options.parse_mode) throw err;
+    log.warn("formatted Telegram reply failed; retrying as plain text", {
+      err: err instanceof Error ? err.message : err,
+    });
+    const { parse_mode: _parseMode, ...plainOptions } = options;
+    return withTelegramRetry(() => ctx.reply(plainText, plainOptions));
+  }
+}
+
+async function sendMessageReliably(
+  bot: Bot,
+  chatId: number,
+  formattedText: string,
+  plainText: string,
+  options: Parameters<Bot["api"]["sendMessage"]>[2] = {},
+): Promise<void> {
+  try {
+    await withTelegramRetry(() => bot.api.sendMessage(chatId, formattedText, options));
+  } catch (err) {
+    if (!options.parse_mode) throw err;
+    log.warn("formatted Telegram send failed; retrying as plain text", {
+      chatId,
+      err: err instanceof Error ? err.message : err,
+    });
+    const { parse_mode: _parseMode, ...plainOptions } = options;
+    await withTelegramRetry(() => bot.api.sendMessage(chatId, plainText, plainOptions));
   }
 }
 
@@ -136,17 +188,14 @@ async function downloadTelegramImage(
     throw new Error(`image is too large (${Math.ceil(candidate.fileSize / 1024 / 1024)} MB)`);
   }
 
-  const file = await ctx.api.getFile(candidate.fileId);
+  const file = await deliveryTimeout(ctx.api.getFile(candidate.fileId), "Telegram getFile", TELEGRAM_MEDIA_TIMEOUT_MS);
   if (!file.file_path) throw new Error("Telegram did not return a file path");
 
   const url = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(TELEGRAM_MEDIA_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.byteLength > MAX_TELEGRAM_IMAGE_BYTES) {
-    throw new Error(`image is too large (${Math.ceil(buffer.byteLength / 1024 / 1024)} MB)`);
-  }
+  const buffer = await readResponseBodyLimited(response, MAX_TELEGRAM_IMAGE_BYTES);
 
   const responseMimeType = response.headers.get("content-type")?.split(";")[0];
   const mimeType = responseMimeType?.startsWith("image/") ? responseMimeType : candidate.mimeType;
@@ -181,20 +230,14 @@ async function downloadTelegramAudio(ctx: Context, candidate: TelegramAudioCandi
     );
   }
 
-  const file = await ctx.api.getFile(candidate.fileId);
+  const file = await deliveryTimeout(ctx.api.getFile(candidate.fileId), "Telegram getFile", TELEGRAM_MEDIA_TIMEOUT_MS);
   if (!file.file_path) throw new Error("Telegram did not return a file path");
 
   const url = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(TELEGRAM_MEDIA_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.byteLength > limit) {
-    throw new Error(
-      `audio is too large (${Math.ceil(buffer.byteLength / 1024 / 1024)} MB; max ${config.stt.local_whisper_cpp.max_audio_mb} MB)`,
-    );
-  }
-  return buffer;
+  return readResponseBodyLimited(response, limit);
 }
 
 async function transcribeTelegramAudio(ctx: Context, candidate: TelegramAudioCandidate): Promise<string> {
@@ -249,37 +292,45 @@ async function benchmarkTelegramAudio(
   ]
     .join("\n")
     .trim();
-  await safe("reply (stt benchmark)", ctx.reply(body));
+  await replyReliably(ctx, body);
 }
 
 async function sendAgentPromptToTelegram(bot: Bot, chatId: number, prompt: string, handle: Handler): Promise<void> {
   let sentText = false;
-  await handle(chatId, prompt, {
-    onAssistantEnd: async (text: string) => {
-      for (const part of chunks(text)) {
-        const formatted = format(part);
-        await bot.api.sendMessage(chatId, formatted.text, {
-          parse_mode: formatted.parse_mode,
-          link_preview_options: { is_disabled: true },
-        });
+  try {
+    await handle(chatId, prompt, {
+      onAssistantEnd: async (text: string) => {
+        for (const part of chunks(text)) {
+          const formatted = format(part);
+          await sendMessageReliably(bot, chatId, formatted.text, part, {
+            parse_mode: formatted.parse_mode,
+            link_preview_options: { is_disabled: true },
+          });
+          sentText = true;
+        }
+      },
+      onError: async (text: string) => {
+        await sendMessageReliably(bot, chatId, `Error: ${text}`, `Error: ${text}`);
         sentText = true;
-      }
-    },
-    onError: async (text: string) => {
-      await bot.api.sendMessage(chatId, `Error: ${text}`);
-      sentText = true;
-    },
-  });
+      },
+    });
+  } catch (err) {
+    if (!sentText) throw err;
+    log.warn("internal notification agent failed after visible delivery; suppressing duplicate fallback", {
+      chatId,
+      err: err instanceof Error ? err.message : err,
+    });
+  }
   if (!sentText) throw new Error("agent produced no visible response for internal notification");
 }
 
 // Send background task notifications as plain text. Background task action
 // buttons were intentionally removed: direct commands are clearer and avoid
 // stale inline controls lingering in chat history.
-async function sendBackgroundNotification(bot: Bot, notification: InternalNotification): Promise<void> {
+async function sendPlainNotification(bot: Bot, notification: InternalNotification): Promise<void> {
   const text = notification.fallback_text ?? `[${notification.source}] ${notification.title}\n\n${notification.body}`;
   const formatted = format(text);
-  await bot.api.sendMessage(notification.chat_id, formatted.text, {
+  await sendMessageReliably(bot, notification.chat_id, formatted.text, text, {
     parse_mode: formatted.parse_mode,
     link_preview_options: { is_disabled: true },
   });
@@ -298,27 +349,86 @@ function startInternalNotificationPump(bot: Bot, handle: Handler): () => void {
   const processOne = async (notification: InternalNotification): Promise<void> => {
     const claimed = await claimInternalNotification(notification);
     if (!claimed) return;
+    let renewal: Promise<void> | undefined;
+    let claimLostError: unknown;
+    const renewTimer = setInterval(() => {
+      if (renewal) return;
+      renewal = renewInternalNotificationClaim(claimed)
+        .catch((err) => {
+          if (err instanceof InternalNotificationClaimLostError) claimLostError = err;
+          log.warn("internal notification claim renewal failed", {
+            id: claimed.id,
+            err: err instanceof Error ? err.message : err,
+          });
+        })
+        .finally(() => {
+          renewal = undefined;
+        });
+    }, 60_000);
+    const stopRenewal = async (): Promise<void> => {
+      clearInterval(renewTimer);
+      await renewal;
+    };
+    let delivered = false;
     try {
-      if (claimed.source === "background") {
-        await sendBackgroundNotification(bot, claimed);
+      if (claimed.source === "background" || claimed.source === "deploy") {
+        await sendPlainNotification(bot, claimed);
       } else {
+        // Agent delivery is deliberately not promise-raced against a timeout:
+        // the underlying run cannot be safely detached/cancelled here, and a
+        // fallback racing its later answer would duplicate the notification.
         await withLock(claimed.chat_id, () =>
           sendAgentPromptToTelegram(bot, claimed.chat_id, renderInternalNotificationPrompt(claimed), handle),
         );
       }
+      delivered = true;
+      await stopRenewal();
+      if (claimLostError) throw claimLostError;
       await finishInternalNotification(claimed, "processed");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await finishInternalNotification(claimed, "failed", message);
-      await sendTelegramFallback(
-        claimed.chat_id,
-        claimed.fallback_text ?? `[${claimed.source}] ${claimed.title}\n\n${claimed.body}`,
-      ).catch((fallbackErr) =>
-        log.warn("internal notification emergency fallback failed", {
+      if (delivered) {
+        await stopRenewal();
+        log.error("internal notification state commit failed after successful delivery; fallback suppressed", {
           id: claimed.id,
-          err: fallbackErr instanceof Error ? fallbackErr.message : fallbackErr,
-        }),
-      );
+          err: message,
+        });
+        return;
+      }
+      if (claimLostError || err instanceof InternalNotificationClaimLostError) {
+        await stopRenewal();
+        log.error("internal notification claim lost before fallback; delivery stopped", {
+          id: claimed.id,
+          err: message,
+        });
+        return;
+      }
+      try {
+        await sendTelegramFallback(
+          claimed.chat_id,
+          claimed.fallback_text ?? `[${claimed.source}] ${claimed.title}\n\n${claimed.body}`,
+        );
+        await stopRenewal();
+        await finishInternalNotification(claimed, "processed");
+      } catch (fallbackErr) {
+        await stopRenewal();
+        await finishInternalNotification(
+          claimed,
+          fallbackErr instanceof TelegramPartialDeliveryError ? "processed" : "failed",
+          fallbackErr instanceof TelegramPartialDeliveryError ? undefined : message,
+        );
+        log.warn(
+          fallbackErr instanceof TelegramPartialDeliveryError
+            ? "internal notification fallback was partial; replay suppressed"
+            : "internal notification emergency fallback failed; queued for retry",
+          {
+            id: claimed.id,
+            err: fallbackErr instanceof Error ? fallbackErr.message : fallbackErr,
+          },
+        );
+      }
+    } finally {
+      await stopRenewal();
     }
   };
 
@@ -363,10 +473,25 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     // Skip bypass-locked commands here; they are handled in the early block
     // of `bot.on("message")` so they can interrupt a long agent run.
     if (!commandMatch.def.bypassLock) {
-      await safe(
-        `reply (/${commandMatch.def.name})`,
-        Promise.resolve(commandMatch.def.handler(ctx, commandMatch.parsed)),
-      );
+      try {
+        await commandMatch.def.handler(ctx, commandMatch.parsed);
+      } catch (err) {
+        log.error("Telegram command failed", {
+          command: commandMatch.def.name,
+          chatId,
+          err: err instanceof Error ? err.message : err,
+        });
+        await replyReliably(
+          ctx,
+          `/${commandMatch.def.name} failed: ${err instanceof Error ? err.message : "unexpected error"}`,
+        ).catch((deliveryErr) =>
+          log.error("Telegram command failure delivery failed", {
+            command: commandMatch.def.name,
+            chatId,
+            err: deliveryErr instanceof Error ? deliveryErr.message : deliveryErr,
+          }),
+        );
+      }
       return;
     }
   }
@@ -389,7 +514,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         err instanceof MissingLocalWhisperSetupError
           ? err.message
           : `Couldn't transcribe that audio: ${err instanceof Error ? err.message : String(err)}`;
-      await safe("reply (audio transcription failed)", ctx.reply(message));
+      await replyReliably(ctx, message);
       return;
     }
   }
@@ -399,21 +524,16 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     images = await readImages(ctx);
   } catch (err) {
     log.warn("telegram image read failed", { chatId, err: err instanceof Error ? err.message : err });
-    await safe(
-      "reply (image read failed)",
-      ctx.reply(`Couldn't read that image: ${err instanceof Error ? err.message : String(err)}`),
-    );
+    await replyReliably(ctx, `Couldn't read that image: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
 
   if (!userText.trim() && images.length === 0 && !transcribedPrompt) {
-    await safe(
-      "reply (unsupported message)",
-      ctx.reply("I can read text, images, and voice/audio. Whatever that was, Telegram is being coy."),
-    );
+    await replyReliably(ctx, "I can read text, images, and voice/audio. Whatever that was, Telegram is being coy.");
     return;
   }
   const promptText = transcribedPrompt ?? (userText.trim() || "Describe the attached image(s).");
+  let visibleResponseDelivered = false;
 
   // ── Streaming placeholder state ─────────────────────────────────────────
   // `placeholder` is undefined until we send the first reply for the current
@@ -495,11 +615,15 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     if (statusMessage) {
       const id = statusMessage.messageId;
       statusMessage = undefined;
-      await safe("editMessageText (stopped status)", ctx.api.editMessageText(chatId, id, text));
+      await withTelegramRetry(() => ctx.api.editMessageText(chatId, id, text));
+      visibleResponseDelivered = true;
       return;
     }
 
-    if (!sending) await safe("reply (stopped)", ctx.reply(text));
+    if (!sending) {
+      await replyReliably(ctx, text);
+      visibleResponseDelivered = true;
+    }
   };
 
   const cancelPendingEdit = () => {
@@ -515,24 +639,30 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
 
     if (!sending) {
       const formatted = format(first);
-      await safe(
-        "reply (final chunk 1)",
-        ctx.reply(formatted.text, {
+      await replyReliably(
+        ctx,
+        formatted.text,
+        {
           parse_mode: formatted.parse_mode,
           link_preview_options: { is_disabled: true },
-        }),
+        },
+        first,
       );
+      visibleResponseDelivered = true;
     }
 
     for (const part of rest) {
       const formatted = format(part);
-      await safe(
-        "reply (final chunk)",
-        ctx.reply(formatted.text, {
+      await replyReliably(
+        ctx,
+        formatted.text,
+        {
           parse_mode: formatted.parse_mode,
           link_preview_options: { is_disabled: true },
-        }),
+        },
+        part,
       );
+      visibleResponseDelivered = true;
     }
   };
 
@@ -548,15 +678,6 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
       chatId,
       promptText,
       {
-        // Streaming text update for an in-progress text-only assistant message.
-        // Either send the placeholder if we don't have one yet, or schedule a
-        // debounced edit to the existing one.
-        onAssistantUpdate: async (_text: string) => {
-          // No-op: we don't stream intermediate text to Telegram. The typing
-          // indicator handles the "working…" signal. Only the final message
-          // is sent, via onAssistantEnd → sendFinalChunks.
-        },
-
         // The text-only assistant message finished. Final flush, then reset
         // local state so a subsequent message in the same turn (rare with the
         // skip-tool-call rule) starts with a fresh placeholder.
@@ -582,9 +703,11 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
           if (placeholder) {
             const id = placeholder.messageId;
             placeholder = undefined;
-            await safe("editMessageText (error)", ctx.api.editMessageText(chatId, id, body));
+            await withTelegramRetry(() => ctx.api.editMessageText(chatId, id, body));
+            visibleResponseDelivered = true;
           } else if (!sending) {
-            await safe("reply (agent error)", ctx.reply(body));
+            await replyReliably(ctx, body);
+            visibleResponseDelivered = true;
           }
         },
 
@@ -599,7 +722,14 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     log.error("handler error", { err: err instanceof Error ? err.message : err });
     cancelPendingEdit();
     await clearStatus();
-    await safe("reply (error)", ctx.reply("Something went wrong."));
+    if (!visibleResponseDelivered) {
+      await replyReliably(ctx, "Something went wrong.").catch((deliveryErr) =>
+        log.error("final Telegram error delivery failed", {
+          chatId,
+          err: deliveryErr instanceof Error ? deliveryErr.message : deliveryErr,
+        }),
+      );
+    }
   } finally {
     cancelPendingEdit();
     cancelPendingStatus();
@@ -690,7 +820,25 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
     // supposed to manage. Comedy, but not useful comedy.
     const bypassMatch = findCommand(text);
     if (bypassMatch?.def.bypassLock) {
-      await safe(`reply (/${bypassMatch.def.name})`, Promise.resolve(bypassMatch.def.handler(ctx, bypassMatch.parsed)));
+      try {
+        await bypassMatch.def.handler(ctx, bypassMatch.parsed);
+      } catch (err) {
+        log.error("Telegram control command failed", {
+          command: bypassMatch.def.name,
+          chatId,
+          err: err instanceof Error ? err.message : err,
+        });
+        await replyReliably(
+          ctx,
+          `/${bypassMatch.def.name} failed: ${err instanceof Error ? err.message : "unexpected error"}`,
+        ).catch((deliveryErr) =>
+          log.error("Telegram command failure delivery failed", {
+            command: bypassMatch.def.name,
+            chatId,
+            err: deliveryErr instanceof Error ? deliveryErr.message : deliveryErr,
+          }),
+        );
+      }
       return;
     }
 
@@ -715,7 +863,14 @@ export async function runTelegram(handle: Handler, options: TelegramOptions = {}
   botStarted = true;
   try {
     if (stopping || options.signal?.aborted) return;
-    await bot.start();
+    await bot.start({
+      onStart: async () => {
+        log.info("telegram bot polling ready");
+        await Promise.resolve(options.onStarted?.()).catch((err) =>
+          log.warn("Telegram readiness callback failed", { err: err instanceof Error ? err.message : err }),
+        );
+      },
+    });
   } finally {
     botStarted = false;
     stopInternalNotificationPump();

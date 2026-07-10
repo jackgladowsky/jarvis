@@ -32,7 +32,7 @@ Avoid destructive guesses. If product/security/destructive implications are uncl
 
 ## JARVIS paths
 
-Default live layout:
+Use the resolved source/data roots in the runtime system prompt. Defaults are:
 
 ```text
 ~/jarvis/                  source repo
@@ -55,4 +55,4 @@ tail -f ~/.jarvis/data/background/bootstrap.log
 
 ## Source vs data
 
-Everything under `~/.jarvis/` is host-local and should not be committed. Everything under `~/jarvis/` should be replaceable from git.
+Everything under the resolved data root is host-local and should not be committed. Everything under the resolved source root should be replaceable from git.

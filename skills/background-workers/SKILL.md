@@ -14,11 +14,15 @@ Stay inline only for quick answers, tiny edits, urgent checks/ops, or work needi
 
 ## Start a task
 
-From `~/jarvis/`:
+From the active JARVIS source root:
 
 ```bash
-scripts/start-background-task.sh "<prompt>"
+cd "$JARVIS_SOURCE_ROOT"
+scripts/start-background-task.sh --chat-id <current-telegram-chat-id> "<prompt>"
 ```
+
+The current chat ID is provided in main JARVIS's runtime transport context.
+Never substitute the scheduler notification chat implicitly.
 
 The owner can also use:
 
@@ -32,12 +36,12 @@ Tell the owner the task id, worktree, branch, and pipeline.
 
 Workers use:
 
-- Git worktrees: `~/jarvis-worktrees/<task-id>`
-- Task JSON: `~/.jarvis/data/background/tasks/<task-id>.json`
-- Task note: `~/.jarvis/data/background/notes/<task-id>.md`
-- Mailbox: `~/.jarvis/data/background/mail/<task-id>.jsonl`
-- Session: `~/.jarvis/data/background/sessions/<task-id>.jsonl`
-- Logs: `~/.jarvis/data/background/bootstrap.log`, `worker-errors.log`
+- Git worktrees: `$HOME/jarvis-worktrees/<task-id>`
+- Task JSON: `$JARVIS_DATA_DIR/data/background/tasks/<task-id>.json`
+- Task note: `$JARVIS_DATA_DIR/data/background/notes/<task-id>.md`
+- Mailbox: `$JARVIS_DATA_DIR/data/background/mail/<task-id>.jsonl`
+- Session: `$JARVIS_DATA_DIR/data/background/sessions/<task-id>.jsonl`
+- Logs: `$JARVIS_DATA_DIR/data/background/bootstrap.log`, `worker-errors.log`
 
 Common pipelines:
 
@@ -62,6 +66,7 @@ Telegram commands:
 Shell entrypoints:
 
 ```bash
+cd "$JARVIS_SOURCE_ROOT"
 scripts/resume-background-task.sh <task-id> [fixer|reviewer]
 ```
 
@@ -77,6 +82,7 @@ scripts/resume-background-task.sh <task-id> [fixer|reviewer]
 Dry-run first:
 
 ```bash
+cd "$JARVIS_SOURCE_ROOT"
 scripts/cleanup-background-worktrees.sh --dry-run
 scripts/cleanup-background-worktrees.sh --apply --age-days 14
 ```
@@ -91,6 +97,6 @@ Suggested weekly scheduled janitor task:
   "name": "Weekly Janitor",
   "schedule": "0 9 * * 1",
   "notify": "always",
-  "prompt": "Run `cd ~/jarvis && scripts/cleanup-background-worktrees.sh --dry-run --age-days 14`, report what would be cleaned, identify stale todos/docs/notes, and do not delete ambiguous notes or data without the owner's approval."
+  "prompt": "Run `cd \"$JARVIS_SOURCE_ROOT\" && scripts/cleanup-background-worktrees.sh --dry-run --age-days 14`, report what would be cleaned, identify stale todos/docs/notes, and do not delete ambiguous notes or data without the owner's approval."
 }
 ```

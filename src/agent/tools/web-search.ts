@@ -34,6 +34,7 @@ const schema = Type.Object({
 // ~300 tokens; /contents capped at 25k chars is ~6k tokens worst case.
 const SEARCH_NUM_RESULTS = 5;
 const CONTENTS_MAX_CHARS = 25_000;
+export const EXA_REQUEST_TIMEOUT_MS = 30_000;
 
 function isHttpUrl(s: string): boolean {
   try {
@@ -58,6 +59,12 @@ interface ExaContentsResult {
 }
 
 async function exaPost<T>(path: "/search" | "/contents", body: unknown, signal: AbortSignal | undefined): Promise<T> {
+  // A user cancellation and the hard request deadline are independent. Using
+  // a combined signal prevents a stalled upstream socket from holding an agent
+  // run forever while still reacting immediately to /stop or shutdown.
+  const requestSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(EXA_REQUEST_TIMEOUT_MS)])
+    : AbortSignal.timeout(EXA_REQUEST_TIMEOUT_MS);
   const res = await fetch(`https://api.exa.ai${path}`, {
     method: "POST",
     headers: {
@@ -65,7 +72,7 @@ async function exaPost<T>(path: "/search" | "/contents", body: unknown, signal: 
       "x-api-key": env.EXA_API_KEY!,
     },
     body: JSON.stringify(body),
-    signal,
+    signal: requestSignal,
   });
   if (!res.ok) {
     // Surface enough of Exa's body to diagnose 4xx (bad params, quota) without

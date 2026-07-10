@@ -27,21 +27,27 @@ test("friendlyIdFromUuid is stable and human-shaped", () => {
   assert.match(friendlyIdFromUuid("00000000-0000-0000-0000-000000000000"), /^[a-z]+-[a-z]+$/);
 });
 
-test("background model routing selects Codex models by worker role", () => {
-  const sol = { provider: "codex", model: "gpt-5.6-sol" };
-  const terra = { provider: "codex", model: "gpt-5.6-terra" };
+test("background model routing inherits active model unless a role override is configured", () => {
+  const routes = {
+    researcher: { provider: "anthropic" as const, model: "claude-sonnet-4-6" },
+    implementer: { provider: "openrouter" as const, model: "openai/gpt-5" },
+  };
 
-  assert.deepEqual(backgroundModelOverrideForRole("planner"), sol);
-  assert.deepEqual(backgroundModelOverrideForRole("researcher"), sol);
-  assert.deepEqual(backgroundModelOverrideForRole("reviewer"), sol);
-  assert.deepEqual(backgroundModelOverrideForRole("implementer"), terra);
-  assert.deepEqual(backgroundModelOverrideForRole("fixer"), terra);
+  assert.equal(backgroundModelOverrideForRole("reviewer", routes), undefined);
+  assert.deepEqual(backgroundModelOverrideForRole("researcher", routes), routes.researcher);
+  assert.deepEqual(backgroundModelOverrideForRole("implementer", routes), routes.implementer);
 });
 
 test("unknown roles use active-model routing and generic worker instructions", () => {
   assert.equal(backgroundModelOverrideForRole("unknown"), undefined);
   assert.match(backgroundWorkerInstructions("unknown").join("\n"), /Role: unknown\./);
   assert.match(backgroundWorkerInstructions("unknown").join("\n"), /No specialized instructions exist/);
+});
+
+test("pipeline routing uses word boundaries instead of accidental substrings", () => {
+  assert.deepEqual(roles("compare pricing options"), ["researcher", "reviewer"]);
+  assert.deepEqual(roles("improve command reliability"), ["implementer", "reviewer"]);
+  assert.deepEqual(roles("research and improve command reliability"), ["researcher", "implementer", "reviewer"]);
 });
 
 test("automatic fixer cycle appends exactly one fixer and final reviewer", () => {
