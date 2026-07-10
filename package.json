@@ -26,7 +26,7 @@
     "workbench:smoke": "pnpm build && node dist/workbench/smoke.js"
   },
   "dependencies": {
-    "@mariozechner/pi-agent-core": "^0.73.0",
+    "@mariozechner/pi-agent-core": "^0.73.1",
     "@mariozechner/pi-ai": "^0.73.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "grammy": "^1.42.0",
