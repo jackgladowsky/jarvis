@@ -10,7 +10,14 @@
 // raw service restart when the running code already supports dynamic assembly.
 
 import { buildSystemPrompt } from "./prompt-assembler.js";
+import { paths } from "../paths.js";
 
 export function getSystemPrompt(): string {
-  return buildSystemPrompt();
+  return [
+    buildSystemPrompt(),
+    "## Runtime Paths",
+    `- Source root: \`${paths.repo}\``,
+    `- Data root: \`${paths.data}\``,
+    "These resolved paths are authoritative for this process; use them instead of assuming the default ~/jarvis or ~/.jarvis locations.",
+  ].join("\n\n");
 }

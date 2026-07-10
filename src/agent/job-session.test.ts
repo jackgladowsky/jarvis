@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -35,6 +35,29 @@ function assistantToolCall(): AgentMessage {
   } as unknown as AgentMessage;
 }
 
+function assistantMultiToolCall(): AgentMessage {
+  return {
+    role: "assistant",
+    content: [
+      { type: "toolCall", id: "call-1", name: "read", arguments: { path: "/tmp/x" } },
+      { type: "toolCall", id: "call-2", name: "read", arguments: { path: "/tmp/y" } },
+    ],
+    timestamp: 3,
+  } as unknown as AgentMessage;
+}
+
+function toolResult(id: string): AgentMessage {
+  return {
+    role: "toolResult",
+    toolCallId: id,
+    toolName: "read",
+    content: [{ type: "text", text: "done" }],
+    details: {},
+    isError: false,
+    timestamp: 4,
+  } as AgentMessage;
+}
+
 test("loadJobSessionLines keeps only the latest compacted summary and tail", () => {
   const first = { type: "compaction", timestamp: 1, summary: "old", tokensBefore: 100 };
   const second = { type: "compaction", timestamp: 2, summary: "new", tokensBefore: 200 };
@@ -63,6 +86,16 @@ test("loadJobSessionLines drops dangling assistant tool calls", () => {
   );
 });
 
+test("loadJobSessionLines drops a multi-tool suffix when any result is missing", () => {
+  const loaded = loadJobSessionLines([
+    JSON.stringify(user("kept")),
+    JSON.stringify(assistantMultiToolCall()),
+    JSON.stringify(toolResult("call-1")),
+  ]);
+
+  assert.deepEqual(loaded.tail, [user("kept")]);
+});
+
 test("rewriteJobSessionWithCompaction bounds the transcript to summary plus kept tail", async () => {
   const dir = await mkdtemp(join(tmpdir(), "jarvis-job-session-"));
   try {
@@ -83,6 +116,21 @@ test("rewriteJobSessionWithCompaction bounds the transcript to summary plus kept
       loaded.tail.map((m) => (m.content as Array<{ text?: string }>)[0]?.text),
       ["keep"],
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadJobSession recovers a crash-truncated final JSONL record", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jarvis-job-session-partial-"));
+  try {
+    const file = join(dir, "task.jsonl");
+    await writeFile(file, `${JSON.stringify(user("kept"))}\n{"role":"assistant","content":`, "utf-8");
+
+    const loaded = await loadJobSession(file);
+    assert.deepEqual(loaded.tail, [user("kept")]);
+    assert.equal(await readFile(file, "utf-8"), `${JSON.stringify(user("kept"))}\n`);
+    assert.ok((await readdir(dir)).some((entry) => entry.startsWith("task.jsonl.corrupt-")));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -10,3 +10,16 @@ test("browser_workbench tool is available for natural-language agent routing", (
   assert.match(browserWorkbenchTool.description, /click\/type\/fill/i);
   assert.match(browserWorkbenchTool.description, /approval/i);
 });
+
+test("browser_workbench rejects a pre-aborted call before launching Playwright", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled before browser launch"));
+  await assert.rejects(
+    browserWorkbenchTool.execute(
+      "browser-abort",
+      { action: "open_url", url: "https://example.com" },
+      controller.signal,
+    ),
+    /cancelled before browser launch/,
+  );
+});

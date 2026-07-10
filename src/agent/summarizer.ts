@@ -15,10 +15,11 @@
 // `model.contextWindow - reserve_tokens`, so a long session can never blow
 // up the summarizer's prompt.
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { completeSimple, type Model } from "@mariozechner/pi-ai";
 import { config } from "../config.js";
+import { atomicWriteFile, atomicWriteJson, withFileLock } from "../lib/durable-file.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
@@ -27,6 +28,14 @@ import * as sessions from "./session-manager.js";
 // How many TOC entries to keep in `recent.md` before rolling the oldest
 // over into a monthly archive file. DESIGN.md §10.
 const RECENT_CAP = 30;
+const STARTUP_RESUME_LIMIT = 3;
+const STARTUP_RESUME_ATTEMPT_LIMIT = 6;
+const STARTUP_RESUME_STATE = ".summary-resume.json";
+
+interface SummaryResumeState {
+  last_attempted: string;
+  updated_at: string;
+}
 
 const SUMMARIZER_SYSTEM_PROMPT = `You are a TOC-line generator for an assistant's session log. Read the conversation context provided and output exactly ONE markdown bullet line summarizing the session — no preamble, no explanation, no formatting beyond the bullet itself.
 
@@ -153,47 +162,52 @@ async function generateLine(
 // Append `line` to recent.md. If the file ends up over the cap, roll the
 // overflow into archive/recent-YYYY-MM.md (current month) so the live file
 // stays bounded for fast reads from the agent.
-async function writeRecentLine(line: string): Promise<void> {
+async function writeRecentLine(sessionId: string, line: string): Promise<void> {
   await mkdir(paths.notes, { recursive: true });
   const recentPath = join(paths.notes, "recent.md");
-
-  let existing = "";
-  try {
-    existing = await readFile(recentPath, "utf-8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-
-  // Newest entry on top so the agent's `read recent.md` sees recent stuff
-  // without paging through history.
-  const updated = `${line}\n${existing}`.trimStart() + (existing ? "" : "\n");
-
-  // If we're over the cap, peel the oldest entries off the bottom into a
-  // monthly archive file. Lines starting with "- " are entries; blank lines
-  // and other content are preserved as headers.
-  const lines = updated.split("\n");
-  const entryIndices = lines.map((l, i) => (l.startsWith("- ") ? i : -1)).filter((i) => i >= 0);
-
-  if (entryIndices.length > RECENT_CAP) {
-    const overflowStart = entryIndices[RECENT_CAP];
-    const overflow = lines.slice(overflowStart).join("\n");
-    const kept = lines.slice(0, overflowStart).join("\n").replace(/\n+$/, "") + "\n";
-
-    const now = new Date();
-    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const archivePath = join(paths.notes, `recent-${ym}.md`);
-    let archiveExisting = "";
+  await withFileLock(recentPath, async () => {
+    let existing = "";
     try {
-      archiveExisting = await readFile(archivePath, "utf-8");
+      existing = await readFile(recentPath, "utf-8");
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
-    await writeFile(archivePath, archiveExisting + overflow, "utf-8");
-    await writeFile(recentPath, kept, "utf-8");
-    return;
-  }
 
-  await writeFile(recentPath, updated, "utf-8");
+    // Crash-safe idempotence: a process can die after writing recent.md but
+    // before writing the sibling marker. Never add the same session twice.
+    if (existing.includes(`(${sessionId})`)) return;
+
+    // Newest entry on top so the agent's `read recent.md` sees recent stuff
+    // without paging through history.
+    const updated = `${line}\n${existing}`.trimStart() + (existing ? "" : "\n");
+
+    // If we're over the cap, peel the oldest entries off the bottom into a
+    // monthly archive file. Lines starting with "- " are entries; blank lines
+    // and other content are preserved as headers.
+    const lines = updated.split("\n");
+    const entryIndices = lines.map((l, i) => (l.startsWith("- ") ? i : -1)).filter((i) => i >= 0);
+
+    if (entryIndices.length > RECENT_CAP) {
+      const overflowStart = entryIndices[RECENT_CAP];
+      const overflow = lines.slice(overflowStart).join("\n");
+      const kept = lines.slice(0, overflowStart).join("\n").replace(/\n+$/, "") + "\n";
+
+      const now = new Date();
+      const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const archivePath = join(paths.notes, `recent-${ym}.md`);
+      let archiveExisting = "";
+      try {
+        archiveExisting = await readFile(archivePath, "utf-8");
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+      await atomicWriteFile(archivePath, archiveExisting + overflow);
+      await atomicWriteFile(recentPath, kept);
+      return;
+    }
+
+    await atomicWriteFile(recentPath, updated);
+  });
 }
 
 // Idempotence marker: once a session has been summarized, write a sibling
@@ -215,33 +229,108 @@ async function alreadySummarized(sessionId: string): Promise<boolean> {
 }
 
 async function markSummarized(sessionId: string): Promise<void> {
-  await writeFile(markerPath(sessionId), new Date().toISOString(), "utf-8");
+  await atomicWriteFile(markerPath(sessionId), `${new Date().toISOString()}\n`);
+}
+
+function resumeStatePath(): string {
+  return join(paths.sessionsArchive, STARTUP_RESUME_STATE);
+}
+
+async function readResumeCursor(): Promise<string | undefined> {
+  try {
+    const state = JSON.parse(await readFile(resumeStatePath(), "utf-8")) as Partial<SummaryResumeState>;
+    return typeof state.last_attempted === "string" && state.last_attempted.endsWith(".jsonl")
+      ? state.last_attempted
+      : undefined;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn("session-summary resume cursor ignored", { err: err instanceof Error ? err.message : err });
+    }
+    return undefined;
+  }
+}
+
+async function writeResumeCursor(lastAttempted: string): Promise<void> {
+  const file = resumeStatePath();
+  await withFileLock(file, () =>
+    atomicWriteJson(file, {
+      last_attempted: lastAttempted,
+      updated_at: new Date().toISOString(),
+    } satisfies SummaryResumeState),
+  );
+}
+
+function rotateAfterCursor(names: string[], cursor: string | undefined): string[] {
+  if (!cursor || names.length < 2) return names;
+  const exactIndex = names.indexOf(cursor);
+  let start = exactIndex >= 0 ? exactIndex + 1 : names.findIndex((name) => name < cursor);
+  if (start < 0 || start >= names.length) start = 0;
+  return [...names.slice(start), ...names.slice(0, start)];
 }
 
 // Public entry. Called from the rotation path in session-manager. Best-
 // effort: a failure here logs but does NOT take down the user's chat —
 // they've already moved on to a new session.
-export async function summarizeArchived(sessionId: string, model: Model<any>): Promise<void> {
-  if (!config.session.summarize_on_rotation) return;
-  if (await alreadySummarized(sessionId)) {
-    log.debug("session already summarized, skipping", { sessionId });
-    return;
-  }
+export async function summarizeArchived(sessionId: string, model: Model<any>): Promise<boolean> {
+  if (!config.session.summarize_on_rotation) return false;
 
   try {
-    const loaded = await sessions.loadArchived(sessionId);
-    if (loaded.tail.length === 0 && !loaded.previousSummary) {
-      log.debug("empty archived session, skipping", { sessionId });
+    // A rotation callback and startup recovery (or two accidental service
+    // instances) can discover the same archive together. Hold a per-session
+    // lock across the LLM call so idempotence also saves the duplicate tokens.
+    await withFileLock(markerPath(sessionId), async () => {
+      if (await alreadySummarized(sessionId)) {
+        log.debug("session already summarized, skipping", { sessionId });
+        return;
+      }
+
+      const loaded = await sessions.loadArchived(sessionId);
+      if (loaded.tail.length === 0 && !loaded.previousSummary) {
+        log.debug("empty archived session, skipping", { sessionId });
+        await markSummarized(sessionId);
+        return;
+      }
+      // The archive mtime tracks the end of the session more accurately than
+      // process-restart time when this work is being resumed after a crash.
+      const archivedAt = (await stat(join(paths.sessionsArchive, `${sessionId}.jsonl`))).mtime;
+      const line = await generateLine(sessionId, loaded, model, archivedAt);
+      await writeRecentLine(sessionId, line);
       await markSummarized(sessionId);
-      return;
-    }
-    const line = await generateLine(sessionId, loaded, model, new Date());
-    await writeRecentLine(line);
-    await markSummarized(sessionId);
-    log.info("summarized session", { sessionId, line });
+      log.info("summarized session", { sessionId, line });
+    });
+    return true;
   } catch (err) {
     log.error("summarizer failed", { sessionId, err: err instanceof Error ? err.message : err });
     // Intentionally don't re-throw — rotation has already succeeded; the
     // user's next message shouldn't suffer because the TOC entry didn't land.
+    return false;
+  }
+}
+
+/** Replay session-summary work that was interrupted by a crash or restart. */
+export async function resumeUnsummarizedArchives(model: Model<any>): Promise<void> {
+  if (!config.session.summarize_on_rotation) return;
+  await mkdir(paths.sessionsArchive, { recursive: true });
+  // Bound both useful work and total provider attempts. A durable cursor rotates
+  // the starting point, so a run of permanently bad newest archives cannot
+  // consume the cap at the same position on every restart.
+  const names = (await readdir(paths.sessionsArchive))
+    .filter((name) => name.endsWith(".jsonl"))
+    .sort()
+    .reverse();
+  const orderedNames = rotateAfterCursor(names, await readResumeCursor());
+  let resumed = 0;
+  let attempted = 0;
+  for (const name of orderedNames) {
+    const sessionId = name.slice(0, -".jsonl".length);
+    if (await alreadySummarized(sessionId)) continue;
+    // Failed archives must not consume the useful-work budget. Otherwise the
+    // same few permanently bad newest files are retried on every startup and
+    // older valid sessions never receive a summary.
+    const completed = await summarizeArchived(sessionId, model);
+    attempted += 1;
+    await writeResumeCursor(name);
+    if (completed) resumed += 1;
+    if (resumed >= STARTUP_RESUME_LIMIT || attempted >= STARTUP_RESUME_ATTEMPT_LIMIT) break;
   }
 }

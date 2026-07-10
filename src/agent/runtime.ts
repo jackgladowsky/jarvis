@@ -39,6 +39,15 @@ import { summarizeArchived } from "./summarizer.js";
 import { getSystemPrompt } from "./system-prompt.js";
 import { makeAbortableTool } from "./tools/abortable.js";
 import { allTools } from "./tools/index.js";
+import {
+  beginChatTurn,
+  finishChatTurn,
+  interruptedTurnHasReplayRisk,
+  recordChatToolStart,
+  recordChatVisibleOutput,
+  renderInterruptedTurnWarning,
+  type ChatTurnJournal,
+} from "./turn-journal.js";
 
 // Streaming callbacks invoked per assistant message. Tool-call messages are
 // filtered out before any callback fires — see the listener below.
@@ -252,9 +261,82 @@ function formatStatus(event: AgentEvent, mode: StatusMode): string | undefined {
 // it's recalculated fresh each turn from the actual tool-call count.
 
 const SKILL_NUDGE_THRESHOLD = 3;
-const PRIMARY_RETRY_COUNT = 3;
+const PRIMARY_RETRY_COUNT = 1;
+const PRIMARY_RETRY_BASE_DELAY_MS = 750;
 const FALLBACK_PROVIDER = "openrouter";
 const FALLBACK_MODEL_ID = "deepseek/deepseek-v4-flash";
+
+export type AgentFailureClass = "transient" | "provider_unavailable" | "permanent";
+
+/**
+ * Failure surfaced to durable schedulers/controllers. `replaySafe` is false
+ * once any tool began or user-visible output may have escaped; callers must
+ * never automatically rerun those executions.
+ */
+export class AgentExecutionError extends Error {
+  readonly replaySafe: boolean;
+  readonly failureClass: AgentFailureClass;
+
+  constructor(message: string, replaySafe: boolean, failureClass = classifyAgentFailure(message), cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "AgentExecutionError";
+    this.replaySafe = replaySafe;
+    this.failureClass = failureClass;
+  }
+}
+
+// Keep retries deliberately narrow. The agent SDK reports provider failures
+// as strings from several transports, so classification must handle both
+// status codes and common network/provider wording without treating generic
+// client errors as retryable.
+export function classifyAgentFailure(message: string): AgentFailureClass {
+  const lower = message.toLowerCase();
+  if (
+    /\b(408|409|425|429|500|502|503|504)\b/.test(lower) ||
+    lower.includes("server_error") ||
+    lower.includes("server error") ||
+    lower.includes("overloaded") ||
+    lower.includes("temporarily unavailable") ||
+    lower.includes("try again later") ||
+    lower.includes("rate limit") ||
+    lower.includes("timed out") ||
+    lower.includes("timeout") ||
+    lower.includes("econnreset") ||
+    lower.includes("econnrefused") ||
+    lower.includes("enotfound") ||
+    lower.includes("socket hang up") ||
+    lower.includes("network error") ||
+    lower.includes("fetch failed")
+  ) {
+    return "transient";
+  }
+  if (
+    /\b(401|403)\b/.test(lower) ||
+    lower.includes("usage_limit_reached") ||
+    lower.includes("usage limit") ||
+    lower.includes("quota") ||
+    lower.includes("insufficient credit") ||
+    lower.includes("insufficient balance") ||
+    lower.includes("no api key") ||
+    lower.includes("api key not found") ||
+    lower.includes("credential") ||
+    lower.includes("malformed creds") ||
+    lower.includes("unauthorized") ||
+    lower.includes("authentication")
+  ) {
+    return "provider_unavailable";
+  }
+  return "permanent";
+}
+
+export interface ReplayBoundary {
+  toolStarted: boolean;
+  visibleAssistantOutput: boolean;
+}
+
+export function isInferenceReplaySafe(boundary: ReplayBoundary): boolean {
+  return !boundary.toolStarted && !boundary.visibleAssistantOutput;
+}
 
 function isFallbackModelActive(): boolean {
   return model.provider === FALLBACK_PROVIDER && model.id === FALLBACK_MODEL_ID;
@@ -289,10 +371,13 @@ function injectSkillNudge(messages: AgentMessage[]): void {
 // Build a fresh Agent for a given session. Tools and model are process-level;
 // the system prompt is reassembled per run so host-local prompt edits are live
 // on the next prompt/session.
-function buildAgent(messages: AgentMessage[], agentModel = model, sessionId?: string): Agent {
+function buildAgent(messages: AgentMessage[], agentModel = model, sessionId?: string, telegramChatId?: number): Agent {
+  const systemPrompt = telegramChatId
+    ? `${getSystemPrompt()}\n\n## Current Transport Context\n- Telegram chat ID: \`${telegramChatId}\`\nPass this exact ID to trusted repo scripts that require an explicit notification destination.`
+    : getSystemPrompt();
   return new Agent({
     initialState: {
-      systemPrompt: getSystemPrompt(),
+      systemPrompt,
       model: agentModel,
       tools: cancellableTools,
       messages,
@@ -300,6 +385,10 @@ function buildAgent(messages: AgentMessage[], agentModel = model, sessionId?: st
     },
     getApiKey: getApiKeyForProvider,
     sessionId,
+    // Tool calls frequently mutate the same checkout, browser, or external
+    // system. Preserve source order unless a future tool-specific policy can
+    // prove a batch is safe to parallelize.
+    toolExecution: "sequential",
   });
 }
 
@@ -392,6 +481,39 @@ function makeSummaryMessage(summary: string): AgentMessage {
   };
 }
 
+export function failureFromMessages(messages: AgentMessage[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!isAssistantMessage(message)) continue;
+    if (message.stopReason === "error" || message.stopReason === "aborted" || message.errorMessage) {
+      // Keep the raw provider payload for retry classification. Formatting it
+      // first can discard useful fields such as `type: server_error`.
+      return message.errorMessage ?? message.stopReason;
+    }
+  }
+  return undefined;
+}
+
+function detectAgentFailure(agent: Agent, newMessages: AgentMessage[], capturedFailure?: string): string | undefined {
+  return capturedFailure ?? agent.state.errorMessage ?? failureFromMessages(newMessages);
+}
+
+async function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) throw new AgentRunAbortError("Cancelled.");
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(new AgentRunAbortError("Cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 // Public entrypoint called from transport/telegram.ts under the per-chat
 // lock. Resolves the session, runs the agent, persists new messages.
 export async function handleMessage(
@@ -401,10 +523,14 @@ export async function handleMessage(
   images: ImageContent[] = [],
 ): Promise<void> {
   const run = activeAgentRuns.start("chat", chatId);
+  let turn: ChatTurnJournal | undefined;
   try {
     ensureNotAborted(run);
     const session = await sessions.resolveSession(chatId);
     ensureNotAborted(run);
+    const begunTurn = await beginChatTurn(chatId, session.sessionId, text, images.length);
+    const chatTurn = begunTurn.current;
+    turn = chatTurn;
     log.debug("agent prompt", {
       chatId,
       sessionId: session.sessionId,
@@ -433,40 +559,105 @@ export async function handleMessage(
         tokensBefore: compaction.tokensBefore,
       });
     }
+    if (begunTurn.interruptions.length > 0) {
+      compaction.messages.unshift({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: begunTurn.interruptions.map((interrupted) => renderInterruptedTurnWarning(interrupted)).join("\n\n"),
+          },
+        ],
+        timestamp: 0,
+      });
+      log.warn("injecting interrupted-turn recovery note", {
+        chatId,
+        interruptedTurnIds: begunTurn.interruptions.map((interrupted) => interrupted.id),
+        riskyTurnCount: begunTurn.interruptions.filter((interrupted) => interruptedTurnHasReplayRisk(interrupted))
+          .length,
+      });
+    }
     // Ephemeral skill nudge: inject before buildAgent so it enters the agent's
     // context this turn. Never persisted to the session JSONL — recalculated
     // fresh each turn from the actual tool-call count.
     injectSkillNudge(compaction.messages);
-    const attempts = [
-      ...Array.from({ length: PRIMARY_RETRY_COUNT + 1 }, (_, i) => ({
-        label: i === 0 ? "primary" : `primary retry ${i}/${PRIMARY_RETRY_COUNT}`,
+    type Attempt = { label: string; agentModel: Model<any>; kind: "primary" | "primary_retry" | "fallback" };
+    const primaryAttempts: Attempt[] = [
+      { label: "primary", agentModel: model, kind: "primary" },
+      ...Array.from({ length: PRIMARY_RETRY_COUNT }, (_, i) => ({
+        label: `primary retry ${i + 1}/${PRIMARY_RETRY_COUNT}`,
         agentModel: model,
+        kind: "primary_retry" as const,
       })),
     ];
+    let fallbackAttempt: Attempt | undefined;
     if (!isFallbackModelActive()) {
-      attempts.push({
-        label: `fallback ${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID}`,
-        agentModel: resolveModel(FALLBACK_PROVIDER, FALLBACK_MODEL_ID),
-      });
+      // The fallback is optional. Do not turn a known-missing OpenRouter key
+      // into one more doomed provider request.
+      const fallbackKey = await getApiKeyForProvider(FALLBACK_PROVIDER);
+      if (fallbackKey) {
+        fallbackAttempt = {
+          label: `fallback ${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID}`,
+          agentModel: resolveModel(FALLBACK_PROVIDER, FALLBACK_MODEL_ID),
+          kind: "fallback",
+        };
+      }
     }
 
+    const attempts: Attempt[] = [primaryAttempts[0]];
+    let completedMessages: AgentMessage[] | undefined;
+    let terminalFailure: string | undefined;
+    let callbackFailure: Error | undefined;
     let lastError = "agent message failed";
+
+    const invokeCallback = async (
+      label: string,
+      callback: (() => void | Promise<void>) | undefined,
+      critical = false,
+    ): Promise<void> => {
+      if (!callback) return;
+      try {
+        await callback();
+      } catch (err) {
+        const callbackError = err instanceof Error ? err : new Error(String(err));
+        if (critical) callbackFailure ??= callbackError;
+        log.error("agent stream callback failed", {
+          chatId,
+          sessionId: session.sessionId,
+          callback: label,
+          critical,
+          err: callbackError.message,
+        });
+      }
+    };
 
     for (let i = 0; i < attempts.length; i++) {
       ensureNotAborted(run);
       const attempt = attempts[i];
-      const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, session.sessionId);
+      const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, session.sessionId, chatId);
       const detachAgent = run.attachAgent(agent);
       let currentMsgIsAbandoned = false;
       let promptError: string | undefined;
+      const replayBoundary: ReplayBoundary = { toolStarted: false, visibleAssistantOutput: false };
 
       const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
         if (shouldSuppressForCancelledRun(run)) return;
 
+        if (event.type === "tool_execution_start") {
+          await recordChatToolStart(chatTurn, event.toolName);
+          replayBoundary.toolStarted = true;
+        }
+
         const status = formatStatus(event, callbacks.statusMode ?? "off");
-        if (status) await callbacks.onStatus?.(status);
+        if (status) await invokeCallback("onStatus", () => callbacks.onStatus?.(status));
 
         if (shouldSuppressForCancelledRun(run)) return;
+
+        if (event.type === "agent_end") {
+          const eventError = failureFromMessages(event.messages);
+          if (eventError) promptError = eventError;
+          return;
+        }
 
         if (event.type === "message_start" && event.message.role === "assistant") {
           currentMsgIsAbandoned = false;
@@ -478,12 +669,16 @@ export async function handleMessage(
           if (hasToolCall(m.content)) {
             if (!currentMsgIsAbandoned) {
               currentMsgIsAbandoned = true;
-              await callbacks.onAbandon?.();
+              await invokeCallback("onAbandon", callbacks.onAbandon);
             }
             return;
           }
           const t = extractText(m.content).trim();
-          if (t && !shouldSuppressForCancelledRun(run)) await callbacks.onAssistantUpdate?.(t);
+          if (t && !shouldSuppressForCancelledRun(run) && callbacks.onAssistantUpdate) {
+            await recordChatVisibleOutput(chatTurn);
+            replayBoundary.visibleAssistantOutput = true;
+            await invokeCallback("onAssistantUpdate", () => callbacks.onAssistantUpdate?.(t));
+          }
           return;
         }
 
@@ -491,7 +686,7 @@ export async function handleMessage(
           const m = event.message;
           if (hasToolCall(m.content)) return;
           if (m.stopReason === "error" || m.stopReason === "aborted") {
-            promptError = formatAgentError(m.stopReason, m.errorMessage);
+            promptError = m.errorMessage ?? m.stopReason;
             lastError = promptError;
             log.warn("agent attempt failed", {
               chatId,
@@ -505,27 +700,22 @@ export async function handleMessage(
             return;
           }
           const t = extractText(m.content).trim();
-          if (t && !shouldSuppressForCancelledRun(run)) await callbacks.onAssistantEnd?.(t);
+          if (t && !shouldSuppressForCancelledRun(run) && callbacks.onAssistantEnd) {
+            await recordChatVisibleOutput(chatTurn);
+            replayBoundary.visibleAssistantOutput = true;
+            await invokeCallback("onAssistantEnd", () => callbacks.onAssistantEnd?.(t), true);
+          }
           return;
         }
       });
 
       const before = agent.state.messages.length;
+      let thrownFailure: string | undefined;
 
       try {
         await agent.prompt(text, images);
         ensureNotAborted(run);
-        if (promptError) throw new Error(promptError);
-
-        const newMessages = agent.state.messages.slice(before);
-        await sessions.appendMessages(session.sessionId, newMessages);
-        await sessions.markActivity(chatId);
-        unsubscribe();
-        detachAgent();
-        return;
       } catch (err) {
-        unsubscribe();
-        detachAgent();
         if (run.signal.aborted || isAgentRunAbortError(err)) {
           const cancelledMessages = normalizeCancelledChatMessages(
             agent.state.messages.slice(before),
@@ -534,36 +724,120 @@ export async function handleMessage(
           );
           await sessions.appendMessages(session.sessionId, cancelledMessages);
           await sessions.markActivity(chatId);
-          await callbacks.onCancelled?.(STOPPED_BY_USER_TEXT);
+          if (callbacks.onCancelled) await recordChatVisibleOutput(chatTurn);
+          await finishChatTurn(chatTurn, "cancelled", run.abortReason ?? "Cancelled.");
+          await invokeCallback("onCancelled", () => callbacks.onCancelled?.(STOPPED_BY_USER_TEXT), true);
           throw new AgentRunAbortError(run.abortReason);
         }
-        lastError = err instanceof Error ? err.message : String(err);
-        log.warn("agent prompt attempt errored", {
-          chatId,
-          sessionId: session.sessionId,
-          attempt: attempt.label,
-          model: `${attempt.agentModel.provider}/${attempt.agentModel.id}`,
-          err: lastError,
-        });
-
-        const next = attempts[i + 1];
-        if (next) {
-          if (!shouldSuppressForCancelledRun(run)) {
-            await callbacks.onStatus?.(
-              next.label.startsWith("fallback")
-                ? "Primary failed; trying fallback model"
-                : "Model call failed; retrying",
-            );
-          }
-          continue;
-        }
+        thrownFailure = err instanceof Error ? err.message : String(err);
+      } finally {
+        unsubscribe();
+        detachAgent();
       }
+
+      const newMessages = agent.state.messages.slice(before);
+      const failure = thrownFailure ?? detectAgentFailure(agent, newMessages, promptError);
+      if (!failure) {
+        completedMessages = newMessages;
+        terminalFailure = undefined;
+        break;
+      }
+
+      lastError = failure;
+      const failureClass = classifyAgentFailure(failure);
+      const replaySafe = isInferenceReplaySafe(replayBoundary);
+      log.warn("agent prompt attempt errored", {
+        chatId,
+        sessionId: session.sessionId,
+        attempt: attempt.label,
+        model: `${attempt.agentModel.provider}/${attempt.agentModel.id}`,
+        failureClass,
+        replaySafe,
+        toolStarted: replayBoundary.toolStarted,
+        visibleAssistantOutput: replayBoundary.visibleAssistantOutput,
+        err: lastError,
+      });
+
+      let next: Attempt | undefined;
+      if (replaySafe && failureClass === "transient" && attempt.kind === "primary") {
+        next = primaryAttempts[1];
+      } else if (
+        replaySafe &&
+        (failureClass === "transient" || failureClass === "provider_unavailable") &&
+        attempt.kind !== "fallback"
+      ) {
+        next = fallbackAttempt;
+      }
+
+      if (next) {
+        attempts.push(next);
+        await invokeCallback("onStatus", () =>
+          callbacks.onStatus?.(
+            next.kind === "fallback" ? "Primary failed; trying fallback model" : "Model call failed; retrying",
+          ),
+        );
+        if (next.kind === "primary_retry") {
+          const delay = PRIMARY_RETRY_BASE_DELAY_MS + Math.floor(Math.random() * 250);
+          await waitForRetry(delay, run.signal);
+        }
+        continue;
+      }
+
+      // This attempt is terminal. Persist its transcript (including any tool
+      // results) but never replay it after a tool or visible response crossed
+      // the side-effect boundary.
+      completedMessages = newMessages;
+      terminalFailure = failure;
+      break;
     }
 
-    if (!shouldSuppressForCancelledRun(run)) {
-      await callbacks.onError?.(`Model call failed after retries and fallback: ${lastError}`);
+    if (!completedMessages) {
+      terminalFailure = lastError;
+      completedMessages = [];
     }
+
+    // Persistence is intentionally outside the inference retry loop. A disk
+    // failure after a completed tool or delivered answer must never rerun the
+    // model and duplicate those effects.
+    let persistenceFailure: Error | undefined;
+    try {
+      await sessions.appendMessages(session.sessionId, completedMessages);
+      await sessions.markActivity(chatId);
+    } catch (err) {
+      persistenceFailure = err instanceof Error ? err : new Error(String(err));
+      log.error("failed to persist completed agent turn", {
+        chatId,
+        sessionId: session.sessionId,
+        err: persistenceFailure.message,
+      });
+    }
+
+    if (terminalFailure && !shouldSuppressForCancelledRun(run) && callbacks.onError) {
+      await recordChatVisibleOutput(chatTurn);
+    }
+
+    if (!persistenceFailure) {
+      await finishChatTurn(chatTurn, terminalFailure ? "failed" : "committed", terminalFailure);
+    }
+
+    if (terminalFailure && !shouldSuppressForCancelledRun(run)) {
+      const displayError = formatAgentError("error", terminalFailure);
+      await invokeCallback("onError", () => callbacks.onError?.(`Model call failed: ${displayError}`), true);
+    }
+
+    if (persistenceFailure) throw persistenceFailure;
+    if (callbackFailure) throw callbackFailure;
   } catch (err) {
+    if (turn?.status === "running" && !turn.tool_started && !turn.visible_output) {
+      const status = run.signal.aborted || isAgentRunAbortError(err) ? "cancelled" : "failed";
+      await finishChatTurn(turn, status, err instanceof Error ? err.message : String(err)).catch((journalErr) =>
+        log.error("failed to close side-effect-free chat turn journal", {
+          chatId,
+          turnId: turn?.id,
+          err: journalErr instanceof Error ? journalErr.message : String(journalErr),
+        }),
+      );
+    }
     if (!run.signal.aborted && !isAgentRunAbortError(err)) throw err;
     log.info("agent run cancelled", { chatId, reason: run.abortReason ?? "aborted" });
   } finally {
@@ -592,6 +866,7 @@ export async function runScheduledPrompt(
   modelOverride: ModelOverride = {},
 ): Promise<string> {
   const run = activeAgentRuns.start("scheduled", taskId);
+  let toolStarted = false;
   try {
     const taskModel =
       modelOverride.provider && modelOverride.model ? resolveModel(modelOverride.provider, modelOverride.model) : model;
@@ -635,10 +910,18 @@ export async function runScheduledPrompt(
 
     const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
       if (shouldSuppressForCancelledRun(run)) return;
+      if (event.type === "tool_execution_start") {
+        toolStarted = true;
+        return;
+      }
+      if (event.type === "agent_end") {
+        errorText = failureFromMessages(event.messages) ?? errorText;
+        return;
+      }
       if (event.type !== "message_end" || event.message.role !== "assistant") return;
       if (hasToolCall(event.message.content)) return;
       if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
-        errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
+        errorText = event.message.errorMessage ?? event.message.stopReason;
         log.warn("scheduled agent error", {
           taskId,
           stopReason: event.message.stopReason,
@@ -671,13 +954,24 @@ export async function runScheduledPrompt(
       detachAgent();
     }
 
-    await appendScheduledMessages(taskId, agent.state.messages.slice(before));
-    if (errorText) throw new Error(errorText);
-    if (!finalText) throw new Error("scheduled agent produced no final output");
+    const newMessages = agent.state.messages.slice(before);
+    await appendScheduledMessages(taskId, newMessages);
+    errorText = detectAgentFailure(agent, newMessages, errorText) ?? "";
+    if (errorText) {
+      throw new AgentExecutionError(
+        formatAgentError("error", errorText),
+        !toolStarted,
+        classifyAgentFailure(errorText),
+      );
+    }
+    if (!finalText)
+      throw new AgentExecutionError("scheduled agent produced no final output", !toolStarted, "permanent");
     return finalText;
   } catch (err) {
     if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
-    throw err;
+    if (err instanceof AgentExecutionError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    throw new AgentExecutionError(message, !toolStarted, classifyAgentFailure(message), err);
   } finally {
     run.finish();
   }
@@ -726,30 +1020,53 @@ export async function runBackgroundPrompt(
       initialMessages = [];
     }
 
-    // Retry chain: same role-routed model once, then GLM 5.2 via OpenRouter
-    // as a fallback for transient Codex server errors.
-    const fallbackModel = resolveModel("openrouter", "z-ai/glm-5.2");
-    const retryModels = [taskModel, taskModel, fallbackModel];
-
+    type BackgroundAttempt = {
+      label: string;
+      agentModel: Model<any>;
+      kind: "primary" | "primary_retry" | "fallback";
+    };
+    const primaryRetry: BackgroundAttempt = {
+      label: "primary retry 1/1",
+      agentModel: taskModel,
+      kind: "primary_retry",
+    };
+    let fallback: BackgroundAttempt | undefined;
+    if (await getApiKeyForProvider("openrouter")) {
+      const fallbackModel = resolveModel("openrouter", "z-ai/glm-5.2");
+      if (taskModel.provider !== fallbackModel.provider || taskModel.id !== fallbackModel.id) {
+        fallback = { label: "fallback openrouter/z-ai/glm-5.2", agentModel: fallbackModel, kind: "fallback" };
+      }
+    }
+    const attempts: BackgroundAttempt[] = [{ label: "primary", agentModel: taskModel, kind: "primary" }];
     let lastError: Error | undefined;
 
-    for (let attempt = 0; attempt <= 2; attempt++) {
+    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
       ensureNotAborted(run);
-      const attemptModel = retryModels[attempt];
-      log.info("background prompt attempt", { taskId, attempt, model: attemptModel.id });
+      const attempt = attempts[attemptIndex];
+      const attemptModel = attempt.agentModel;
+      log.info("background prompt attempt", { taskId, attempt: attempt.label, model: attemptModel.id });
 
       const agent = buildAgent(initialMessages, attemptModel, `background:${taskId}`);
       const detachAgent = run.attachAgent(agent);
       const before = agent.state.messages.length;
       let finalText = "";
       let errorText = "";
+      let toolStarted = false;
 
       const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
         if (shouldSuppressForCancelledRun(run)) return;
+        if (event.type === "tool_execution_start") {
+          toolStarted = true;
+          return;
+        }
+        if (event.type === "agent_end") {
+          errorText = failureFromMessages(event.messages) ?? errorText;
+          return;
+        }
         if (event.type !== "message_end" || event.message.role !== "assistant") return;
         if (hasToolCall(event.message.content)) return;
         if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
-          errorText = formatAgentError(event.message.stopReason, event.message.errorMessage);
+          errorText = event.message.errorMessage ?? event.message.stopReason;
           log.warn("background agent error", {
             taskId,
             stopReason: event.message.stopReason,
@@ -763,8 +1080,10 @@ export async function runBackgroundPrompt(
       const taskPrompt = [
         "You are running as a background JARVIS worker.",
         "You have one long-running task. Work autonomously, but do not make product/security/destructive decisions by guessing.",
-        "If blocked, write a question to the task mailbox, set the task status to waiting_on_main in its task JSON, and stop.",
-        "If finished, update the task note and task JSON with status awaiting_review. Do not push, merge, deploy, or edit the main checkout unless explicitly instructed.",
+        "The task JSON and mailbox are controller-owned state. Never edit them directly.",
+        "If blocked, include a `QUESTION: ...` line and make the exact final nonempty line `OUTCOME: blocked`.",
+        "If finished, update only the task note and make the exact final nonempty line `OUTCOME: completed`.",
+        "Do not push, merge, deploy, or edit the main checkout unless explicitly instructed.",
         "Use the assigned git worktree for repo changes.",
         "Your final response is a concise handoff summary for main JARVIS.",
         "",
@@ -774,46 +1093,64 @@ export async function runBackgroundPrompt(
         prompt,
       ].join("\n");
 
+      let thrownFailure: string | undefined;
       try {
         ensureNotAborted(run);
         await agent.prompt(taskPrompt);
         ensureNotAborted(run);
       } catch (err) {
+        if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+        thrownFailure = err instanceof Error ? err.message : String(err);
+      } finally {
         unsubscribe();
         detachAgent();
-        if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
-        lastError = err instanceof Error ? err : new Error(String(err));
-        log.warn("background prompt attempt failed", {
-          taskId,
-          attempt,
-          model: attemptModel.id,
-          err: lastError.message,
-        });
-        // Only retry on server-side errors — not auth, bad request, etc.
-        const msg = lastError.message.toLowerCase();
-        const retryable =
-          msg.includes("server_error") ||
-          msg.includes("server error") ||
-          msg.includes("overloaded") ||
-          msg.includes("try again later") ||
-          msg.includes("500") ||
-          msg.includes("502") ||
-          msg.includes("503");
-        if (!retryable || attempt >= 2) {
-          throw lastError;
-        }
-        // Sleep 2s before the retry so transient overload has a moment to clear.
-        await new Promise((r) => setTimeout(r, 2000));
-        continue; // next attempt
       }
 
-      // Success on this attempt
-      unsubscribe();
-      detachAgent();
-      await appendBackgroundMessages(taskId, agent.state.messages.slice(before));
-      if (errorText) throw new Error(errorText);
-      if (!finalText) throw new Error("background agent produced no final output");
-      return finalText;
+      const newMessages = agent.state.messages.slice(before);
+      const failure =
+        thrownFailure ??
+        detectAgentFailure(agent, newMessages, errorText || undefined) ??
+        (!finalText ? "background agent produced no final output" : undefined);
+      if (!failure) {
+        await appendBackgroundMessages(taskId, newMessages);
+        return finalText;
+      }
+
+      lastError = new Error(failure);
+      const failureClass = classifyAgentFailure(failure);
+      let next: BackgroundAttempt | undefined;
+      if (!toolStarted && failureClass === "transient" && attempt.kind === "primary") {
+        next = primaryRetry;
+      } else if (
+        !toolStarted &&
+        (failureClass === "transient" || failureClass === "provider_unavailable") &&
+        attempt.kind !== "fallback"
+      ) {
+        next = fallback;
+      }
+
+      log.warn("background prompt attempt failed", {
+        taskId,
+        attempt: attempt.label,
+        model: attemptModel.id,
+        failureClass,
+        toolStarted,
+        willRetry: Boolean(next),
+        err: failure,
+      });
+
+      if (next) {
+        attempts.push(next);
+        if (next.kind === "primary_retry") {
+          await waitForRetry(PRIMARY_RETRY_BASE_DELAY_MS + Math.floor(Math.random() * 250), run.signal);
+        }
+        continue;
+      }
+
+      // Keep the failed attempt when it crossed the tool boundary (or cannot
+      // be retried) so a later worker does not forget what already happened.
+      await appendBackgroundMessages(taskId, newMessages);
+      throw lastError;
     }
 
     throw lastError ?? new Error("background prompt exhausted retries");

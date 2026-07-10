@@ -159,30 +159,75 @@ write_env_file() {
   local allowed="$3"
   local exa="$4"
   local anthropic="$5"
-  local tmp
+  local openrouter="$6"
 
   log "Writing secrets file: $env_file"
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "[dry-run] would create/update $env_file with chmod 600 (values redacted)"
+    log "[dry-run] would update selected keys in $env_file with chmod 600 (values redacted)"
     return
   fi
 
-  tmp="$(mktemp)"
-  cat > "$tmp" <<EOF
-# JARVIS secrets. Loaded by systemd via EnvironmentFile=.
-# Edited by scripts/install.sh onboarding wizard.
+  # Update only the fields owned by onboarding. Preserve OPENROUTER_API_KEY,
+  # CODEX_OAUTH_CREDS_PATH, and any host-specific variables/comments so an
+  # installer rerun cannot silently erase a working configuration.
+  python3 - "$env_file" "$token" "$allowed" "$anthropic" "$openrouter" "$exa" <<'PY'
+from pathlib import Path
+import os
+import re
+import sys
+import tempfile
 
-TELEGRAM_BOT_TOKEN=$token
-TELEGRAM_ALLOWED_USER_IDS=$allowed
+path = Path(sys.argv[1])
+updates = {
+    "TELEGRAM_BOT_TOKEN": sys.argv[2],
+    "TELEGRAM_ALLOWED_USER_IDS": sys.argv[3],
+    "ANTHROPIC_API_KEY": sys.argv[4],
+    "OPENROUTER_API_KEY": sys.argv[5],
+    "EXA_API_KEY": sys.argv[6],
+}
 
-# Optional override; defaults to <data_dir>/.codex-creds.json.
-# CODEX_OAUTH_CREDS_PATH=
+if path.exists():
+    lines = path.read_text(encoding="utf-8").splitlines()
+else:
+    lines = [
+        "# JARVIS secrets. Loaded by systemd via EnvironmentFile=.",
+        "# Edited by scripts/install.sh onboarding wizard.",
+        "",
+    ]
 
-ANTHROPIC_API_KEY=$anthropic
-EXA_API_KEY=$exa
-EOF
-  install -m 600 "$tmp" "$env_file"
-  rm -f "$tmp"
+seen = set()
+out = []
+for line in lines:
+    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=", line)
+    if match and match.group(1) in updates:
+        key = match.group(1)
+        if key not in seen:
+            out.append(f"{key}={updates[key]}")
+            seen.add(key)
+        continue
+    out.append(line)
+
+if out and out[-1] != "":
+    out.append("")
+for key, value in updates.items():
+    if key not in seen:
+        out.append(f"{key}={value}")
+
+path.parent.mkdir(parents=True, exist_ok=True)
+fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(out).rstrip("\n") + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(tmp_name, 0o600)
+    os.replace(tmp_name, path)
+finally:
+    try:
+        os.unlink(tmp_name)
+    except FileNotFoundError:
+        pass
+PY
 }
 
 patch_config() {
@@ -233,12 +278,18 @@ clone_or_update_repo() {
 }
 
 bootstrap_repo() {
-  require_cmd node "Install Node.js 20+ first: https://nodejs.org/"
-  if ! command -v pnpm >/dev/null 2>&1; then
-    require_cmd corepack "Install pnpm first: corepack enable && corepack prepare pnpm@latest --activate"
-    log "pnpm not found; enabling it through corepack"
+  require_cmd node "Install Node.js 20.18.1+ first: https://nodejs.org/"
+  if ! node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>20 || (a===20 && (b>18 || (b===18 && c>=1))) ? 0 : 1)'; then
+    fail "Node.js 20.18.1+ is required; found $(node --version)."
+  fi
+  if ! command -v pnpm >/dev/null 2>&1 || [[ "$(pnpm --version)" != "10.26.2" ]]; then
+    require_cmd corepack "Install pnpm 10.26.2 first: corepack enable && corepack prepare pnpm@10.26.2 --activate"
+    log "activating repository-pinned pnpm 10.26.2 through corepack"
     run corepack enable
-    run corepack prepare pnpm@latest --activate
+    run corepack prepare pnpm@10.26.2 --activate
+  fi
+  if [[ "$DRY_RUN" -eq 0 && "$(pnpm --version)" != "10.26.2" ]]; then
+    fail "pnpm 10.26.2 is required; found $(pnpm --version)."
   fi
   require_cmd python3 "Install python3 and re-run."
 
@@ -253,7 +304,7 @@ bootstrap_repo() {
 onboard() {
   local env_file="$DATA_DIR/.env"
   local config_file="$DATA_DIR/config.yaml"
-  local token allowed exa anthropic provider model timezone
+  local token allowed exa anthropic openrouter provider model timezone
 
   log ""
   log "Onboarding JARVIS"
@@ -264,13 +315,15 @@ onboard() {
   allowed="$(current_env_value "$env_file" TELEGRAM_ALLOWED_USER_IDS)"
   exa="$(current_env_value "$env_file" EXA_API_KEY)"
   anthropic="$(current_env_value "$env_file" ANTHROPIC_API_KEY)"
+  openrouter="$(current_env_value "$env_file" OPENROUTER_API_KEY)"
 
   if prompt_yes_no "Configure Telegram/Exa/API secrets now?" "yes"; then
     token="$(prompt_value 'Telegram bot token from @BotFather' "$token" 1)"
     allowed="$(prompt_value 'Allowed Telegram user IDs (comma-separated numeric IDs)' "$allowed" 0)"
     exa="$(prompt_value 'Exa API key for web_search' "$exa" 1)"
     anthropic="$(prompt_value 'Anthropic API key (optional; leave blank if using Codex)' "$anthropic" 1)"
-    write_env_file "$env_file" "$token" "$allowed" "$exa" "$anthropic"
+    openrouter="$(prompt_value 'OpenRouter API key (optional)' "$openrouter" 1)"
+    write_env_file "$env_file" "$token" "$allowed" "$exa" "$anthropic" "$openrouter"
   else
     log "Leaving $env_file unchanged."
   fi
@@ -279,7 +332,7 @@ onboard() {
   model="gpt-5.1"
   timezone="$(cat /etc/timezone 2>/dev/null || printf 'America/New_York')"
   if prompt_yes_no "Configure basic model/timezone settings now?" "yes"; then
-    provider="$(prompt_value 'Agent provider (codex or anthropic)' "$provider" 0)"
+    provider="$(prompt_value 'Agent provider (codex, anthropic, or openrouter)' "$provider" 0)"
     model="$(prompt_value 'Model name' "$model" 0)"
     timezone="$(prompt_value 'Scheduler timezone' "$timezone" 0)"
     patch_config "$config_file" "$provider" "$model" "$timezone"
@@ -321,7 +374,7 @@ Done. JARVIS is installed/onboarded.
 
 Next steps:
   - Review secrets/config: $DATA_DIR/.env and $DATA_DIR/config.yaml
-  - Foreground run:       cd $INSTALL_DIR && node --env-file=$DATA_DIR/.env dist/index.js
+  - Foreground run:       cd $INSTALL_DIR && JARVIS_SOURCE_ROOT=$INSTALL_DIR JARVIS_DATA_DIR=$DATA_DIR node --env-file=$DATA_DIR/.env dist/index.js
   - If systemd installed: sudo systemctl start jarvis && journalctl -fu jarvis
 
 EOF

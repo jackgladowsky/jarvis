@@ -4,10 +4,7 @@ Use this skill for JARVIS setup, updates, deploys, restarts, backups, and servic
 
 ## Source/data split
 
-```text
-~/jarvis/   source code, git-managed, replaceable
-~/.jarvis/  host-local config, secrets, prompts, memory, sessions, logs, jobs
-```
+Use the resolved source/data roots in the runtime system prompt. The defaults are `~/jarvis/` and `~/.jarvis/` respectively.
 
 Never treat `~/.jarvis/` as disposable. It contains live state and secrets.
 
@@ -32,7 +29,7 @@ chmod 600 ~/.jarvis/.env
 Install service:
 
 ```bash
-cd ~/jarvis
+cd "$JARVIS_SOURCE_ROOT"
 scripts/install-systemd.sh
 sudo systemctl start jarvis
 sudo systemctl status jarvis
@@ -43,7 +40,7 @@ sudo systemctl status jarvis
 Prefer safe deploy:
 
 ```bash
-cd ~/jarvis
+cd "$JARVIS_SOURCE_ROOT"
 scripts/safe-deploy.sh
 scripts/safe-deploy.sh origin/main
 ```

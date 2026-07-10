@@ -1,7 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { chromium, type Locator, type Page } from "playwright";
+import { chromium, type BrowserContext, type Locator, type Page } from "playwright";
+import { atomicWriteFile } from "../lib/durable-file.js";
 import { paths } from "../paths.js";
+import { withWorkbenchLock } from "./lock.js";
 import { clipVisibleText, type WorkbenchPageSnapshot, type WorkbenchStepResult } from "./render.js";
 import {
   type WorkbenchApproval,
@@ -14,6 +16,7 @@ import {
 export interface OpenUrlOptions {
   timeoutMs?: number;
   now?: Date;
+  signal?: AbortSignal;
 }
 
 export interface RunStepsOptions extends OpenUrlOptions {
@@ -80,8 +83,10 @@ async function snapshotPage(
     screenshotPath: string;
     artifactPath: string;
     steps?: WorkbenchStepResult[];
+    signal?: AbortSignal;
   },
 ): Promise<WorkbenchPageSnapshot> {
+  throwIfWorkbenchAborted(input.signal);
   await assertPublicHttpUrl(page.url());
   await assertNoHumanHandoffSignals(page);
 
@@ -91,7 +96,9 @@ async function snapshotPage(
     .innerText({ timeout: 5_000 })
     .catch(() => "");
   const visibleText = clipVisibleText(rawText).text;
+  throwIfWorkbenchAborted(input.signal);
   await page.screenshot({ path: input.screenshotPath, fullPage: false, timeout: 10_000 });
+  throwIfWorkbenchAborted(input.signal);
 
   const snapshot: WorkbenchPageSnapshot = {
     requestedUrl: input.requestedUrl,
@@ -103,7 +110,7 @@ async function snapshotPage(
     capturedAt: input.capturedAtDate.toISOString(),
     steps: input.steps,
   };
-  await writeFile(input.artifactPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8");
+  await atomicWriteFile(input.artifactPath, `${JSON.stringify(snapshot, null, 2)}\n`);
   return snapshot;
 }
 
@@ -131,18 +138,32 @@ export async function runStepsInWorkbench(
   });
   if (!validation.allowed) throw new Error(validation.reason ?? "Workbench steps are not allowed.");
 
+  throwIfWorkbenchAborted(options.signal);
+  return withWorkbenchLock(options.signal, () => runValidatedSteps(steps, options));
+}
+
+async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOptions): Promise<WorkbenchPageSnapshot> {
+  throwIfWorkbenchAborted(options.signal);
+
   await ensureWorkbenchDirs();
   const capturedAtDate = options.now ?? new Date();
   const id = stamp(capturedAtDate);
   const screenshotPath = join(paths.workbenchScreenshots, `${id}.png`);
   const artifactPath = join(paths.workbenchArtifacts, `${id}.json`);
 
-  const context = await chromium.launchPersistentContext(paths.workbenchProfile, {
-    acceptDownloads: true,
-    downloadsPath: paths.workbenchDownloads,
-    headless: true,
-    viewport: { width: 1365, height: 768 },
-  });
+  let context: BrowserContext | undefined;
+  let closePromise: Promise<void> | undefined;
+  const closeContext = (): Promise<void> => {
+    if (!context) return Promise.resolve();
+    closePromise ??= context.close().catch(() => undefined);
+    return closePromise;
+  };
+  const onAbort = (): void => {
+    // Closing the context is Playwright's cancellation primitive. It rejects
+    // whichever navigation/click/type is in flight and terminates the browser.
+    void closeContext();
+  };
+  options.signal?.addEventListener("abort", onAbort, { once: true });
 
   const results: WorkbenchStepResult[] = [];
   let requestedUrl = options.fixtureHtml
@@ -150,8 +171,17 @@ export async function runStepsInWorkbench(
     : (steps.find((step) => step.action === "open_url")?.url ?? "");
 
   try {
+    context = await chromium.launchPersistentContext(paths.workbenchProfile, {
+      acceptDownloads: true,
+      downloadsPath: paths.workbenchDownloads,
+      headless: true,
+      viewport: { width: 1365, height: 768 },
+      timeout: options.timeoutMs ?? 30_000,
+    });
+    throwIfWorkbenchAborted(options.signal);
     const page = context.pages()[0] ?? (await context.newPage());
     if (options.fixtureHtml) {
+      throwIfWorkbenchAborted(options.signal);
       await page.setContent(options.fixtureHtml, {
         waitUntil: "domcontentloaded",
         timeout: options.timeoutMs ?? 30_000,
@@ -160,6 +190,7 @@ export async function runStepsInWorkbench(
     }
 
     for (const [index, step] of steps.entries()) {
+      throwIfWorkbenchAborted(options.signal);
       const startedUrl = page.url();
       if (step.action === "open_url") {
         const url = validateWorkbenchUrl(step.url ?? "");
@@ -186,6 +217,7 @@ export async function runStepsInWorkbench(
         await locator.fill(step.value ?? "", { timeout: options.timeoutMs ?? 10_000 });
       }
 
+      throwIfWorkbenchAborted(options.signal);
       await assertPublicHttpUrl(page.url());
       await assertNoHumanHandoffSignals(page);
       results.push({
@@ -197,10 +229,29 @@ export async function runStepsInWorkbench(
       });
     }
 
-    return await snapshotPage(page, { requestedUrl, capturedAtDate, screenshotPath, artifactPath, steps: results });
+    return await snapshotPage(page, {
+      requestedUrl,
+      capturedAtDate,
+      screenshotPath,
+      artifactPath,
+      steps: results,
+      signal: options.signal,
+    });
+  } catch (err) {
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    throw err;
   } finally {
-    await context.close();
+    options.signal?.removeEventListener("abort", onAbort);
+    await closeContext();
   }
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError");
+}
+
+function throwIfWorkbenchAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortReason(signal);
 }
 
 async function assertLocatorIsSafeTextInput(locator: Locator): Promise<void> {

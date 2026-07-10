@@ -9,7 +9,7 @@ If you want a private assistant you can run on your own box, start here. If you 
 Prereqs on the target Linux host:
 
 - `bash`, `git`, and `python3`
-- Node.js 20+; pnpm is installed through Corepack if needed
+- Node.js 20.18.1+; pnpm is installed through Corepack if needed
 - Telegram bot token from [@BotFather](https://t.me/BotFather)
 - Your numeric Telegram user ID for the allowlist
 - Exa API key for web search
@@ -120,6 +120,7 @@ Important config sections:
 - `session` — inactivity and max-duration rotation thresholds.
 - `compaction` — context compaction thresholds.
 - `tools.bash` — default and maximum shell timeouts.
+- `background` — worker concurrency and optional per-role model routing; roles otherwise inherit the active model.
 - `telegram` — typing indicator and parse mode.
 - `stt` — optional local whisper.cpp speech-to-text for Telegram voice/audio.
 - `scheduler` — enablement, timezone, notification chat, bootstrap tasks.

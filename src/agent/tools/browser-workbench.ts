@@ -55,7 +55,7 @@ export const browserWorkbenchTool: AgentTool<typeof schema> = {
   description:
     "Run safe local Playwright browser workbench actions with persistent host-local profile/downloads/screenshots/artifacts. Supports open_url and small run_steps plans with benign click/type/fill/submit. Blocks local/private URLs, credentials, login/2FA/CAPTCHA, and risky purchases/orders/bookings/rides/sends/posts/deletes/account/financial/legal/medical actions unless an explicit approval object is present; real purchase/ride/etc. execution is not implemented.",
   parameters: schema,
-  async execute(_id, args: Static<typeof schema>) {
+  async execute(_id, args: Static<typeof schema>, signal) {
     const t0 = Date.now();
     const auditArgs = {
       action: args.action,
@@ -73,10 +73,11 @@ export const browserWorkbenchTool: AgentTool<typeof schema> = {
 
       const snapshot =
         args.action === "open_url"
-          ? await openUrlInWorkbench(requiredString(args.url, "url is required for open_url"))
+          ? await openUrlInWorkbench(requiredString(args.url, "url is required for open_url"), { signal })
           : await runStepsInWorkbench(requiredSteps(args.steps), {
               request: args.request,
               approval: args.approval,
+              signal,
             });
 
       await auditToolCall({

@@ -292,8 +292,7 @@ export interface MaybeCompactResult {
 // the threshold this is just a token-count + return; otherwise it runs the
 // full compaction pipeline and returns the freshly compacted message list.
 export interface CompactionStore {
-  appendCompactionEntry?: (entry: { summary: string; tokensBefore: number }) => Promise<void>;
-  rewriteWithCompaction?: (entry: { summary: string; tokensBefore: number }, keptTail: AgentMessage[]) => Promise<void>;
+  rewriteWithCompaction: (entry: { summary: string; tokensBefore: number }, keptTail: AgentMessage[]) => Promise<void>;
   reload: () => Promise<LoadedSession>;
 }
 
@@ -348,13 +347,7 @@ export async function maybeCompactLoaded(
     tokensBefore: tokens,
   };
 
-  if (store.rewriteWithCompaction) {
-    await store.rewriteWithCompaction(entry, loaded.tail.slice(cut));
-  } else if (store.appendCompactionEntry) {
-    await store.appendCompactionEntry(entry);
-  } else {
-    throw new Error("compaction store cannot persist compaction entry");
-  }
+  await store.rewriteWithCompaction(entry, loaded.tail.slice(cut));
 
   // Reload — the JSONL now has the new compaction entry, and `load` will
   // surface it as the new previousSummary with the freshly trimmed tail.
@@ -379,7 +372,7 @@ export async function maybeCompact(
     model,
     makeSummaryMessage,
     {
-      appendCompactionEntry: (entry) => sessions.appendCompactionEntry(sessionId, entry),
+      rewriteWithCompaction: (entry, keptTail) => sessions.rewriteSessionWithCompaction(sessionId, entry, keptTail),
       reload: () => sessions.load(sessionId),
     },
     signal,

@@ -16,10 +16,11 @@
 // to disk so correct context windows are available immediately on restart
 // with no 200K fallback window.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getModel, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
 import { config } from "../config.js";
+import { atomicWriteFileSync, atomicWriteJsonSync } from "../lib/durable-file.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
 
@@ -80,7 +81,7 @@ function persistOrCacheToDisk(cache: Map<string, OpenRouterModelMeta>): void {
       contextLength: meta.contextLength,
       maxCompletionTokens: meta.maxCompletionTokens,
     }));
-    writeFileSync(OR_CACHE_PATH, JSON.stringify(data), "utf-8");
+    atomicWriteFileSync(OR_CACHE_PATH, JSON.stringify(data));
   } catch (err) {
     log.warn("failed to persist OpenRouter model cache", { err: String(err) });
   }
@@ -227,7 +228,7 @@ function loadRuntimeModel(): RuntimeModelConfig | null {
 function saveRuntimeModel(provider: string, modelId: string): void {
   try {
     mkdirSync(paths.data, { recursive: true });
-    writeFileSync(RUNTIME_MODEL_PATH, JSON.stringify({ provider, modelId }, null, 2));
+    atomicWriteJsonSync(RUNTIME_MODEL_PATH, { provider, modelId });
   } catch (err) {
     log.warn("failed to persist runtime model", { err: String(err) });
   }
@@ -293,17 +294,30 @@ if (diskCache) {
 
 // Prefer the runtime-persisted choice (set via /model), fall back to config.yaml.
 const runtime = loadRuntimeModel();
-const initialProvider = runtime?.provider ?? config.agent.provider;
-const initialModelId = runtime?.modelId ?? config.agent.model;
 
 /** The currently active model. Reassignable at runtime via switchModel(). */
-export let model: Model<any> = resolveModel(initialProvider, initialModelId);
+export let model: Model<any> = (() => {
+  if (runtime) {
+    try {
+      return resolveModel(runtime.provider, runtime.modelId);
+    } catch (err) {
+      // Host-local runtime state is a preference, not a reason to take the
+      // entire bot offline after a model is removed/renamed.
+      log.warn("persisted runtime model is invalid; using config.yaml", {
+        provider: runtime.provider,
+        modelId: runtime.modelId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return resolveModel(config.agent.provider, config.agent.model);
+})();
 
-// Kick off the OpenRouter model cache fetch in the background. Once it
-// resolves, patch the live model binding and persist the fresh data to disk.
-// This runs before main() awaits anything meaningful, so subsequent server
-// startups have the disk cache loaded immediately.
-if (!diskCache) ensureOrCache(); // only fire fetch if disk cache wasn't loaded
+// Fetch OpenRouter metadata only when OpenRouter is actually active. The old
+// unconditional startup fetch delayed/offlined Codex- and Anthropic-only
+// installs (and their tests) for data they never used. Resolving an OpenRouter
+// fallback or switching providers still calls ensureOrCache on demand.
+if (!diskCache && model.provider === "openrouter") ensureOrCache();
 if (model.provider === "openrouter") {
   refreshModelContext(model).catch((err) => log.warn("background model context refresh failed", { err: String(err) }));
 }

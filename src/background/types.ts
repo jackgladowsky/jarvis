@@ -45,6 +45,13 @@ export interface BackgroundTask {
   /** Ensures review-triggered remediation runs at most once automatically. */
   automatic_fix_attempted?: boolean;
   current_role?: BackgroundRole;
+  /** Goal controller has created this task but has not durably linked it yet. */
+  launch_deferred?: boolean;
+  /** Durable task-creation lease, reconciled if the creating process dies. */
+  preparing?: boolean;
+  preparing_pid?: number;
+  preparing_pid_start_time?: string;
+  preparing_started_at?: string;
   pid?: number;
   created_at: string;
   updated_at: string;
@@ -53,6 +60,12 @@ export interface BackgroundTask {
   summary?: string;
   review_summary?: string;
   error?: string;
+  /** Deterministic outbox id written in the same commit as terminal/attention state. */
+  terminal_notification_id?: string;
+  /** Controller acknowledged that the deterministic notification is durably queued/archived. */
+  terminal_notification_enqueued_at?: string;
+  /** Monotonic compare-and-swap revision for cross-process state updates. */
+  revision?: number;
 }
 
 export type BackgroundMailType = "question" | "answer" | "status" | "decision" | "handoff" | "error" | "review";

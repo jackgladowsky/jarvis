@@ -35,7 +35,7 @@ export async function handleBg(ctx: Context, parsed: ParsedCommand): Promise<voi
   const task = await startBackgroundTask(parsed.args, chatId);
   await reply(
     ctx,
-    `Started background task ${task.id}.\nPipeline: ${task.pipeline.map((stage) => stage.role).join(" -> ")}\nWorktree: ${task.worktree}\nBranch: ${task.branch}`,
+    `${task.pid ? "Started" : "Queued"} background task ${task.id}${task.pid ? "" : " for worker capacity"}.\nPipeline: ${task.pipeline.map((stage) => stage.role).join(" -> ")}\nWorktree: ${task.worktree}\nBranch: ${task.branch}`,
   );
 }
 
@@ -49,7 +49,7 @@ export async function handleFixBg(ctx: Context, parsed: ParsedCommand): Promise<
   const task = await resumeBackgroundTask(id, role);
   await reply(
     ctx,
-    `Resumed ${task.id}; starting ${role} on existing worktree.\nPipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}\nWorktree: ${task.worktree}`,
+    `Resumed ${task.id}; ${task.pid ? `starting ${role}` : `${role} queued for worker capacity`} on existing worktree.\nPipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}\nWorktree: ${task.worktree}`,
   );
 }
 
@@ -90,7 +90,12 @@ export async function handleCancelBg(ctx: Context, parsed: ParsedCommand): Promi
     return;
   }
   const task = await cancelBackgroundTask(id);
-  await reply(ctx, `Cancelled ${task.id}.`);
+  await reply(
+    ctx,
+    task.status === "cancelled"
+      ? `Cancelled ${task.id}.`
+      : `${task.id} was already ${task.status}; nothing was signalled.`,
+  );
 }
 
 export const backgroundCommands: CommandDef[] = [

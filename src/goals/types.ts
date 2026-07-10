@@ -19,10 +19,14 @@ export interface GoalState {
   failures: number;
   task_ids: string[];
   active_task_id?: string;
+  /** Durable startup intent cleared when the first task budget is reserved. */
+  initial_task_pending?: boolean;
   stop_reason?: string;
   created_at: string;
   updated_at: string;
   deadline_at: string;
+  /** Monotonic compare-and-swap revision for cross-process state updates. */
+  revision?: number;
 }
 
 export type GoalEventType =

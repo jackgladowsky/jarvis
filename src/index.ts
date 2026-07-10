@@ -5,6 +5,9 @@
 
 import { abortAllActiveRuns, handleMessage, waitForActiveRuns } from "./agent/runtime.js";
 import * as sessions from "./agent/session-manager.js";
+import { model } from "./agent/model.js";
+import { resumeUnsummarizedArchives } from "./agent/summarizer.js";
+import { startBackgroundWorkerSupervisor } from "./background/supervisor.js";
 import { notifyPendingDeployComplete } from "./lib/deploy-notify.js";
 import { log } from "./lib/logger.js";
 import { collectVersionInfo, formatVersionInfo } from "./lib/version.js";
@@ -18,12 +21,11 @@ async function main(): Promise<void> {
   // Load active.json and create session dirs before any messages can arrive.
   // Crash recovery (replaying transcripts) happens lazily inside handleMessage.
   await sessions.init();
-  await notifyPendingDeployComplete();
-
   const shutdownController = new AbortController();
   let shuttingDown = false;
 
   const stopScheduler = await startScheduler();
+  const stopBackgroundSupervisor = await startBackgroundWorkerSupervisor();
 
   const beginShutdown = (sig: NodeJS.Signals): void => {
     if (shuttingDown) return;
@@ -31,6 +33,7 @@ async function main(): Promise<void> {
     log.info("shutdown requested", { sig });
     shutdownController.abort(new Error(`shutdown: ${sig}`));
     stopScheduler();
+    stopBackgroundSupervisor();
     const aborted = abortAllActiveRuns(`Shutdown requested (${sig}).`);
     log.info("active agent runs aborted", { aborted });
   };
@@ -39,10 +42,21 @@ async function main(): Promise<void> {
   process.once("SIGTERM", beginShutdown);
 
   try {
-    await runTelegram(handleMessage, { signal: shutdownController.signal });
+    await runTelegram(handleMessage, {
+      signal: shutdownController.signal,
+      onStarted: async () => {
+        await notifyPendingDeployComplete().catch((err) =>
+          log.warn("deploy readiness notification failed", { err: err instanceof Error ? err.message : err }),
+        );
+        void resumeUnsummarizedArchives(model).catch((err) =>
+          log.warn("session-summary recovery failed", { err: err instanceof Error ? err.message : err }),
+        );
+      },
+    });
   } finally {
     shutdownController.abort(new Error("telegram stopped"));
     stopScheduler();
+    stopBackgroundSupervisor();
     abortAllActiveRuns("Process exiting.");
     const drainedRuns = await waitForActiveRuns(ACTIVE_RUN_SHUTDOWN_WAIT_MS);
     if (!drainedRuns) log.warn("timed out waiting for active agent runs to stop");

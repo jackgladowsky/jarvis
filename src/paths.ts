@@ -14,7 +14,11 @@ import { join } from "node:path";
 //   JARVIS_DATA_DIR=$PWD/.jarvis-dev pnpm start
 const DATA_BASE = process.env.JARVIS_DATA_DIR ?? join(homedir(), ".jarvis");
 
-const REPO_BASE = join(homedir(), "jarvis");
+// The service installer exports JARVIS_SOURCE_ROOT explicitly. Falling back
+// to cwd keeps local development and the repo's CLI entrypoints convenient,
+// while avoiding the old hard-coded ~/jarvis assumption that broke custom
+// --install-dir deployments.
+const REPO_BASE = process.env.JARVIS_SOURCE_ROOT ?? process.cwd();
 
 export const paths = {
   // Base of the data tree.
@@ -36,6 +40,9 @@ export const paths = {
   sessions: join(DATA_BASE, "data", "sessions"),
   sessionsArchive: join(DATA_BASE, "data", "sessions", "archive"),
   activeSessions: join(DATA_BASE, "data", "sessions", "active.json"),
+  turnJournalActive: join(DATA_BASE, "data", "runs", "active"),
+  turnJournalArchive: join(DATA_BASE, "data", "runs", "archive"),
+  chatLocks: join(DATA_BASE, "data", "runs", "chat-locks"),
 
   // Notes — JARVIS's persistent memory. See DESIGN.md §11.
   notes: join(DATA_BASE, "data", "notes"),

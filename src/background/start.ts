@@ -2,9 +2,20 @@ import { config } from "../config.js";
 import { startBackgroundTask } from "./manager.js";
 
 async function main(): Promise<void> {
-  const prompt = process.argv.slice(2).join(" ").trim();
-  if (!prompt) throw new Error("usage: start-background-task <prompt>");
-  const task = await startBackgroundTask(prompt, config.scheduler.telegram_chat_id);
+  const args = process.argv.slice(2);
+  const chatFlag = args.indexOf("--chat-id");
+  let chatId = config.scheduler.telegram_chat_id;
+  if (chatFlag >= 0) {
+    const raw = args[chatFlag + 1];
+    chatId = Number(raw);
+    args.splice(chatFlag, 2);
+  }
+  if (!Number.isSafeInteger(chatId) || chatId === 0) {
+    throw new Error("usage: start-background-task --chat-id <telegram-chat-id> <prompt>");
+  }
+  const prompt = args.join(" ").trim();
+  if (!prompt) throw new Error("usage: start-background-task --chat-id <telegram-chat-id> <prompt>");
+  const task = await startBackgroundTask(prompt, chatId);
   console.log(`Started ${task.id}`);
   console.log(`Worktree: ${task.worktree}`);
   console.log(`Branch: ${task.branch}`);

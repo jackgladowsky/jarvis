@@ -76,16 +76,6 @@ async function readJsonlUsage(filePath: string, since?: number): Promise<UsageTo
   return totals;
 }
 
-function addTotals(target: UsageTotals, source: UsageTotals): void {
-  target.requests += source.requests;
-  target.input += source.input;
-  target.output += source.output;
-  target.cacheRead += source.cacheRead;
-  target.cacheWrite += source.cacheWrite;
-  target.totalTokens += source.totalTokens;
-  target.cost += source.cost;
-}
-
 async function listJsonlFiles(dir: string): Promise<string[]> {
   let entries;
   try {
@@ -107,15 +97,38 @@ async function listJsonlFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-async function aggregateLocalUsage(since?: number): Promise<UsageTotals> {
+async function aggregateLocalUsageWindows(
+  recentSince: number,
+  olderSince: number,
+): Promise<{ recent: UsageTotals; older: UsageTotals }> {
+  const recent = emptyTotals();
+  const older = emptyTotals();
   const roots = [paths.sessions, paths.scheduledJobSessions, paths.backgroundSessions];
-  const totals = emptyTotals();
   for (const root of roots) {
     for (const file of await listJsonlFiles(root)) {
-      addTotals(totals, await readJsonlUsage(file, since));
+      let raw: string;
+      try {
+        raw = await readFile(file, "utf-8");
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw err;
+      }
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!isAssistantWithUsage(parsed)) continue;
+        const timestamp = typeof parsed.timestamp === "number" ? parsed.timestamp : undefined;
+        if (timestamp === undefined || timestamp >= olderSince) addUsage(older, parsed.usage);
+        if (timestamp === undefined || timestamp >= recentSince) addUsage(recent, parsed.usage);
+      }
     }
   }
-  return totals;
+  return { recent, older };
 }
 
 function makeSummaryMessage(summary: string): AgentMessage {
@@ -179,10 +192,9 @@ export async function renderUsageReport(chatId: number): Promise<string> {
   const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
   const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
-  const [weekUsage, monthUsage] = await Promise.all([
-    aggregateLocalUsage(sevenDaysAgo),
-    aggregateLocalUsage(thirtyDaysAgo),
-  ]);
+  // Traverse each transcript once. The old implementation independently
+  // scanned the entire session tree for 7d and 30d on every /usage command.
+  const { recent: weekUsage, older: monthUsage } = await aggregateLocalUsageWindows(sevenDaysAgo, thirtyDaysAgo);
 
   if (!active) {
     return [

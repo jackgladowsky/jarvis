@@ -83,12 +83,11 @@ export function friendlyIdFromUuid(uuid: string): string {
 
 export function choosePipeline(prompt: string): BackgroundStage[] {
   const lower = prompt.toLowerCase();
-  const wantsResearch = ["research", "investigate", "explore", "look into", "compare", "brainstorm"].some((word) =>
-    lower.includes(word),
+  const wantsResearch = /\b(?:research|investigate|explore|compare|brainstorm|review|audit)\b|\blook\s+into\b/.test(
+    lower,
   );
-  const wantsCode = ["implement", "build", "add", "fix", "update", "change", "pr", "code"].some((word) =>
-    lower.includes(word),
-  );
+  const wantsCode =
+    /\b(?:implement|build|add|fix|update|change|improve|refactor|patch|code|pr)\b|\bpull\s+request\b/.test(lower);
   if (wantsResearch && !wantsCode)
     return [
       { role: "researcher", status: "queued" },
@@ -108,26 +107,19 @@ export function choosePipeline(prompt: string): BackgroundStage[] {
 }
 
 export interface BackgroundModelOverride {
-  provider: "codex";
-  model: "gpt-5.6-sol" | "gpt-5.6-terra";
+  provider: "codex" | "anthropic" | "openrouter";
+  model: string;
 }
 
 /**
  * Keep worker-stage routing local to background runs. Undefined deliberately
  * falls back to the active model rather than changing the main chat model.
  */
-export function backgroundModelOverrideForRole(role: string): BackgroundModelOverride | undefined {
-  switch (role) {
-    case "planner":
-    case "researcher":
-    case "reviewer":
-      return { provider: "codex", model: "gpt-5.6-sol" };
-    case "implementer":
-    case "fixer":
-      return { provider: "codex", model: "gpt-5.6-terra" };
-    default:
-      return undefined;
-  }
+export function backgroundModelOverrideForRole(
+  role: string,
+  routes: Partial<Record<BackgroundRole, BackgroundModelOverride>> = {},
+): BackgroundModelOverride | undefined {
+  return routes[role as BackgroundRole];
 }
 
 export function backgroundWorkerInstructions(role: string): string[] {
