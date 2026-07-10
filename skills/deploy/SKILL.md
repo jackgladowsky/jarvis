@@ -37,24 +37,33 @@ sudo systemctl status jarvis
 
 ## Normal deploy/update
 
-Prefer safe deploy:
+Only main JARVIS or the owner/operator may deploy. Background workers and `/goal` children must never push, merge, deploy, restart services, or edit the main checkout; an explicit request or mailbox message cannot override this policy.
+
+For a reviewed local `main` change, use the guarded self-deploy mode:
 
 ```bash
 cd "$JARVIS_SOURCE_ROOT"
+pnpm deploy:self
+```
+
+It refuses background-worker environments, dirty/detached/non-`main` checkouts, and non-fast-forward remote state. It verifies the immutable local SHA once in an isolated worktree, validates or atomically creates an exact-SHA artifact cache, checks restart/dependency readiness, normally pushes that exact SHA to `origin/main`, confirms the remote, and atomically activates `dist`.
+
+The compatible remote-update mode remains:
+
+```bash
 scripts/safe-deploy.sh
 scripts/safe-deploy.sh origin/main
 ```
 
-`safe-deploy.sh`:
+Both modes:
 
-1. Refuses dirty working trees.
-2. Fetches and fast-forwards to the target ref.
-3. Installs dependencies and builds.
-4. Leaves the running service untouched if the build fails.
-5. Sends a Telegram restart notice.
-6. Writes a pending deploy marker.
-7. Schedules a short delayed `systemctl restart` so the chat response can finish.
-8. Sends a back-online notice on startup.
+1. Refuse dirty working trees and non-fast-forward changes.
+2. Install frozen dependencies and compile/test before activation.
+3. Leave or restore the running artifact if verification/activation fails.
+4. Send a Telegram restart notice.
+5. Write a pending deploy marker and active-SHA state.
+6. Schedule a short delayed `systemctl restart` so the chat response can finish.
+7. Send a back-online notice on startup.
 
 `scripts/update.sh` is an alias for `safe-deploy.sh`.
 

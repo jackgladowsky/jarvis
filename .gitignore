@@ -1,6 +1,10 @@
 node_modules/
 dist/
 coverage/
+.pi-subagents/
+.jarvis-node-modules-previous-*/
+.jarvis-dist-next-*/
+.jarvis-dist-previous-*/
 *.log
 .DS_Store
 

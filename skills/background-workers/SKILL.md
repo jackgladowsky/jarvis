@@ -72,10 +72,11 @@ scripts/resume-background-task.sh <task-id> [fixer|reviewer]
 
 ## Main JARVIS responsibilities
 
-- Main JARVIS is the review gate.
-- Inspect finished worktrees before pushing or opening PRs.
+- Main JARVIS is the review and publication gate.
+- Inspect finished worktrees before integrating or opening PRs.
 - Do not assume worker output is correct.
-- Do not deploy worker changes unless the owner explicitly asks.
+- Background workers never push, merge, deploy, restart services, or edit the main checkout, even if the original request asks for it. They hand reviewed changes to main JARVIS.
+- After integration on clean local `main`, main JARVIS may publish and activate the exact commit with `pnpm deploy:self`.
 
 ## Cleanup
 

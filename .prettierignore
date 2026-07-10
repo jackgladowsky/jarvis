@@ -1,6 +1,7 @@
 dist/
 node_modules/
 coverage/
+.pi-subagents/
 .jarvis-dev/
 pnpm-lock.yaml
 *.log

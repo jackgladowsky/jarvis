@@ -35,7 +35,8 @@ researcher -> reviewer
 
 - No self-rescheduling by default.
 - No unbounded loops like "keep improving yourself forever."
-- No push, merge, deploy, service restart, credential change, or destructive filesystem action unless the original command explicitly grants that capability.
+- Goal children never push, merge, deploy, restart services, or edit the main checkout. No original-command or mailbox exception can override this boundary; reviewed changes return to main JARVIS.
+- Credential changes and destructive filesystem actions require explicit owner approval in the task mailbox.
 - Any ambiguity that affects product/security/destructive behavior goes to the task mailbox and pauses as `waiting_on_main`.
 - Reviewer is a gate, not a rubber stamp. It can mark `needs_fix`, `ready_for_pr`, or `blocked`.
 

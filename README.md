@@ -96,7 +96,8 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
 - Cron-style recurring scheduled jobs plus one-time reminders.
 - Detached background workers using isolated git worktrees and role pipelines.
-- Safe deploy helper that builds before restart and preserves host-local data.
+- Guarded self-deploy that verifies, pushes, caches, and atomically activates the exact reviewed local `main` commit.
+- Safe remote-update helper that builds before restart and preserves host-local data.
 - Append-only redacted audit log for tool calls.
 - Repo-local procedural skills in `SKILLS.md` and `skills/*/SKILL.md`.
 
@@ -195,7 +196,7 @@ stt:
 
 ## Autonomous goals
 
-`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or the owner pauses/stops it. Child tasks are still forbidden from push/merge/deploy/restart/destructive operations without explicit approval, and all goal transitions append JSONL events for auditability.
+`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or the owner pauses/stops it. Goal children can prepare reviewed changes in their worktrees, but they can never push, merge, deploy, restart services, or edit the main checkout; only main JARVIS can publish and activate them. Destructive operations still require explicit owner approval. All goal transitions append JSONL events for auditability.
 
 ## Development
 
@@ -209,6 +210,8 @@ pnpm run coverage
 ```
 
 `pnpm run check` runs format check, lint, typecheck, and coverage.
+
+After main JARVIS has reviewed and integrated a local change on clean `main`, `pnpm deploy:self` verifies or reuses the exact-SHA artifact, normally pushes that SHA to `origin/main`, atomically activates it, and schedules the service restart. Background workers cannot invoke this publishing path.
 
 CI runs on pushes to `main` and pull requests using Node 20 and 22.
 

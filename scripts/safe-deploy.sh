@@ -1,209 +1,353 @@
 #!/usr/bin/env bash
-# Build and test a target revision in an isolated worktree before touching the
-# live checkout. Activation preserves the old dist until the new source,
-# dependencies, and prebuilt dist are all ready; failures roll back the clean
-# checkout and dist rather than leaving the next reboot on a partial build.
+# Verify a revision in an isolated worktree, cache its exact dist artifact, then
+# atomically activate it and schedule the existing delayed restart workflow.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_BASE="${JARVIS_DATA_DIR:-$HOME/.jarvis}"
+MODE="remote"
+if [[ "${1:-}" == "--self-main" ]]; then
+  MODE="self-main"
+  shift
+  if [[ "$#" -ne 0 ]]; then
+    echo "--self-main does not accept a target ref." >&2
+    exit 2
+  fi
+fi
 TARGET_REF="${1:-origin/main}"
 RESTART_DELAY_SECONDS="${JARVIS_DEPLOY_RESTART_DELAY_SECONDS:-5}"
-MARKER="$DATA_BASE/data/deploy/pending.json"
-RESTART_LOG="$DATA_BASE/data/deploy/restart.log"
+DEPLOY_DIR="$DATA_BASE/data/deploy"
+MARKER="$DEPLOY_DIR/pending.json"
+ACTIVE_FILE="$DEPLOY_DIR/active.json"
+RESTART_LOG="$DEPLOY_DIR/restart.log"
+CACHE_CONTRACT_VERSION="1"
 PREVIEW_PARENT=""
 PREVIEW_WORKTREE=""
 STAGED_DIST=""
 DIST_BACKUP=""
+NODE_MODULES_BACKUP=""
+STATE_BACKUP_DIR=""
 OLD_REV=""
+OLD_SHORT=""
+DEPLOY_OLD_REV=""
+NEW_REV=""
+NEW_SHORT=""
 ACTIVATING=0
+DIST_ACTIVATING=0
+DEPENDENCIES_ACTIVATING=0
+LIFECYCLE_CHANGED=0
+
+fail() { echo "$*" >&2; exit 1; }
 
 cd "$REPO_ROOT"
-mkdir -p "$(dirname "$MARKER")"
-if ! command -v flock >/dev/null 2>&1; then
-  echo "flock is required for safe deploy serialization." >&2
-  exit 1
+mkdir -p "$DEPLOY_DIR"
+if [[ -n "${JARVIS_BACKGROUND_BOOTSTRAPPED:-}" || -n "${JARVIS_BACKGROUND_WORKTREE:-}" ]]; then
+  fail "Deploy is forbidden from a background worker. Main JARVIS is the deploy gate."
 fi
-DEPLOY_LOCK="$DATA_BASE/data/deploy/deploy.lock"
-exec 9>"$DEPLOY_LOCK"
-if ! flock -n 9; then
-  echo "Another JARVIS deploy is already running." >&2
-  exit 1
-fi
+command -v flock >/dev/null 2>&1 || fail "flock is required for safe deploy serialization."
+exec 9>"$DEPLOY_DIR/deploy.lock"
+flock -n 9 || fail "Another JARVIS deploy is already running."
 
-# Telegram-launched shell commands do not necessarily inherit an interactive
-# nvm PATH. Prefer an installed nvm Node when the current PATH has none.
+# Telegram-launched commands may not inherit an interactive nvm PATH.
 if ! command -v node >/dev/null 2>&1 && compgen -G "$HOME/.nvm/versions/node/*/bin" >/dev/null; then
   for node_bin_dir in "$HOME"/.nvm/versions/node/*/bin; do
     [[ -d "$node_bin_dir" ]] && PATH="$node_bin_dir:$PATH"
   done
 fi
-
-if ! command -v node >/dev/null 2>&1; then
-  echo "Node 20.18.1+ is required and node is not on PATH." >&2
-  exit 1
-fi
-if ! node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>20 || (a===20 && (b>18 || (b===18 && c>=1))) ? 0 : 1)'; then
-  echo "Node 20.18.1+ is required; found $(node --version)." >&2
-  exit 1
-fi
-if [[ "$(node -p "require('./package.json').packageManager || ''")" != "pnpm@10.26.2" ]]; then
-  echo "package.json must declare packageManager pnpm@10.26.2." >&2
-  exit 1
-fi
+command -v node >/dev/null 2>&1 || fail "Node 20.18.1+ is required and node is not on PATH."
+node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>20 || (a===20 && (b>18 || (b===18 && c>=1))) ? 0 : 1)' \
+  || fail "Node 20.18.1+ is required; found $(node --version)."
+[[ "$(node -p "require('./package.json').packageManager || ''")" == "pnpm@10.26.2" ]] \
+  || fail "package.json must declare packageManager pnpm@10.26.2."
 if ! command -v pnpm >/dev/null 2>&1 || [[ "$(pnpm --version)" != "10.26.2" ]]; then
-  if ! command -v corepack >/dev/null 2>&1; then
-    echo "pnpm 10.26.2 is required and corepack is unavailable." >&2
-    exit 1
-  fi
+  command -v corepack >/dev/null 2>&1 || fail "pnpm 10.26.2 is required and corepack is unavailable."
   corepack enable
   corepack prepare pnpm@10.26.2 --activate
 fi
-if [[ "$(pnpm --version)" != "10.26.2" ]]; then
-  echo "Could not activate pnpm 10.26.2; found $(pnpm --version)." >&2
-  exit 1
-fi
+PNPM_VERSION="$(pnpm --version)"
+[[ "$PNPM_VERSION" == "10.26.2" ]] || fail "Could not activate pnpm 10.26.2; found $PNPM_VERSION."
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 
-# Prove the unattended delayed restart has a loaded unit and non-interactive
-# sudo authorization before changing source or dist.
+# Prove restart prerequisites before any push or activation.
 JARVIS_UNIT_STATE="$(sudo -n systemctl show jarvis.service --property=LoadState --value 2>/dev/null || true)"
-if [[ "$JARVIS_UNIT_STATE" != "loaded" ]]; then
-  echo "Cannot inspect jarvis.service with non-interactive sudo; refusing activation." >&2
-  exit 1
-fi
-if ! sudo -n -l systemctl restart jarvis >/dev/null; then
-  echo "Non-interactive sudo is not authorized to restart jarvis; refusing activation." >&2
-  exit 1
-fi
+[[ "$JARVIS_UNIT_STATE" == "loaded" ]] \
+  || fail "Cannot inspect jarvis.service with non-interactive sudo; refusing activation."
+sudo -n -l systemctl restart jarvis >/dev/null \
+  || fail "Non-interactive sudo is not authorized to restart jarvis; refusing activation."
 
-if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-  echo "Refusing to deploy: working tree has uncommitted or untracked changes." >&2
-  echo "Stash or commit them first, then re-run." >&2
-  exit 1
-fi
-
+require_clean_tree() {
+  [[ -z "$(git status --porcelain --untracked-files=normal)" ]] \
+    || fail "Refusing to deploy: working tree has uncommitted or untracked changes."
+}
+require_self_main_state() {
+  [[ "$(git rev-parse --show-toplevel)" == "$REPO_ROOT" ]] || fail "Self-main must run from the attached main checkout."
+  [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == "main" ]] \
+    || fail "Self-main requires the attached local main branch."
+  [[ "$(git rev-parse HEAD)" == "$NEW_REV" ]] || fail "Local main HEAD changed during self deploy; refusing."
+  require_clean_tree
+}
+require_clean_tree
 OLD_REV="$(git rev-parse HEAD)"
-OLD_SHORT="$(git rev-parse --short HEAD)"
+DEPLOY_OLD_REV="$OLD_REV"
 
-if [[ "$TARGET_REF" == origin/* ]]; then
-  echo "Fetching..."
-  git fetch origin
+if [[ -f "$ACTIVE_FILE" ]]; then
+  ACTIVE_REV="$(python3 - "$ACTIVE_FILE" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        print(json.load(f).get("sha", ""))
+except (OSError, ValueError):
+    pass
+PY
+)"
+  if [[ -n "$ACTIVE_REV" ]] && git cat-file -e "$ACTIVE_REV^{commit}" 2>/dev/null; then
+    DEPLOY_OLD_REV="$ACTIVE_REV"
+  fi
 fi
+OLD_SHORT="$(git rev-parse --short "$DEPLOY_OLD_REV")"
 
-NEW_REV="$(git rev-parse --verify "$TARGET_REF^{commit}")"
+if [[ "$MODE" == "self-main" ]]; then
+  NEW_REV="$OLD_REV" # immutable release identity captured before fetch/build
+  require_self_main_state
+  echo "Fetching origin/main..."
+  git fetch origin main
+  REMOTE_REV="$(git rev-parse --verify refs/remotes/origin/main^{commit})"
+  git merge-base --is-ancestor "$REMOTE_REV" "$NEW_REV" \
+    || fail "Refusing self deploy: origin/main is not an ancestor of local main."
+else
+  if [[ "$TARGET_REF" == origin/* ]]; then
+    echo "Fetching..."
+    git fetch origin
+  fi
+  NEW_REV="$(git rev-parse --verify "$TARGET_REF^{commit}")"
+  git merge-base --is-ancestor "$OLD_REV" "$NEW_REV" \
+    || fail "Refusing to deploy non-fast-forward target $TARGET_REF."
+fi
 NEW_SHORT="$(git rev-parse --short "$NEW_REV")"
-if ! git merge-base --is-ancestor "$OLD_REV" "$NEW_REV"; then
-  echo "Refusing to deploy non-fast-forward target $TARGET_REF ($NEW_SHORT)." >&2
-  exit 1
-fi
+PACKAGE_FINGERPRINT="$(git archive "$NEW_REV" package.json pnpm-lock.yaml | git hash-object --stdin)"
+CACHE_ROOT="$DATA_BASE/cache/deploy"
+CACHE_DIR="$CACHE_ROOT/$NEW_REV"
+mkdir -p "$CACHE_ROOT"
+
+dist_digest() {
+  node - "$1" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const root = path.resolve(process.argv[2]);
+const files = [];
+function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walk(full);
+    else if (entry.isFile()) files.push(path.relative(root, full).split(path.sep).join('/'));
+    else throw new Error(`unsupported dist entry: ${full}`);
+  }
+}
+walk(root);
+files.sort();
+const hash = crypto.createHash('sha256');
+for (const file of files) {
+  hash.update(file); hash.update('\0'); hash.update(fs.readFileSync(path.join(root, file))); hash.update('\0');
+}
+process.stdout.write(hash.digest('hex'));
+NODE
+}
+
+cache_is_valid() {
+  [[ -d "$CACHE_DIR/dist" && -f "$CACHE_DIR/dist/index.js" && -f "$CACHE_DIR/manifest.json" ]] || return 1
+  local digest
+  digest="$(dist_digest "$CACHE_DIR/dist")" || return 1
+  python3 - "$CACHE_DIR/manifest.json" "$CACHE_CONTRACT_VERSION" "$NEW_REV" "$NODE_MAJOR" "$PNPM_VERSION" "$PACKAGE_FINGERPRINT" "$digest" <<'PY'
+import json, sys
+path, contract, sha, node_major, pnpm, fingerprint, digest = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as f:
+        value = json.load(f)
+except (OSError, ValueError):
+    raise SystemExit(1)
+expected = {
+    "contract_version": int(contract), "sha": sha, "node_major": int(node_major),
+    "pnpm_version": pnpm, "package_lock_fingerprint": fingerprint, "dist_digest": digest,
+}
+raise SystemExit(0 if value == expected else 1)
+PY
+}
 
 cleanup() {
   local exit_code=$?
   set +e
   if [[ "$ACTIVATING" -eq 1 && "$exit_code" -ne 0 ]]; then
-    echo "Activation failed; restoring source and dist to $OLD_SHORT." >&2
-    if [[ -n "$DIST_BACKUP" && -d "$DIST_BACKUP" ]]; then
+    echo "Activation failed; restoring the previous release." >&2
+    if [[ "$DIST_ACTIVATING" -eq 1 ]]; then
       rm -rf "$REPO_ROOT/dist"
-      mv "$DIST_BACKUP" "$REPO_ROOT/dist"
+      if [[ -n "$DIST_BACKUP" && -d "$DIST_BACKUP" ]]; then mv "$DIST_BACKUP" "$REPO_ROOT/dist"; fi
     fi
-    git -C "$REPO_ROOT" reset --hard "$OLD_REV" >/dev/null
-    (cd "$REPO_ROOT" && pnpm install --frozen-lockfile --offline) >/dev/null 2>&1 || true
+    if [[ "$LIFECYCLE_CHANGED" -eq 1 ]]; then
+      rm -f "$MARKER" "$ACTIVE_FILE"
+      [[ -f "$STATE_BACKUP_DIR/pending.json" ]] && mv "$STATE_BACKUP_DIR/pending.json" "$MARKER"
+      [[ -f "$STATE_BACKUP_DIR/active.json" ]] && mv "$STATE_BACKUP_DIR/active.json" "$ACTIVE_FILE"
+    fi
+    # Source commits are never reset during rollback: source is inert until a
+    # built dist is activated, and a reset could race another main-session edit.
+    # Restore only the runtime artifacts that the running service consumes.
+    if [[ "$DEPENDENCIES_ACTIVATING" -eq 1 ]]; then
+      rm -rf "$REPO_ROOT/node_modules"
+      if [[ -n "$NODE_MODULES_BACKUP" && -d "$NODE_MODULES_BACKUP" ]]; then
+        mv "$NODE_MODULES_BACKUP" "$REPO_ROOT/node_modules"
+        NODE_MODULES_BACKUP=""
+      fi
+    fi
   fi
   if [[ -n "$PREVIEW_WORKTREE" && -e "$PREVIEW_WORKTREE" ]]; then
     git -C "$REPO_ROOT" worktree remove --force "$PREVIEW_WORKTREE" >/dev/null 2>&1 || true
   fi
   [[ -n "$PREVIEW_PARENT" ]] && rm -rf "$PREVIEW_PARENT"
+  [[ -n "$STATE_BACKUP_DIR" ]] && rm -rf "$STATE_BACKUP_DIR"
+  [[ -n "$NODE_MODULES_BACKUP" ]] && rm -rf "$NODE_MODULES_BACKUP"
   [[ -n "$STAGED_DIST" ]] && rm -rf "$STAGED_DIST"
-  if [[ "$ACTIVATING" -eq 0 || "$exit_code" -eq 0 ]]; then
-    [[ -n "$DIST_BACKUP" ]] && rm -rf "$DIST_BACKUP"
-  fi
+  if [[ "$ACTIVATING" -eq 0 || "$exit_code" -eq 0 ]]; then [[ -n "$DIST_BACKUP" ]] && rm -rf "$DIST_BACKUP"; fi
   exit "$exit_code"
 }
 trap cleanup EXIT
 
-PREVIEW_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-deploy.XXXXXX")"
-PREVIEW_WORKTREE="$PREVIEW_PARENT/release"
-echo "Preparing isolated release worktree for $NEW_SHORT..."
-git worktree add --detach "$PREVIEW_WORKTREE" "$NEW_REV"
+if cache_is_valid; then
+  echo "Using verified deploy cache for $NEW_SHORT."
+else
+  [[ ! -e "$CACHE_DIR" ]] || rm -rf "$CACHE_DIR"
+  PREVIEW_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-deploy.XXXXXX")"
+  PREVIEW_WORKTREE="$PREVIEW_PARENT/release"
+  echo "Preparing isolated release worktree for $NEW_SHORT..."
+  git worktree add --detach "$PREVIEW_WORKTREE" "$NEW_REV"
+  cd "$PREVIEW_WORKTREE"
+  export JARVIS_SOURCE_ROOT="$PREVIEW_WORKTREE"
+  echo "Installing release dependencies (frozen lockfile)..."
+  pnpm install --frozen-lockfile
+  echo "Compiling release once with no partial emit..."
+  pnpm run build
+  echo "Running compiled tests directly..."
+  TEST_DATA="$PREVIEW_PARENT/test-data"
+  mkdir -p "$TEST_DATA/prompts"
+  cp config.yaml.example "$TEST_DATA/config.yaml"
+  cp prompts/system.md.example "$TEST_DATA/prompts/system.md"
+  export JARVIS_DATA_DIR="$TEST_DATA" TELEGRAM_BOT_TOKEN="safe-deploy-test-token" TELEGRAM_ALLOWED_USER_IDS="123" EXA_API_KEY="safe-deploy-test-key"
+  mapfile -d '' TEST_FILES < <(find dist -name '*.test.js' -print0)
+  [[ "${#TEST_FILES[@]}" -gt 0 ]] || fail "Compiled release contains no tests."
+  node --test "${TEST_FILES[@]}"
+  DIGEST="$(dist_digest "$PREVIEW_WORKTREE/dist")"
+  CACHE_TEMP="$CACHE_ROOT/.${NEW_REV}.tmp.$$"
+  rm -rf "$CACHE_TEMP"
+  mkdir -p "$CACHE_TEMP"
+  cp -a "$PREVIEW_WORKTREE/dist" "$CACHE_TEMP/dist"
+  python3 - "$CACHE_TEMP/manifest.json" "$CACHE_CONTRACT_VERSION" "$NEW_REV" "$NODE_MAJOR" "$PNPM_VERSION" "$PACKAGE_FINGERPRINT" "$DIGEST" <<'PY'
+import json, os, sys
+path, contract, sha, node_major, pnpm, fingerprint, digest = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump({"contract_version": int(contract), "sha": sha, "node_major": int(node_major),
+               "pnpm_version": pnpm, "package_lock_fingerprint": fingerprint,
+               "dist_digest": digest}, f, indent=2, sort_keys=True)
+    f.write("\n"); f.flush(); os.fsync(f.fileno())
+directory_fd = os.open(os.path.dirname(path), os.O_RDONLY)
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
+  mv "$CACHE_TEMP" "$CACHE_DIR"
+  cache_is_valid || fail "Newly published deploy cache failed validation."
+fi
 
-cd "$PREVIEW_WORKTREE"
-export JARVIS_SOURCE_ROOT="$PREVIEW_WORKTREE"
-echo "Installing release dependencies (frozen lockfile)..."
-pnpm install --frozen-lockfile
-echo "Typechecking release..."
-pnpm run typecheck
-echo "Building release with no partial emit..."
-pnpm run build -- --noEmitOnError
-echo "Testing release..."
-TEST_DATA="$PREVIEW_PARENT/test-data"
-mkdir -p "$TEST_DATA/prompts"
-cp "$PREVIEW_WORKTREE/config.yaml.example" "$TEST_DATA/config.yaml"
-cp "$PREVIEW_WORKTREE/prompts/system.md.example" "$TEST_DATA/prompts/system.md"
-export JARVIS_DATA_DIR="$TEST_DATA"
-export TELEGRAM_BOT_TOKEN="safe-deploy-test-token"
-export TELEGRAM_ALLOWED_USER_IDS="123"
-export EXA_API_KEY="safe-deploy-test-key"
-pnpm test
+cd "$REPO_ROOT"
+export JARVIS_SOURCE_ROOT="$REPO_ROOT" JARVIS_DATA_DIR="$DATA_BASE"
+if [[ "$MODE" == "self-main" ]]; then
+  require_self_main_state
+else
+  require_clean_tree
+  [[ "$(git rev-parse HEAD)" == "$OLD_REV" ]] || fail "Local HEAD changed during verification; refusing activation."
+fi
 
-# Keep the staged dist on the same filesystem as the live dist so each rename
-# in the activation window is atomic.
+ensure_live_dependencies() {
+  local marker="$REPO_ROOT/node_modules/.jarvis-deploy-fingerprint"
+  if [[ -d "$REPO_ROOT/node_modules" && -f "$marker" && "$(head -n 1 "$marker")" == "$PACKAGE_FINGERPRINT" ]]; then
+    echo "Live dependencies already match $NEW_SHORT."
+    return
+  fi
+  NODE_MODULES_BACKUP="$REPO_ROOT/.jarvis-node-modules-previous-$$"
+  rm -rf "$NODE_MODULES_BACKUP"
+  if [[ -d "$REPO_ROOT/node_modules" ]]; then mv "$REPO_ROOT/node_modules" "$NODE_MODULES_BACKUP"; fi
+  DEPENDENCIES_ACTIVATING=1
+  echo "Activating frozen dependencies from the warmed pnpm store..."
+  pnpm install --frozen-lockfile --offline || pnpm install --frozen-lockfile
+  mkdir -p "$REPO_ROOT/node_modules"
+  printf '%s\n' "$PACKAGE_FINGERPRINT" > "$marker"
+}
+
+if [[ "$MODE" == "self-main" ]]; then
+  ACTIVATING=1
+  ensure_live_dependencies
+  require_clean_tree
+  require_self_main_state
+  echo "Publishing exact verified SHA $NEW_SHORT to origin/main..."
+  # Always perform a non-force push, even when the initial fetch already saw
+  # this SHA. The server-side update check closes any verification-time race.
+  git push origin "$NEW_REV:refs/heads/main"
+  CONFIRMED_REMOTE="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+  [[ "$CONFIRMED_REMOTE" == "$NEW_REV" ]] || fail "Remote main did not resolve to the verified SHA after push."
+  require_self_main_state
+else
+  echo "Activating source $OLD_SHORT → $NEW_SHORT..."
+  ACTIVATING=1
+  git merge --ff-only "$NEW_REV"
+  ensure_live_dependencies
+fi
+
+# Stage on the live filesystem so both activation renames are atomic.
 STAGED_DIST="$REPO_ROOT/.jarvis-dist-next-$$"
 DIST_BACKUP="$REPO_ROOT/.jarvis-dist-previous-$$"
 rm -rf "$STAGED_DIST" "$DIST_BACKUP"
-cp -a "$PREVIEW_WORKTREE/dist" "$STAGED_DIST"
-
-cd "$REPO_ROOT"
-export JARVIS_SOURCE_ROOT="$REPO_ROOT"
-export JARVIS_DATA_DIR="$DATA_BASE"
-if ! git diff --quiet HEAD --; then
-  echo "Tracked files changed while the release was being verified; refusing activation." >&2
-  exit 1
-fi
-echo "Activating source $OLD_SHORT → $NEW_SHORT..."
-git merge --ff-only "$NEW_REV"
+cp -a "$CACHE_DIR/dist" "$STAGED_DIST"
 ACTIVATING=1
-
-# The isolated install warmed pnpm's content store. Offline activation avoids
-# a network failure after the live checkout has moved.
-pnpm install --frozen-lockfile --offline
-
-if [[ -d "$REPO_ROOT/dist" ]]; then
-  mv "$REPO_ROOT/dist" "$DIST_BACKUP"
-fi
+DIST_ACTIVATING=1
+if [[ -d "$REPO_ROOT/dist" ]]; then mv "$REPO_ROOT/dist" "$DIST_BACKUP"; fi
 mv "$STAGED_DIST" "$REPO_ROOT/dist"
 STAGED_DIST=""
-ACTIVATING=0
-rm -rf "$DIST_BACKUP"
-DIST_BACKUP=""
 
+STATE_BACKUP_DIR="$(mktemp -d "$DEPLOY_DIR/.state-backup.XXXXXX")"
+[[ -f "$MARKER" ]] && cp -a "$MARKER" "$STATE_BACKUP_DIR/pending.json"
+[[ -f "$ACTIVE_FILE" ]] && cp -a "$ACTIVE_FILE" "$STATE_BACKUP_DIR/active.json"
+LIFECYCLE_CHANGED=1
 STARTED_AT="$(date --iso-8601=seconds)"
-python3 - "$MARKER" "$STARTED_AT" "$OLD_REV" "$NEW_REV" "$TARGET_REF" <<'PY'
-import json
-import os
-import sys
-import tempfile
-
+python3 - "$MARKER" "$STARTED_AT" "$DEPLOY_OLD_REV" "$NEW_REV" "$TARGET_REF" <<'PY'
+import json, os, sys, tempfile
 path, started_at, old_rev, new_rev, target_ref = sys.argv[1:]
-directory = os.path.dirname(path)
-os.makedirs(directory, exist_ok=True)
+directory = os.path.dirname(path); os.makedirs(directory, exist_ok=True)
 fd, temporary = tempfile.mkstemp(prefix=".pending-", suffix=".tmp", dir=directory)
 try:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({
-            "started_at": started_at,
-            "old_rev": old_rev,
-            "new_rev": new_rev,
-            "target_ref": target_ref,
-        }, f, indent=2)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
+        json.dump({"started_at": started_at, "old_rev": old_rev, "new_rev": new_rev,
+                   "target_ref": target_ref}, f, indent=2)
+        f.write("\n"); f.flush(); os.fsync(f.fileno())
     os.replace(temporary, path)
 finally:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
+    if os.path.exists(temporary): os.unlink(temporary)
 PY
-
+python3 - "$ACTIVE_FILE" "$NEW_REV" "$DEPLOY_OLD_REV" "$STARTED_AT" <<'PY'
+import json, os, sys, tempfile
+path, sha, prior, activated_at = sys.argv[1:]
+directory = os.path.dirname(path); os.makedirs(directory, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix=".active-", suffix=".tmp", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"sha": sha, "prior_sha": prior or None, "activated_at": activated_at}, f, indent=2)
+        f.write("\n"); f.flush(); os.fsync(f.fileno())
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PY
+ACTIVATING=0
+rm -rf "$DIST_BACKUP" "$NODE_MODULES_BACKUP"
+DIST_BACKUP=""
+NODE_MODULES_BACKUP=""
 notify_deploy_built() {
   local text="$1"
   if [[ ! -f "$DATA_BASE/.env" || ! -f "$DATA_BASE/config.yaml" ]]; then

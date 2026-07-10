@@ -57,7 +57,7 @@ echo "Installing deps..."
 ( cd "$REPO_ROOT" && pnpm install --frozen-lockfile )
 
 echo "Building..."
-( cd "$REPO_ROOT" && pnpm run build -- --noEmitOnError )
+( cd "$REPO_ROOT" && pnpm run build )
 
 cat <<EOF
 

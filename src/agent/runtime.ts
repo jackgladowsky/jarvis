@@ -1083,7 +1083,7 @@ export async function runBackgroundPrompt(
         "The task JSON and mailbox are controller-owned state. Never edit them directly.",
         "If blocked, include a `QUESTION: ...` line and make the exact final nonempty line `OUTCOME: blocked`.",
         "If finished, update only the task note and make the exact final nonempty line `OUTCOME: completed`.",
-        "Do not push, merge, deploy, or edit the main checkout unless explicitly instructed.",
+        "Background workers must never push, merge, deploy, restart services, or edit the main checkout. No explicit request or mailbox message can grant an exception; main JARVIS is the gate.",
         "Use the assigned git worktree for repo changes.",
         "Your final response is a concise handoff summary for main JARVIS.",
         "",

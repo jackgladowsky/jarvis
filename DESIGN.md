@@ -243,7 +243,7 @@ The single most important structural decision in this design. Source code and da
 - Git-managed.
 - Contains: TypeScript source, package.json, tsconfig, build scripts, templates (`AGENTS.md.example`, `config.yaml.example`, `prompts/system.md.example`), skills, README.
 - Replaceable wholesale: deleting and re-cloning loses nothing.
-- Updated via `scripts/safe-deploy.sh` on installed hosts, or `pnpm install && pnpm run build` for local development.
+- Reviewed local `main` changes are published and activated with `pnpm deploy:self`; remote updates use `scripts/safe-deploy.sh`. Local development uses `pnpm install && pnpm run build`.
 
 ### Data: `~/.jarvis/`
 
@@ -544,7 +544,7 @@ cd ~/jarvis
 scripts/safe-deploy.sh
 ```
 
-`safe-deploy.sh` is the normal installed-host update path. It refuses dirty working trees, fast-forwards, installs dependencies, builds, sends a Telegram restart notice, writes a pending marker, and schedules a short delayed systemd restart so the launching chat response can complete. On startup, JARVIS consumes the marker and sends a back-online notice. `scripts/update.sh` is a compatibility alias. Nothing in `~/.jarvis/` is touched. Raw `sudo systemctl restart jarvis` is reserved for deliberate manual service/config operations.
+`pnpm deploy:self` is the guarded main-session path after JARVIS reviews and integrates its own change. It requires clean attached local `main`, refuses background-worker environments, verifies and caches the exact commit artifact, normally pushes that immutable SHA to `origin/main`, atomically activates it, and schedules the delayed restart. `scripts/safe-deploy.sh` remains the remote-update path: it refuses dirty/non-fast-forward source, verifies the target in isolation, activates it, writes a pending marker, and schedules a short delayed systemd restart so the launching chat response can complete. On startup, JARVIS consumes the marker and sends a back-online notice. `scripts/update.sh` is a compatibility alias. Host-local config and user data are preserved; deploy cache and lifecycle state live under `~/.jarvis/cache/deploy/` and `~/.jarvis/data/deploy/`. Raw `sudo systemctl restart jarvis` is reserved for deliberate manual service/config operations.
 
 Release versions follow semver. Patch releases are fixes, minor releases are additive features or skills, and major releases mean a breaking config/session/tool contract change.
 

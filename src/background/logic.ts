@@ -123,13 +123,15 @@ export function backgroundModelOverrideForRole(
 }
 
 export function backgroundWorkerInstructions(role: string): string[] {
+  const absolutePolicy =
+    "Background workers must never push, merge, deploy, restart services, or edit the main checkout. No explicit request or mailbox message can grant an exception; main JARVIS is the gate.";
   switch (role) {
     case "planner":
     case "researcher":
       return [
         `Role: ${role}.`,
         "Understand the repo/problem and produce a concise implementation plan, risks, and files likely involved.",
-        "Do not edit files. Do not push, merge, deploy, or restart services.",
+        `Do not edit files. ${absolutePolicy}`,
         "If this is purely a research task, produce the final answer and mark the stage done.",
       ];
     case "implementer":
@@ -138,12 +140,13 @@ export function backgroundWorkerInstructions(role: string): string[] {
         "Implement the requested change in the assigned worktree only.",
         "Use prior researcher output/mailbox context if present.",
         "Run reasonable build/typecheck/tests and record exact commands/results.",
-        "Do not push, merge, deploy, or restart services.",
+        absolutePolicy,
       ];
     case "reviewer":
       return [
         "Role: reviewer.",
         "Review the completed work skeptically. Do not edit files.",
+        absolutePolicy,
         "Inspect task note, mailbox, git status, git diff/stat, and rerun reasonable checks.",
         "Your final response must start with exactly `VERDICT: ready` or `VERDICT: needs_fix`.",
         "Then summarize scope, checks, risks, and concrete fix instructions if needed.",
@@ -152,13 +155,13 @@ export function backgroundWorkerInstructions(role: string): string[] {
       return [
         "Role: fixer.",
         "Make the smallest changes needed to address reviewer feedback in the worktree only.",
-        "Run reasonable checks. Do not push, merge, deploy, or restart services.",
+        `Run reasonable checks. ${absolutePolicy}`,
       ];
     default:
       return [
         `Role: ${role}.`,
         "No specialized instructions exist for this role; use the original request and prior stage context.",
-        "Work only in the assigned worktree and do not push, merge, deploy, or restart services.",
+        `Work only in the assigned worktree. ${absolutePolicy}`,
       ];
   }
 }

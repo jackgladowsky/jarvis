@@ -22,6 +22,7 @@
     "version:show": "pnpm run build && node dist/lib/version.js",
     "release:bump": "node scripts/bump-version.mjs",
     "release": "node skills/release/scripts/release.mjs",
+    "deploy:self": "bash scripts/safe-deploy.sh --self-main",
     "workbench:smoke": "pnpm build && node dist/workbench/smoke.js"
   },
   "dependencies": {
