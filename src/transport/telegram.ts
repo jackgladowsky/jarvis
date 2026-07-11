@@ -12,6 +12,7 @@
 //      "let me check…" filler stay invisible.
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
+import { join } from "node:path";
 import { Bot, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { handleMessage } from "../agent/runtime.js";
@@ -25,6 +26,12 @@ import {
   transcribeWithLocalWhisperCpp,
   type TelegramAudioCandidate,
 } from "../lib/audio-transcription.js";
+import {
+  extractDocument,
+  formatDocumentPrompt,
+  MAX_DOCUMENT_BYTES,
+  storeExtractedDocument,
+} from "../lib/document-ingestion.js";
 import { markdownToTelegramHtml, splitTelegramMarkdown } from "../lib/format.js";
 import {
   claimInternalNotification,
@@ -40,7 +47,9 @@ import {
 } from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
 import { withLock } from "../lib/mutex.js";
-import { readResponseBodyLimited, withTelegramRetry } from "../lib/telegram-delivery.js";
+import { downloadTelegramFile } from "../lib/telegram-media.js";
+import { withTelegramRetry } from "../lib/telegram-delivery.js";
+import { paths } from "../paths.js";
 import "./commands/handlers/index.js";
 import { botMenuCommands, findCommand } from "./commands/registry.js";
 import { consumeSttBenchmarkNext, getStatusMode } from "./commands/handlers/state.js";
@@ -94,13 +103,6 @@ async function safe<T>(label: string, p: Promise<T>): Promise<T | undefined> {
     log.debug("telegram call failed", { label, err: err instanceof Error ? err.message : err });
     return undefined;
   }
-}
-
-function deliveryTimeout<T>(promise: Promise<T>, label: string, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-    void promise.then(resolve, reject).finally(() => clearTimeout(timer));
-  });
 }
 
 async function replyReliably(
@@ -184,31 +186,63 @@ async function downloadTelegramImage(
   ctx: Context,
   candidate: { fileId: string; mimeType: string; fileSize?: number },
 ): Promise<ImageContent> {
-  if (candidate.fileSize && candidate.fileSize > MAX_TELEGRAM_IMAGE_BYTES) {
-    throw new Error(`image is too large (${Math.ceil(candidate.fileSize / 1024 / 1024)} MB)`);
+  const downloaded = await downloadTelegramFile(ctx.api, env.TELEGRAM_BOT_TOKEN, candidate, {
+    maxBytes: MAX_TELEGRAM_IMAGE_BYTES,
+    timeoutMs: TELEGRAM_MEDIA_TIMEOUT_MS,
+  });
+  const mimeType = downloaded.responseMimeType?.startsWith("image/") ? downloaded.responseMimeType : candidate.mimeType;
+  if (!mimeType.startsWith("image/")) {
+    throw new Error(`Telegram file was not an image (${downloaded.responseMimeType ?? mimeType})`);
   }
-
-  const file = await deliveryTimeout(ctx.api.getFile(candidate.fileId), "Telegram getFile", TELEGRAM_MEDIA_TIMEOUT_MS);
-  if (!file.file_path) throw new Error("Telegram did not return a file path");
-
-  const url = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(TELEGRAM_MEDIA_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
-
-  const buffer = await readResponseBodyLimited(response, MAX_TELEGRAM_IMAGE_BYTES);
-
-  const responseMimeType = response.headers.get("content-type")?.split(";")[0];
-  const mimeType = responseMimeType?.startsWith("image/") ? responseMimeType : candidate.mimeType;
-  if (!mimeType.startsWith("image/"))
-    throw new Error(`Telegram file was not an image (${responseMimeType ?? mimeType})`);
-
-  return { type: "image", data: buffer.toString("base64"), mimeType };
+  return { type: "image", data: downloaded.bytes.toString("base64"), mimeType };
 }
 
 async function readImages(ctx: Context): Promise<ImageContent[]> {
   const candidates = imageCandidateFileIds(ctx);
   if (candidates.length === 0) return [];
   return Promise.all(candidates.map((candidate) => downloadTelegramImage(ctx, candidate)));
+}
+
+interface TelegramDocumentCandidate {
+  fileId: string;
+  fileSize?: number;
+  fileName?: string;
+  mimeType?: string;
+}
+
+export function documentCandidate(ctx: Context): TelegramDocumentCandidate | undefined {
+  const document = ctx.message?.document;
+  if (!document || document.mime_type?.startsWith("image/") || selectTelegramAudioCandidate(ctx.message)) return;
+  return {
+    fileId: document.file_id,
+    fileSize: document.file_size,
+    fileName: document.file_name,
+    mimeType: document.mime_type,
+  };
+}
+
+async function readDocument(ctx: Context, chatId: number): Promise<string | undefined> {
+  const candidate = documentCandidate(ctx);
+  if (!candidate) return;
+  const downloaded = await downloadTelegramFile(ctx.api, env.TELEGRAM_BOT_TOKEN, candidate, {
+    maxBytes: MAX_DOCUMENT_BYTES,
+    timeoutMs: TELEGRAM_MEDIA_TIMEOUT_MS,
+  });
+  const extracted = await extractDocument({
+    bytes: downloaded.bytes,
+    fileName: candidate.fileName,
+    declaredMimeType: downloaded.responseMimeType ?? candidate.mimeType,
+  });
+  const stored = await storeExtractedDocument(
+    join(paths.telegramDocuments, String(chatId)),
+    {
+      bytes: downloaded.bytes,
+      fileName: candidate.fileName,
+      declaredMimeType: downloaded.responseMimeType ?? candidate.mimeType,
+    },
+    extracted,
+  );
+  return formatDocumentPrompt(stored, ctx.message?.caption ?? "");
 }
 
 function sttOptions() {
@@ -223,21 +257,12 @@ function sttOptions() {
 }
 
 async function downloadTelegramAudio(ctx: Context, candidate: TelegramAudioCandidate): Promise<Buffer> {
-  const limit = maxAudioBytes(config.stt.local_whisper_cpp.max_audio_mb);
-  if (candidate.fileSize && candidate.fileSize > limit) {
-    throw new Error(
-      `audio is too large (${Math.ceil(candidate.fileSize / 1024 / 1024)} MB; max ${config.stt.local_whisper_cpp.max_audio_mb} MB)`,
-    );
-  }
-
-  const file = await deliveryTimeout(ctx.api.getFile(candidate.fileId), "Telegram getFile", TELEGRAM_MEDIA_TIMEOUT_MS);
-  if (!file.file_path) throw new Error("Telegram did not return a file path");
-
-  const url = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(TELEGRAM_MEDIA_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
-
-  return readResponseBodyLimited(response, limit);
+  return (
+    await downloadTelegramFile(ctx.api, env.TELEGRAM_BOT_TOKEN, candidate, {
+      maxBytes: maxAudioBytes(config.stt.local_whisper_cpp.max_audio_mb),
+      timeoutMs: TELEGRAM_MEDIA_TIMEOUT_MS,
+    })
+  ).bytes;
 }
 
 async function transcribeTelegramAudio(ctx: Context, candidate: TelegramAudioCandidate): Promise<string> {
@@ -528,11 +553,26 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     return;
   }
 
-  if (!userText.trim() && images.length === 0 && !transcribedPrompt) {
-    await replyReliably(ctx, "I can read text, images, and voice/audio. Whatever that was, Telegram is being coy.");
+  let documentPrompt: string | undefined;
+  if (!audioCandidate && images.length === 0 && documentCandidate(ctx)) {
+    try {
+      await safe("upload_document", ctx.replyWithChatAction("upload_document"));
+      documentPrompt = await readDocument(ctx, chatId);
+    } catch (err) {
+      log.warn("telegram document read failed", { chatId, err: err instanceof Error ? err.message : err });
+      await replyReliably(ctx, `Couldn't read that document: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+  }
+
+  if (!userText.trim() && images.length === 0 && !transcribedPrompt && !documentPrompt) {
+    await replyReliably(
+      ctx,
+      "I can read text, images, documents, and voice/audio. Whatever that was, Telegram is being coy.",
+    );
     return;
   }
-  const promptText = transcribedPrompt ?? (userText.trim() || "Describe the attached image(s).");
+  const promptText = documentPrompt ?? transcribedPrompt ?? (userText.trim() || "Describe the attached image(s).");
   let visibleResponseDelivered = false;
 
   // ── Streaming placeholder state ─────────────────────────────────────────

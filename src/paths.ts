@@ -53,6 +53,9 @@ export const paths = {
   notesProjects: join(DATA_BASE, "data", "notes", "projects"),
   notesProjectsArchive: join(DATA_BASE, "data", "notes", "projects", "archive"),
 
+  // Original Telegram documents accepted as bounded, untrusted reference material.
+  telegramDocuments: join(DATA_BASE, "data", "telegram-documents"),
+
   // Scheduled job state — independent persistent sessions per task.
   scheduledJobs: join(DATA_BASE, "data", "jobs"),
   scheduledJobTasks: join(DATA_BASE, "data", "jobs", "tasks.json"),

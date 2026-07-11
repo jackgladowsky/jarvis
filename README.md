@@ -92,7 +92,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Persistent JSONL sessions with rotation, archival, and summaries.
 - Markdown memory notes under `~/.jarvis/data/notes/`, plus optional adaptive voice guidance in `~/.jarvis/prompts/SOUL.md`.
 - Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, and read-only browser workbench.
-- Telegram image input and optional local whisper.cpp voice/audio transcription.
+- Telegram image input, bounded PDF/text/source/config document ingestion, and optional local whisper.cpp voice/audio transcription.
 - Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
 - Conversational reminders and recurring automations with strict timezone-aware parsing, durable cancellation/history, and cron support through a validated scheduler control tool.
 - Detached background workers using isolated git worktrees and role pipelines.
@@ -163,6 +163,10 @@ pnpm run workbench:smoke -- https://example.com
 ```
 
 See `docs/workbench.md` for data paths, click/type boundaries, safety notes, and current limitations. CAPTCHA bypass, login/2FA automation, downloads, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented. Benign submits like search forms are allowed; risky submits still require explicit approval.
+
+## Telegram documents
+
+Send JARVIS a UTF-8 text/source/config/CSV/JSON/XML/YAML file or a text-layer PDF, optionally with a caption describing what to do. Accepted originals are stored privately under host-local data and extracted content is clearly marked as untrusted reference material. See [`docs/document-ingestion.md`](docs/document-ingestion.md) for supported formats, limits, and safety boundaries.
 
 ## Local whisper.cpp speech-to-text
 
