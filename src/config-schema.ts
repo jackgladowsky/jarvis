@@ -27,10 +27,13 @@ const ModelSelectionSchema = z.object({
   model: z.string().min(1),
 });
 
+export const CURRENT_CONFIG_SCHEMA_VERSION = 1 as const;
+
 // Schema mirrors config.yaml.example exactly. Any drift between the example
 // and this schema is a bug — the example is documentation, this is enforcement.
 export const ConfigSchema = z
   .object({
+    schema_version: z.literal(CURRENT_CONFIG_SCHEMA_VERSION),
     agent: z.object({
       provider: z.enum(["codex", "anthropic", "openrouter"]),
       model: z.string().min(1),
@@ -147,8 +150,20 @@ export const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>;
 
+export function migrateConfig(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const input = value as Record<string, unknown>;
+  const version = input.schema_version;
+  if (version === undefined) {
+    // Version 0 was the original unversioned format. Its shape is otherwise
+    // identical to v1, so migration is intentionally additive and lossless.
+    return { ...input, schema_version: CURRENT_CONFIG_SCHEMA_VERSION };
+  }
+  return value;
+}
+
 export function parseConfig(value: unknown, source = "config"): Config {
-  const parsed = ConfigSchema.safeParse(value);
+  const parsed = ConfigSchema.safeParse(migrateConfig(value));
   if (!parsed.success) {
     throw new Error(`Invalid config at ${source}:\n${parsed.error.toString()}`);
   }

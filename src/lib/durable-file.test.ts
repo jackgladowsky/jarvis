@@ -104,32 +104,36 @@ test("a complete fresh lock with a provably dead owner is recovered immediately"
   });
 });
 
-test("a complete fresh lock is recovered immediately when its PID was reused", async () => {
-  await withTempDir(async (dir) => {
-    const file = join(dir, "state.json");
-    const lock = `${file}.lock`;
-    await mkdir(lock);
-    await writeFile(
-      join(lock, "owner.json"),
-      JSON.stringify({
-        token: "reused-pid-owner",
-        // PID 1 is visible in the test container's procfs even though node:test
-        // workers use a nested PID namespace.
-        pid: 1,
-        createdAt: Date.now(),
-        processStart: "not-this-process-start",
-      }),
-    );
+test(
+  "a complete fresh lock is recovered immediately when its PID was reused",
+  { skip: process.platform !== "linux" && "requires Linux /proc process identity" },
+  async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "state.json");
+      const lock = `${file}.lock`;
+      await mkdir(lock);
+      await writeFile(
+        join(lock, "owner.json"),
+        JSON.stringify({
+          token: "reused-pid-owner",
+          // PID 1 is visible in the test container's procfs even though node:test
+          // workers use a nested PID namespace.
+          pid: 1,
+          createdAt: Date.now(),
+          processStart: "not-this-process-start",
+        }),
+      );
 
-    const value = await withFileLock(file, async () => "reused", {
-      staleMs: 60_000,
-      timeoutMs: 500,
+      const value = await withFileLock(file, async () => "reused", {
+        staleMs: 60_000,
+        timeoutMs: 500,
+      });
+
+      assert.equal(value, "reused");
+      await assert.rejects(stat(lock), { code: "ENOENT" });
     });
-
-    assert.equal(value, "reused");
-    await assert.rejects(stat(lock), { code: "ENOENT" });
-  });
-});
+  },
+);
 
 test("a live complete owner without a provable start-time mismatch is preserved", async () => {
   await withTempDir(async (dir) => {

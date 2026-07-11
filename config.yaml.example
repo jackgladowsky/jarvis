@@ -1,6 +1,8 @@
 # JARVIS configuration. Edit freely, restart the service to apply.
 # Secrets live in .env, not here. Copy this to ~/.jarvis/config.yaml.
 
+schema_version: 1
+
 agent:
   provider: codex                             # "codex" / "anthropic" / "openrouter"
   model: gpt-5.1                              # codex examples: gpt-5.1 / gpt-5.1-codex-max / gpt-5.1-codex-mini

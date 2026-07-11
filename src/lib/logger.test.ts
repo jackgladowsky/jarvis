@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-async function loadLoggerWithBrokenAuditPath() {
+let loggerFixture: Promise<Awaited<ReturnType<typeof createLoggerWithBrokenAuditPath>>> | undefined;
+
+function loadLoggerWithBrokenAuditPath() {
+  loggerFixture ??= createLoggerWithBrokenAuditPath();
+  return loggerFixture;
+}
+
+async function createLoggerWithBrokenAuditPath() {
   const dataDir = await mkdtemp(join(tmpdir(), "jarvis-logger-test-"));
   process.env.JARVIS_DATA_DIR = dataDir;
   process.env.TELEGRAM_BOT_TOKEN = "telegram-token";
@@ -34,6 +41,22 @@ async function loadLoggerWithBrokenAuditPath() {
   await mkdir(auditPath, { recursive: true });
   return { logger: await import("./logger.js"), auditPath };
 }
+
+test("audit sanitizer redacts secret values, sensitive keys, commands, and URLs", async () => {
+  const { logger } = await loadLoggerWithBrokenAuditPath();
+  const sanitized = logger.sanitize({
+    authorization: "Bearer abcdefghijklmnopqrstuvwxyz",
+    command:
+      "curl 'https://example.com/hook?token=topsecret&ok=yes' -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz' TELEGRAM_BOT_TOKEN='123456789:abcdefghijklmnopqrstuvwxyz'",
+    nested: { aws: "AKIAABCDEFGHIJKLMNOP", github: "github_pat_abcdefghijklmnopqrstuvwxyz123456" },
+  }) as Record<string, unknown>;
+
+  assert.equal(sanitized.authorization, "[REDACTED]");
+  const encoded = JSON.stringify(sanitized);
+  assert.doesNotMatch(encoded, /topsecret|abcdefghijklmnopqrstuvwxyz|AKIAABCDEFGHIJKLMNOP/);
+  assert.match(encoded, /REDACTED/);
+  assert.match(encoded, /ok=yes/);
+});
 
 test("audit I/O failure never rejects a completed tool and later writes recover", async () => {
   const { logger, auditPath } = await loadLoggerWithBrokenAuditPath();

@@ -35,6 +35,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Shell scripts
+        run: shellcheck scripts/*.sh
+
       - name: Format check
         run: pnpm run format:check
 
@@ -47,26 +53,9 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Set up test config
-        # Tests transitively import `config.ts` and `agent/system-prompt.ts`,
-        # both of which read files from $JARVIS_DATA_DIR at module-load time.
-        # Provide a temp data dir seeded with the example config + prompt, and
-        # stub the required env vars so the env schema validates at module load.
-        # Tests don't exercise the secrets themselves — only config.ts needs
-        # them to exist.
-        run: |
-          TEST_DATA_DIR="$(mktemp -d)"
-          mkdir -p "$TEST_DATA_DIR/prompts"
-          cp config.yaml.example "$TEST_DATA_DIR/config.yaml"
-          cp prompts/system.md.example "$TEST_DATA_DIR/prompts/system.md"
-          {
-            echo "JARVIS_DATA_DIR=$TEST_DATA_DIR"
-            echo "TELEGRAM_BOT_TOKEN=test-token"
-            echo "TELEGRAM_ALLOWED_USER_IDS=1"
-            echo "EXA_API_KEY=test-key"
-          } >> "$GITHUB_ENV"
-
       - name: Coverage
+        # The test runner provisions and removes its own host-local config,
+        # prompt, and placeholder credentials.
         run: pnpm run coverage
 
       - name: Upload coverage report

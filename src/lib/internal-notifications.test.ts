@@ -145,28 +145,32 @@ test("stale running notifications are retried", async () => {
   assert.ok(pending.some((item) => item.id === notification.id));
 });
 
-test("stale claims are not stolen from a live matching process identity", async () => {
-  const { mod, paths } = await loaded;
-  const notification = await mod.enqueueInternalNotification({
-    id: "live-stale-owner-test",
-    source: "background",
-    chat_id: 123,
-    title: "Live owner",
-    body: "Do not steal",
-  });
-  const claimed = await mod.claimInternalNotification(notification);
-  assert.ok(claimed?.claim_owner_start_time);
-  claimed!.updated_at = "2000-01-01T00:00:00.000Z";
-  const runningPath = join(paths.internalNotifications, `${claimed!.id}.${claimed!.claim_token}.running.json`);
-  await writeFile(runningPath, `${JSON.stringify(claimed, null, 2)}\n`, "utf-8");
-  assert.ok(!(await mod.listPendingInternalNotifications()).some((item) => item.id === claimed!.id));
+test(
+  "stale claims are not stolen from a live matching process identity",
+  { skip: process.platform !== "linux" && "requires Linux /proc process identity" },
+  async () => {
+    const { mod, paths } = await loaded;
+    const notification = await mod.enqueueInternalNotification({
+      id: "live-stale-owner-test",
+      source: "background",
+      chat_id: 123,
+      title: "Live owner",
+      body: "Do not steal",
+    });
+    const claimed = await mod.claimInternalNotification(notification);
+    assert.ok(claimed?.claim_owner_start_time);
+    claimed!.updated_at = "2000-01-01T00:00:00.000Z";
+    const runningPath = join(paths.internalNotifications, `${claimed!.id}.${claimed!.claim_token}.running.json`);
+    await writeFile(runningPath, `${JSON.stringify(claimed, null, 2)}\n`, "utf-8");
+    assert.ok(!(await mod.listPendingInternalNotifications()).some((item) => item.id === claimed!.id));
 
-  claimed!.claim_owner_start_time = "0";
-  await writeFile(runningPath, `${JSON.stringify(claimed, null, 2)}\n`, "utf-8");
-  assert.ok((await mod.listPendingInternalNotifications()).some((item) => item.id === claimed!.id));
-  const reclaimed = await mod.claimInternalNotification(claimed!);
-  await mod.finishInternalNotification(reclaimed!, "processed");
-});
+    claimed!.claim_owner_start_time = "0";
+    await writeFile(runningPath, `${JSON.stringify(claimed, null, 2)}\n`, "utf-8");
+    assert.ok((await mod.listPendingInternalNotifications()).some((item) => item.id === claimed!.id));
+    const reclaimed = await mod.claimInternalNotification(claimed!);
+    await mod.finishInternalNotification(reclaimed!, "processed");
+  },
+);
 
 test("notification claims are atomic across competing pumps", async () => {
   const { mod } = await loaded;

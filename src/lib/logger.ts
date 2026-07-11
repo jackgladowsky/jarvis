@@ -88,17 +88,38 @@ export const log = {
 const SECRET_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9_-]{20,}/g,
   /ghp_[A-Za-z0-9]{20,}/g,
+  /github_pat_[A-Za-z0-9_]{20,}/g,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+  /\b\d{6,12}:[A-Za-z0-9_-]{20,}\b/g,
+  /\bBearer\s+[A-Za-z0-9._~+/-]{16,}={0,2}/gi,
   /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
-  /([A-Z_]+=)([A-Za-z0-9+/=]{20,})/g,
+  /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL)[A-Z0-9_]*=)(?:'[^']*'|"[^"]*"|[^\s;&|]+)/g,
 ];
+
+const SENSITIVE_KEY = /(?:^|[_-])(token|secret|password|passwd|authorization|api[_-]?key|credential|cookie)(?:$|[_-])/i;
+const SENSITIVE_QUERY_KEY = /token|secret|password|passwd|authorization|api[_-]?key|credential|signature|sig/i;
+
+function redactUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.username) url.username = "[REDACTED]";
+    if (url.password) url.password = "[REDACTED]";
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_QUERY_KEY.test(key)) url.searchParams.set(key, "[REDACTED]");
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
 
 function redact(value: string): string {
   if (!config.logging.audit_log_redact_patterns) return value;
-  let out = value;
+  let out = value.replace(/https?:\/\/[^\s"'<>]+/g, redactUrl);
   for (const p of SECRET_PATTERNS) {
-    // For the SHOUTY=value pattern, keep the prefix (so logs stay grep-able)
-    // and redact only the value. For everything else, replace the whole match.
-    out = out.replace(p, (match, prefix?: string) => (prefix ? `${prefix}[REDACTED]` : "[REDACTED]"));
+    out = out.replace(p, (_match, prefix?: string | number) =>
+      typeof prefix === "string" ? `${prefix}[REDACTED]` : "[REDACTED]",
+    );
   }
   return out;
 }
@@ -125,7 +146,7 @@ export function sanitize(value: unknown): unknown {
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = sanitize(v);
+      out[k] = SENSITIVE_KEY.test(k) ? "[REDACTED]" : sanitize(v);
     }
     return out;
   }

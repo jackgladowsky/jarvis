@@ -7,6 +7,7 @@
 # Safe/idempotent by default: existing config/secrets are not overwritten unless
 # you confirm an edit in the wizard. Use --dry-run to preview actions.
 set -euo pipefail
+umask 077
 
 DEFAULT_REPO_URL="https://github.com/jackgladowsky/jarvis.git"
 REPO_URL="${JARVIS_REPO_URL:-$DEFAULT_REPO_URL}"

@@ -2,15 +2,34 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
-import { parseConfig, parseEnv } from "./config-schema.js";
+import { CURRENT_CONFIG_SCHEMA_VERSION, migrateConfig, parseConfig, parseEnv } from "./config-schema.js";
 
 test("config example validates against the runtime schema", async () => {
   const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
   const config = parseConfig(parseYaml(raw), "config.yaml.example");
 
+  assert.equal(config.schema_version, CURRENT_CONFIG_SCHEMA_VERSION);
   assert.equal(config.agent.provider, "codex");
   assert.equal(config.telegram.parse_mode, "HTML");
   assert.deepEqual(config.scheduler.tasks, []);
+});
+
+test("unversioned config migrates losslessly to the current schema", async () => {
+  const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
+  const legacy = parseYaml(raw) as Record<string, unknown>;
+  delete legacy.schema_version;
+
+  const migrated = migrateConfig(legacy) as Record<string, unknown>;
+  assert.equal(migrated.schema_version, CURRENT_CONFIG_SCHEMA_VERSION);
+  assert.equal(parseConfig(legacy).schema_version, CURRENT_CONFIG_SCHEMA_VERSION);
+  assert.equal(legacy.schema_version, undefined);
+});
+
+test("future config versions fail closed", async () => {
+  const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
+  const config = parseYaml(raw) as Record<string, unknown>;
+  config.schema_version = CURRENT_CONFIG_SCHEMA_VERSION + 1;
+  assert.throws(() => parseConfig(config, "future-config"), /schema_version/);
 });
 
 test("config parser accepts per-scheduled-task model overrides", async () => {

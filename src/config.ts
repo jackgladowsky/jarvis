@@ -16,7 +16,14 @@ import { paths } from "./paths.js";
 import { parseConfig, parseEnv, type Config, type Env } from "./config-schema.js";
 
 export type { Config, Env } from "./config-schema.js";
-export { ConfigSchema, EnvSchema, parseConfig, parseEnv } from "./config-schema.js";
+export {
+  CURRENT_CONFIG_SCHEMA_VERSION,
+  ConfigSchema,
+  EnvSchema,
+  migrateConfig,
+  parseConfig,
+  parseEnv,
+} from "./config-schema.js";
 
 function loadConfig(): Config {
   return parseConfig(parseYaml(readFileSync(paths.configYaml, "utf-8")), paths.configYaml);

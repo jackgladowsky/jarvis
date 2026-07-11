@@ -2,6 +2,7 @@
 # Set up the JARVIS data tree on a fresh host.
 # Idempotent: re-running never overwrites live files. Safe to run after pulls.
 set -euo pipefail
+umask 077
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_BASE="${JARVIS_DATA_DIR:-$HOME/.jarvis}"
@@ -50,8 +51,11 @@ copy_if_missing "$REPO_ROOT/config.yaml.example"        "$DATA_BASE/config.yaml"
 copy_if_missing "$REPO_ROOT/AGENTS.md.example"          "$DATA_BASE/AGENTS.md"
 copy_if_missing "$REPO_ROOT/prompts/system.md.example"  "$DATA_BASE/prompts/system.md"
 
-# .env holds secrets after you edit it; tighten perms unconditionally.
-chmod 600 "$DATA_BASE/.env"
+# Everything below the host-local root may contain prompts, transcripts,
+# credentials, logs, or generated artifacts. Do not rely on the caller's
+# umask, and never follow symlinks while tightening an existing installation.
+find "$DATA_BASE" -type d -exec chmod 700 {} +
+find "$DATA_BASE" -type f -exec chmod 600 {} +
 
 echo "Installing deps..."
 ( cd "$REPO_ROOT" && pnpm install --frozen-lockfile )

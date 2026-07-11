@@ -21,7 +21,7 @@ include_orphans=0
 delete_branches=0
 force_branches=0
 
-terminal_statuses=(ready_for_pr cancelled failed done)
+terminal_statuses=(ready_for_pr cancelled failed "done")
 
 usage() {
   cat <<'EOF'

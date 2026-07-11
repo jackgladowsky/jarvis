@@ -111,7 +111,7 @@ if [[ "$MODE" == "self-main" ]]; then
   require_self_main_state
   echo "Fetching origin/main..."
   git fetch origin main
-  REMOTE_REV="$(git rev-parse --verify refs/remotes/origin/main^{commit})"
+  REMOTE_REV="$(git rev-parse --verify 'refs/remotes/origin/main^{commit}')"
   git merge-base --is-ancestor "$REMOTE_REV" "$NEW_REV" \
     || fail "Refusing self deploy: origin/main is not an ancestor of local main."
 else
@@ -256,6 +256,13 @@ PY
   mv "$CACHE_TEMP" "$CACHE_DIR"
   cache_is_valid || fail "Newly published deploy cache failed validation."
 fi
+
+# Validate the actual host configuration with the exact artifact about to be
+# activated. This happens before any source/dist swap, so an incompatible live
+# config cannot take the currently-running release offline.
+[[ -f "$DATA_BASE/config.yaml" ]] || fail "Live config is missing: $DATA_BASE/config.yaml"
+echo "Preflighting live config with release $NEW_SHORT..."
+node "$CACHE_DIR/dist/config-check.js" "$DATA_BASE/config.yaml"
 
 cd "$REPO_ROOT"
 export JARVIS_SOURCE_ROOT="$REPO_ROOT" JARVIS_DATA_DIR="$DATA_BASE"

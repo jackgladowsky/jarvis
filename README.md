@@ -127,7 +127,7 @@ Important config sections:
 - `scheduler` — enablement, timezone, notification chat, bootstrap tasks.
 - `logging` — audit log behavior, redaction, truncation, log level.
 
-Config is loaded once at startup; restart JARVIS to apply changes.
+Config is loaded once at startup; restart JARVIS to apply changes. `schema_version` is migrated from the original unversioned format and future versions fail closed. Deployments validate the actual live config with the candidate release before activation.
 
 ## Telegram commands
 
@@ -208,6 +208,8 @@ pnpm run lint
 pnpm run format:check
 pnpm run coverage
 ```
+
+The test command creates an isolated temporary JARVIS data directory and placeholder credentials automatically; it does not depend on `~/.jarvis`.
 
 `pnpm run check` runs format check, lint, typecheck, and coverage.
 

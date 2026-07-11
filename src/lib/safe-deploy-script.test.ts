@@ -86,7 +86,7 @@ test(
       );
       await writeFile(
         join(binDir, "pnpm"),
-        `#!/usr/bin/env bash\nset -e\necho "$*" >> "$FAKE_PNPM_LOG"\nif [[ "\${1:-}" == "--version" ]]; then echo 10.26.2; exit 0; fi\nif [[ "\${1:-}" == "install" ]]; then mkdir -p node_modules; exit 0; fi\nif [[ "\${1:-}" == "run" && "\${2:-}" == "build" ]]; then\n  mkdir -p dist\n  printf '%s\\n' "module.exports = 'verified-release';" > dist/index.js\n  printf '%s\\n' "const test = require('node:test'); test('release smoke', () => {});" > dist/smoke.test.js\n  exit 0\nfi\nexit 2\n`,
+        `#!/usr/bin/env bash\nset -e\necho "$*" >> "$FAKE_PNPM_LOG"\nif [[ "\${1:-}" == "--version" ]]; then echo 10.26.2; exit 0; fi\nif [[ "\${1:-}" == "install" ]]; then mkdir -p node_modules; exit 0; fi\nif [[ "\${1:-}" == "run" && "\${2:-}" == "build" ]]; then\n  mkdir -p dist\n  printf '%s\\n' "module.exports = 'verified-release';" > dist/index.js\n  printf '%s\\n' "const fs=require('node:fs'); const value=fs.readFileSync(process.argv[2], 'utf8'); if(value.includes('invalid')) process.exit(1); console.log('config valid');" > dist/config-check.js\n  printf '%s\\n' "const test = require('node:test'); test('release smoke', () => {});" > dist/smoke.test.js\n  exit 0\nfi\nexit 2\n`,
       );
       await writeFile(
         join(binDir, "sudo"),
@@ -108,7 +108,9 @@ test(
       run("git", ["commit", "-m", "reviewed change"]);
       const sha = run("git", ["rev-parse", "HEAD"]);
       await mkdir(join(checkout, "dist"), { recursive: true });
+      await mkdir(dataDir, { recursive: true });
       await writeFile(join(checkout, "dist/index.js"), "module.exports = 'old-release';\n");
+      await writeFile(join(dataDir, "config.yaml"), "valid live config\n");
 
       const deployEnv = {
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -126,6 +128,17 @@ test(
       assert.match(second, /Using verified deploy cache/);
       const builds = (await readFile(pnpmLog, "utf-8")).split("\n").filter((line) => line === "run build");
       assert.equal(builds.length, 1);
+
+      await writeFile(join(dataDir, "config.yaml"), "invalid live config\n");
+      const invalidConfig = spawnSync("bash", [join(checkout, "scripts/safe-deploy.sh"), "--self-main"], {
+        cwd: checkout,
+        encoding: "utf-8",
+        env: { ...process.env, ...deployEnv },
+      });
+      assert.notEqual(invalidConfig.status, 0);
+      assert.match(invalidConfig.stdout, /Preflighting live config/);
+      assert.doesNotMatch(invalidConfig.stdout, /Publishing exact verified SHA/);
+      await writeFile(join(dataDir, "config.yaml"), "valid live config\n");
 
       await writeFile(join(checkout, "node_modules/old-dependency-sentinel"), "old dependencies\n");
       await writeFile(join(checkout, "package.json"), '{"packageManager":"pnpm@10.26.2","version":"1.0.1"}\n');
