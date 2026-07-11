@@ -127,7 +127,7 @@ Important config sections:
 - `scheduler` — enablement, timezone, notification chat, bootstrap tasks.
 - `logging` — audit log behavior, redaction, truncation, log level.
 
-Config is loaded once at startup; restart JARVIS to apply changes. `schema_version` is migrated from the original unversioned format and future versions fail closed. Deployments validate the actual live config with the candidate release before activation.
+Configuration is primarily managed conversationally: ask JARVIS to inspect or change a setting. It uses the validated `config_control` capability to plan an atomic change, preserve rollback history, and explain whether a guarded restart is required. Secrets in `.env` are deliberately excluded. Manual edits remain supported. `schema_version` is migrated from the original unversioned format, future versions fail closed, and deployments validate the actual live config before activation.
 
 ## Telegram commands
 

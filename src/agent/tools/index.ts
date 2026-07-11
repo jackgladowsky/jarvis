@@ -19,6 +19,7 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { withToolAudit } from "./audited.js";
 import { bashTool } from "./bash.js";
 import { browserWorkbenchTool } from "./browser-workbench.js";
+import { configControlTool } from "./config-control.js";
 import { editTool } from "./edit.js";
 import { mcpCallTool, summarizeMcpAuditArgs, summarizeMcpAuditError } from "./mcp.js";
 import { readTool } from "./read.js";
@@ -39,5 +40,6 @@ export const allTools: AgentTool<any>[] = [
   bashTool,
   webSearchTool,
   browserWorkbenchTool,
+  configControlTool,
   auditedMcpCallTool,
 ];

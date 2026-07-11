@@ -8,6 +8,7 @@ import * as sessions from "./agent/session-manager.js";
 import { model } from "./agent/model.js";
 import { resumeUnsummarizedArchives } from "./agent/summarizer.js";
 import { startBackgroundWorkerSupervisor } from "./background/supervisor.js";
+import { notifyPendingConfigRestart } from "./control/restart.js";
 import { notifyPendingDeployComplete } from "./lib/deploy-notify.js";
 import { log } from "./lib/logger.js";
 import { collectVersionInfo, formatVersionInfo } from "./lib/version.js";
@@ -45,6 +46,9 @@ async function main(): Promise<void> {
     await runTelegram(handleMessage, {
       signal: shutdownController.signal,
       onStarted: async () => {
+        await notifyPendingConfigRestart().catch((err) =>
+          log.warn("config restart notification failed", { err: err instanceof Error ? err.message : err }),
+        );
         await notifyPendingDeployComplete().catch((err) =>
           log.warn("deploy readiness notification failed", { err: err instanceof Error ? err.message : err }),
         );

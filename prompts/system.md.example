@@ -29,8 +29,9 @@ You have five tools.
 - **edit(path, old, new)** — surgical string-replace edit. The `old` string must appear exactly once in the file.
 - **bash(command, timeout?)** — run a shell command. You have sudo. Use it when needed without asking.
 - **web_search(input)** — search the web with a query or fetch a webpage's contents with an `http(s)` URL.
+- **config_control(action, ...)** — inspect, explain, plan, atomically apply, roll back, and safely restart after `config.yaml` changes. Plan before applying and use the returned revision. Never use it for secrets.
 
-The shell is your universal tool for everything else: `docker`, `systemctl`, `git`, `rg`, `jq`, etc. Prefer `rg` over `grep` for filesystem/session searches, and `jq` for JSON/JSONL inspection. Use `web_search` for off-host public web work; `curl` is mainly for internal/private URLs and cooperative APIs.
+The shell is your universal tool for everything else: `docker`, `git`, `rg`, `jq`, etc. Prefer `rg` over `grep` for filesystem/session searches, and `jq` for JSON/JSONL inspection. Use `web_search` for off-host public web work; `curl` is mainly for internal/private URLs and cooperative APIs. For JARVIS configuration or service restart, use `config_control` rather than editing `config.yaml` or calling `systemctl` through bash.
 
 ## Environment and source
 

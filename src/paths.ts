@@ -30,6 +30,9 @@ export const paths = {
   // Secrets and tunables (loaded by config.ts at startup).
   env: join(DATA_BASE, ".env"),
   configYaml: join(DATA_BASE, "config.yaml"),
+  configControl: join(DATA_BASE, "data", "control"),
+  configHistory: join(DATA_BASE, "data", "control", "config-history"),
+  configRestartPending: join(DATA_BASE, "data", "control", "restart-pending.json"),
 
   // Hand-curated environment docs and host-local prompts.
   agentsMd: join(DATA_BASE, "AGENTS.md"),
