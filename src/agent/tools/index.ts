@@ -23,6 +23,7 @@ import { configControlTool } from "./config-control.js";
 import { editTool } from "./edit.js";
 import { mcpCallTool, summarizeMcpAuditArgs, summarizeMcpAuditError } from "./mcp.js";
 import { readTool } from "./read.js";
+import { schedulerControlTool } from "./scheduler-control.js";
 import { webSearchTool } from "./web-search.js";
 import { writeTool } from "./write.js";
 
@@ -41,5 +42,6 @@ export const allTools: AgentTool<any>[] = [
   webSearchTool,
   browserWorkbenchTool,
   configControlTool,
+  schedulerControlTool,
   auditedMcpCallTool,
 ];

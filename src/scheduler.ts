@@ -1,7 +1,6 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import cron, { type ScheduledTask } from "node-cron";
-import { z } from "zod";
 import { isAgentRunAbortError } from "./agent/run-registry.js";
 import { AgentExecutionError, runScheduledPrompt } from "./agent/runtime.js";
 import { config } from "./config.js";
@@ -10,6 +9,7 @@ import { notifyMainOrFallback } from "./lib/internal-notifications.js";
 import { log } from "./lib/logger.js";
 import { paths } from "./paths.js";
 import { builtInScheduledTasks } from "./scheduled-defaults.js";
+import { readDynamicTaskFile, setSchedulerReconciler } from "./scheduler-service.js";
 import {
   isOneTimeTask,
   oneTimeResultState,
@@ -29,60 +29,6 @@ interface ActiveScheduledJob {
   signature: string;
 }
 
-const BaseTaskSchema = z.object({
-  id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
-  name: z.string().min(1),
-  prompt: z.string().min(1),
-  notify: z.enum(["always", "on_issue", "never"]),
-  provider: z.enum(["codex", "anthropic", "openrouter"]).optional(),
-  model: z.string().min(1).optional(),
-});
-
-function validateModelRoute(task: { provider?: string; model?: string }, ctx: z.RefinementCtx): void {
-  if ((task.provider === undefined) !== (task.model === undefined)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "provider and model must be configured together",
-      path: task.provider === undefined ? ["provider"] : ["model"],
-    });
-  }
-}
-
-const RecurringTaskSchema = BaseTaskSchema.extend({
-  schedule: z.string().min(1),
-})
-  .strict()
-  .superRefine(validateModelRoute);
-
-const OneTimeTaskSchema = BaseTaskSchema.extend({
-  run_at: z
-    .string()
-    .min(1)
-    .refine((value) => !Number.isNaN(Date.parse(value)), {
-      message: "run_at must be a valid date/time string",
-    }),
-  status: z.enum(["pending", "running", "retry_wait", "completed", "failed"]).optional(),
-  attempts: z.number().int().nonnegative().optional(),
-  max_attempts: z.number().int().min(1).max(10).optional(),
-  execution_id: z.string().min(1).optional(),
-  next_attempt_at: z
-    .string()
-    .refine((value) => !Number.isNaN(Date.parse(value)))
-    .optional(),
-  last_attempt_at: z.string().optional(),
-  completed_at: z.string().optional(),
-  last_error: z.string().optional(),
-  notification_id: z.string().min(1).optional(),
-  notification_title: z.string().min(1).optional(),
-  notification_body: z.string().min(1).optional(),
-  notification_enqueued_at: z.string().optional(),
-})
-  .strict()
-  .superRefine(validateModelRoute);
-
-const DynamicTaskSchema = z.union([RecurringTaskSchema, OneTimeTaskSchema]);
-const DynamicTasksFileSchema = z.object({ tasks: z.array(DynamicTaskSchema) }).strict();
-
 const TASK_RELOAD_MS = 30_000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const DEFAULT_ONE_TIME_MAX_ATTEMPTS = 4;
@@ -91,7 +37,7 @@ const runningTaskIds = new Set<string>();
 let lastGoodDynamicTasks: DynamicTask[] = [];
 let stopping = false;
 
-type DynamicTask = z.infer<typeof DynamicTaskSchema>;
+type DynamicTask = SchedulerJob;
 
 interface SchedulerNotificationIntent {
   id: string;
@@ -155,20 +101,8 @@ async function ensureTasksFile(): Promise<void> {
   }
 }
 
-async function readDynamicTasksFile(): Promise<z.infer<typeof DynamicTasksFileSchema>> {
-  await ensureTasksFile();
-  const raw = await readFile(paths.scheduledJobTasks, "utf-8");
-  let json: unknown;
-  try {
-    json = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `Invalid JSON in scheduled tasks file at ${paths.scheduledJobTasks}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  const parsed = DynamicTasksFileSchema.safeParse(json);
-  if (!parsed.success) throw new Error(`Invalid scheduled tasks file at ${paths.scheduledJobTasks}: ${parsed.error}`);
-  return parsed.data;
+async function readDynamicTasksFile(): Promise<{ tasks: DynamicTask[] }> {
+  return readDynamicTaskFile();
 }
 
 async function loadDynamicTasks(): Promise<DynamicTask[]> {
@@ -274,7 +208,13 @@ async function loadTasks(): Promise<SchedulerJob[]> {
   const byId = new Map<string, SchedulerJob>();
   for (const task of builtInScheduledTasks) byId.set(task.id, task);
   for (const task of config.scheduler.tasks) byId.set(task.id, task);
-  for (const task of await loadDynamicTasks()) byId.set(task.id, task);
+  for (const task of await loadDynamicTasks()) {
+    if (byId.has(task.id)) {
+      await schedulerLog(`[${task.id}] dynamic task ignored: id is reserved by built-in/config scheduler state`);
+      continue;
+    }
+    byId.set(task.id, task);
+  }
   return [...byId.values()];
 }
 
@@ -495,6 +435,10 @@ function stopTask(id: string): void {
 }
 
 async function registerRecurringTask(task: RecurringTask): Promise<void> {
+  if (task.status === "cancelled") {
+    stopTask(task.id);
+    return;
+  }
   if (!cron.validate(task.schedule)) {
     await schedulerLog(`[${task.id}] invalid cron expression: ${task.schedule}`);
     return;
@@ -507,7 +451,7 @@ async function registerRecurringTask(task: RecurringTask): Promise<void> {
   stopTask(task.id);
 
   const cronJob = cron.schedule(task.schedule, () => runTask(task), {
-    timezone: config.scheduler.timezone,
+    timezone: task.timezone ?? config.scheduler.timezone,
     name: task.id,
     noOverlap: true,
   });
@@ -518,7 +462,7 @@ async function registerRecurringTask(task: RecurringTask): Promise<void> {
 async function registerOneTimeTask(task: OneTimeTask): Promise<void> {
   await ensureTaskNote(task);
   const status = oneTimeTaskStatus(task);
-  if (status === "completed" || status === "failed" || status === "running") {
+  if (status === "completed" || status === "failed" || status === "running" || status === "cancelled") {
     stopTask(task.id);
     return;
   }
@@ -592,6 +536,7 @@ export async function startScheduler(): Promise<() => void> {
   }
 
   stopping = false;
+  setSchedulerReconciler(reloadTasks);
   await mkdir(paths.scheduledJobSessions, { recursive: true });
   await mkdir(paths.scheduledJobNotes, { recursive: true });
   await ensureTasksFile();
@@ -611,6 +556,7 @@ export async function startScheduler(): Promise<() => void> {
 
   return () => {
     stopping = true;
+    setSchedulerReconciler(undefined);
     clearInterval(reloadTimer);
     for (const id of [...activeJobs.keys()]) stopTask(id);
   };

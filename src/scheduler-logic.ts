@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
 import type { Config } from "./config-schema.js";
 
-export type RecurringTask = Config["scheduler"]["tasks"][number];
+export type RecurringTask = Config["scheduler"]["tasks"][number] & {
+  timezone?: string;
+  status?: "active" | "cancelled";
+  revision?: number;
+  idempotency_key?: string;
+  request_fingerprint?: string;
+  last_mutation_key?: string;
+};
 export type OneTimeTask = {
   id: string;
   name: string;
@@ -10,8 +17,13 @@ export type OneTimeTask = {
   notify: "always" | "on_issue" | "never";
   provider?: "codex" | "anthropic" | "openrouter";
   model?: string;
+  timezone?: string;
+  revision?: number;
+  idempotency_key?: string;
+  request_fingerprint?: string;
+  last_mutation_key?: string;
   /** Durable execution state. Missing means pending for backwards compatibility. */
-  status?: "pending" | "running" | "retry_wait" | "completed" | "failed";
+  status?: "pending" | "running" | "retry_wait" | "completed" | "failed" | "cancelled";
   attempts?: number;
   max_attempts?: number;
   execution_id?: string;
@@ -25,6 +37,7 @@ export type OneTimeTask = {
   notification_enqueued_at?: string;
 };
 export type SchedulerJob = RecurringTask | OneTimeTask;
+export type DynamicTask = RecurringTask | OneTimeTask;
 
 export function isOneTimeTask(task: SchedulerJob): task is OneTimeTask {
   return "run_at" in task;
@@ -40,6 +53,7 @@ export function taskSignature(task: SchedulerJob): string {
           notify: task.notify,
           provider: task.provider,
           model: task.model,
+          timezone: task.timezone,
           status: task.status ?? "pending",
           attempts: task.attempts ?? 0,
           next_attempt_at: task.next_attempt_at,
@@ -51,6 +65,8 @@ export function taskSignature(task: SchedulerJob): string {
           notify: task.notify,
           provider: task.provider,
           model: task.model,
+          timezone: task.timezone,
+          status: task.status ?? "active",
         },
   );
 }

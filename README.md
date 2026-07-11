@@ -94,7 +94,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, and read-only browser workbench.
 - Telegram image input and optional local whisper.cpp voice/audio transcription.
 - Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
-- Cron-style recurring scheduled jobs plus one-time reminders.
+- Conversational reminders and recurring automations with strict timezone-aware parsing, durable cancellation/history, and cron support through a validated scheduler control tool.
 - Detached background workers using isolated git worktrees and role pipelines.
 - Guarded self-deploy that verifies, pushes, caches, and atomically activates the exact reviewed local `main` commit.
 - Safe remote-update helper that builds before restart and preserves host-local data.

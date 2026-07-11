@@ -22,7 +22,7 @@ Dynamic tasks created from chat live in:
 
 The scheduler hot-reloads dynamic tasks roughly every 30 seconds.
 
-Built-in recurring tasks may also be registered by source code. Config and dynamic tasks with the same `id` override built-ins. Current built-in: `nightly-memory-review` at `30 2 * * *`, using `notify: on_issue`.
+Built-in recurring tasks may also be registered by source code. Built-in/config IDs are reserved: dynamic tasks cannot silently override them. Current built-in: `nightly-memory-review` at `30 2 * * *`, using `notify: on_issue`.
 
 ## Dynamic task format
 
@@ -49,17 +49,19 @@ Built-in recurring tasks may also be registered by source code. Config and dynam
 }
 ```
 
-Recurring tasks use `schedule` with a cron expression. One-time tasks use `run_at` with an absolute timestamp including timezone/offset. After a one-time task runs, the scheduler removes it.
+Recurring tasks use `schedule` with a cron expression. One-time tasks use `run_at` with an absolute timestamp including timezone/offset. Completed, failed, and cancelled one-time tasks are retained as durable history. Dynamic records include an IANA `timezone`, monotonic `revision`, and optional idempotency metadata.
 
 `provider` + `model` are optional per-task model overrides; omit them to use the current global agent model. Use both fields together.
 
 `notify` may be `always`, `on_issue`, or `never`.
 
-## Creating tasks from chat
+## Managing tasks conversationally
 
-- For recurring tasks, edit `~/.jarvis/data/jobs/tasks.json` directly with a valid cron expression.
-- For one-time reminders, add a task with `run_at` instead of `schedule`.
-- Use absolute timestamps with timezone/offset, e.g. `2026-05-11T14:30:00-04:00`.
+Use the `scheduler_control` tool for normal owner requests; do not edit `tasks.json` directly. It creates, lists, updates, snoozes, and cancels dynamic tasks with file locking and immediate in-process reconciliation. Use a stable `idempotency_key` when retrying and pass the listed `revision` as `expected_revision` when changing a task.
+
+Accepted one-time grammar is deliberately bounded: strict ISO with `Z`/offset, `in N minutes|hours|days`, `tomorrow at HH[:MM]`, or `[next] weekday at HH[:MM]`. Accepted recurrence grammar is validated five-field cron, `daily at`, `every weekday at`, `every <weekday> at`, `hourly`, or bounded `every N minutes|hours`. Times use the task's IANA timezone (default: scheduler timezone). Ask for clarification rather than guessing rejected or daylight-saving-ambiguous times.
+
+Examples: “remind me tomorrow at 09:00 to call Sam”, “check backups every weekday at 08:30 and only notify on issues”, “snooze the Sam reminder for two hours”, and “cancel the backup check”.
 
 ## Per-task state
 
