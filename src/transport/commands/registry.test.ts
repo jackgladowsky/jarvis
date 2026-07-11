@@ -7,6 +7,7 @@ test("registry is non-empty after handlers/index loads", () => {
   const names = getRegistry().map((def) => def.name);
   assert.ok(names.length > 0, "registry should have entries");
   assert.ok(names.includes("version"), "version should be registered");
+  assert.ok(names.includes("status"), "status should be registered");
   assert.ok(names.includes("usage"), "usage should be registered");
   assert.ok(names.includes("model"), "model should be registered");
   assert.ok(names.includes("help"), "help should be registered");

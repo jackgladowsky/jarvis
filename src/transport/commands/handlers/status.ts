@@ -11,6 +11,7 @@ import { log } from "../../../lib/logger.js";
 import { collectVersionInfo, renderVersionBlock } from "../../../lib/version.js";
 import { parseReasoningLevel, switchReasoningLevel, getReasoningLevel } from "../../../agent/reasoning.js";
 import { renderUsageReport } from "../../../agent/usage.js";
+import { renderCodexSubscriptionStatus } from "../../../agent/codex-usage.js";
 import { parseModeCommand } from "../../commands.js";
 import type { StatusMode } from "../../../agent/runtime.js";
 import { getStatusMode, setStatusMode } from "./state.js";
@@ -28,6 +29,10 @@ export async function handleUsage(ctx: Context): Promise<void> {
 
 export async function handleVersion(ctx: Context): Promise<void> {
   await ctx.reply(renderVersionBlock(collectVersionInfo()));
+}
+
+export async function handleStatus(ctx: Context): Promise<void> {
+  await ctx.reply(await renderCodexSubscriptionStatus());
 }
 
 function modeLabel(mode: StatusMode): string {
@@ -84,6 +89,12 @@ export async function handleThinkingOrVerbose(ctx: Context, parsed: ParsedComman
 }
 
 export const statusCommands: CommandDef[] = [
+  {
+    name: "status",
+    description: "Show Codex subscription usage and reset times",
+    category: "Status",
+    handler: (ctx) => handleStatus(ctx),
+  },
   {
     name: "usage",
     description: "Show token/cost usage for the active session",

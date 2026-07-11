@@ -71,15 +71,16 @@ async function persistCreds(creds: OAuthCredentials): Promise<void> {
 }
 
 let refreshInFlight: Promise<OAuthCredentials> | undefined;
+let forcedRefreshInFlight: Promise<OAuthCredentials> | undefined;
 
-async function refreshCredsIfNeeded(): Promise<OAuthCredentials> {
+async function refreshCreds(force: boolean): Promise<OAuthCredentials> {
   const path = credsPath();
   return withFileLock(path, async () => {
     // Another JARVIS process may have refreshed while this process waited.
     // Re-reading under the cross-process lock avoids reusing a rotated refresh
     // token or overwriting the newer credential set.
     const current = await loadCreds();
-    if (current.expires >= Date.now() + REFRESH_BUFFER_MS) return current;
+    if (!force && current.expires >= Date.now() + REFRESH_BUFFER_MS) return current;
 
     log.info("refreshing codex oauth token");
     const refreshed = await openaiCodexOAuthProvider.refreshToken(current);
@@ -88,19 +89,46 @@ async function refreshCredsIfNeeded(): Promise<OAuthCredentials> {
   });
 }
 
-// Returns a usable access token, refreshing if we're inside the buffer window.
-// Safe to call on every request — refresh only fires when actually needed.
-export async function getCodexAccessToken(): Promise<string> {
+async function currentCodexCredentials(forceRefresh = false): Promise<OAuthCredentials> {
   if (!cached) cached = await loadCreds();
 
-  if (cached.expires < Date.now() + REFRESH_BUFFER_MS) {
-    refreshInFlight ??= refreshCredsIfNeeded().finally(() => {
+  if (forceRefresh) {
+    forcedRefreshInFlight ??= refreshCreds(true).finally(() => {
+      forcedRefreshInFlight = undefined;
+    });
+    cached = await forcedRefreshInFlight;
+  } else if (cached.expires < Date.now() + REFRESH_BUFFER_MS) {
+    refreshInFlight ??= refreshCreds(false).finally(() => {
       refreshInFlight = undefined;
     });
     cached = await refreshInFlight;
   }
 
-  return openaiCodexOAuthProvider.getApiKey(cached);
+  return cached;
+}
+
+export interface CodexUsageAuth {
+  accessToken: string;
+  accountId?: string;
+}
+
+/**
+ * Credentials for the read-only Codex subscription endpoint. A caller that
+ * receives a 401 may request one forced refresh before retrying its request.
+ */
+export async function getCodexUsageAuth(forceRefresh = false): Promise<CodexUsageAuth> {
+  const credentials = await currentCodexCredentials(forceRefresh);
+  const accountId = credentials.accountId;
+  return {
+    accessToken: openaiCodexOAuthProvider.getApiKey(credentials),
+    ...(typeof accountId === "string" && accountId ? { accountId } : {}),
+  };
+}
+
+// Returns a usable access token, refreshing if we're inside the buffer window.
+// Safe to call on every request — refresh only fires when actually needed.
+export async function getCodexAccessToken(): Promise<string> {
+  return (await getCodexUsageAuth()).accessToken;
 }
 
 // Called by the Agent before each LLM request. The provider name comes from

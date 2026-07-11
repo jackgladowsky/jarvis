@@ -78,6 +78,13 @@ test("concurrent OAuth callers share one refresh and persist credentials atomica
     assert.equal(refreshCalls, 1);
     assert.equal(JSON.parse(await readFile(creds, "utf-8")).refresh, "new-refresh");
     assert.equal((await stat(creds)).mode & 0o777, 0o600);
+
+    // A WHAM 401 triggers a forced refresh even when the cached token has not
+    // expired. Concurrent status requests must still rotate it only once.
+    const { getCodexUsageAuth } = await import("./auth.js");
+    const refreshed = await Promise.all(Array.from({ length: 12 }, () => getCodexUsageAuth(true)));
+    assert.deepEqual(new Set(refreshed.map((auth) => auth.accessToken)), new Set(["new-access"]));
+    assert.equal(refreshCalls, 2);
   } finally {
     openaiCodexOAuthProvider.refreshToken = originalRefresh;
     await rm(dataDir, { recursive: true, force: true });
