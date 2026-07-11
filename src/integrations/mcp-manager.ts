@@ -87,7 +87,7 @@ const managerServerSchema = z
       })
       .optional(),
     timeout_ms: z.number().int().min(1_000).max(120_000).default(15_000),
-    read_only: z.boolean().default(true),
+    read_only: z.boolean().optional(),
   })
   .strict()
   .superRefine((server, context) => {
@@ -118,7 +118,7 @@ export interface McpManagerResult {
   servers?: Array<{
     name: string;
     transport: "stdio" | "http";
-    readOnly: boolean;
+    readOnly: boolean | null;
     timeoutMs: number;
     environmentKeys: string[];
     headerKeys: string[];
@@ -147,7 +147,7 @@ function publicServer(name: string, server: McpServerConfig) {
   return {
     name,
     transport: (server.url ? "http" : "stdio") as "http" | "stdio",
-    readOnly: server.read_only ?? true,
+    readOnly: server.read_only ?? null,
     timeoutMs: server.timeout_ms ?? 15_000,
     environmentKeys: Object.keys(server.env ?? {}).sort(),
     headerKeys: Object.keys(server.headers ?? {}).sort(),
@@ -219,7 +219,7 @@ export async function manageMcp(
     return {
       ok: true,
       action: request.action,
-      message: `Added ${name} as a ${server.url ? "HTTP" : "stdio"} MCP server (${server.read_only ? "read-only declared" : "write-capable declared"}).`,
+      message: `Added ${name} as a ${server.url ? "HTTP" : "stdio"} MCP server (${server.read_only === true ? "read-only declared" : server.read_only === false ? "write-capable declared" : "automation authority unspecified"}).`,
     };
   }
 

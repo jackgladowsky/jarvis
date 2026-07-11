@@ -2,7 +2,7 @@
 
 JARVIS exposes a `diagnostics` agent tool for natural-language health checks such as “check that everything is healthy” or “why is transcription broken?”. It is not slash-command-first.
 
-The diagnostic pass is read-only and reports structured findings with stable IDs, severity, an actionable flag, and a proposed action. Checks cover configuration, selected-provider credential presence, optional Telegram `getMe`, MCP servers, scheduler state, local speech-to-text dependencies, Playwright Chromium, disk capacity and data permissions, backup freshness, background workers, notifications, and deployment/restart markers. Each check has a bounded timeout. Credential values and Telegram tokens are never returned.
+The diagnostic pass is read-only and reports structured findings with stable IDs, severity, an actionable flag, and a proposed action. Checks cover configuration, selected-provider credential presence, optional Telegram `getMe`, scheduler state, local speech-to-text dependencies, Playwright Chromium, disk capacity and data permissions, backup freshness, background workers, notifications, and deployment/restart markers. MCP process/network probes are reported as skipped: testing or discovering a specific MCP server requires a separate exact, authenticated owner approval. Each executed check has a bounded timeout. Credential values and Telegram tokens are never returned.
 
 Safe repairs require an exact finding ID from a diagnosis and are limited to:
 

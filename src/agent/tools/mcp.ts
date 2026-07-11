@@ -2,8 +2,8 @@
 // servers. Each invocation gets a fresh client so cancellation can close the
 // underlying HTTP connection or stdio child without affecting another call.
 
-import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, isAbsolute, join } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -58,18 +58,60 @@ export const MCP_CALL_TIMEOUT_MS = 60_000;
 export const MCP_OUTPUT_MAX_CHARS = 32_000;
 
 const STDIO_LAUNCHERS = new Set(["node", "npx", "pnpm", "bun", "deno", "python", "python3", "uv", "uvx"]);
-const FORBIDDEN_EXEC_ARGS = new Set(["-c", "--eval", "-e", "--print", "-p"]);
+const TRUSTED_EXECUTABLE_ROOTS = ["/usr/bin/", "/usr/local/", "/opt/homebrew/"];
+const PACKAGE_SPEC = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+(?:@[a-zA-Z0-9_.~^*+-]+)?$/;
+const CODE_EXEC_ARG = /^(?:-[^-]*[epc][^-]*|--(?:eval|print|require|import|loader|experimental-loader)(?:=|$))/i;
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const ENV_REFERENCE = /^\$[A-Z_][A-Z0-9_]*$/;
 const SECRETISH =
   /(?:sk-|ghp_|github_pat_|bearer\s+(?!\$)[A-Za-z0-9._-]{8,}|eyJ[A-Za-z0-9_-]+\.|(?:token|secret|password|api[_-]?key)[=:][^$\s]{4,})/i;
 
+function trustedExecutable(command: string): string {
+  const launcher = basename(command);
+  if (!STDIO_LAUNCHERS.has(launcher)) throw new Error(`MCP stdio command ${launcher} is not an approved launcher`);
+  const candidates = isAbsolute(command)
+    ? [command]
+    : launcher === "node"
+      ? [process.execPath]
+      : TRUSTED_EXECUTABLE_ROOTS.map((root) => join(root, launcher));
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    const absoluteCandidate = isAbsolute(candidate) ? candidate : realpathSync(candidate);
+    const resolved = realpathSync(candidate);
+    const candidateTrusted =
+      absoluteCandidate === process.execPath ||
+      TRUSTED_EXECUTABLE_ROOTS.some((root) => absoluteCandidate.startsWith(root));
+    const targetTrusted =
+      resolved === realpathSync(process.execPath) || TRUSTED_EXECUTABLE_ROOTS.some((root) => resolved.startsWith(root));
+    if (candidateTrusted && targetTrusted && basename(absoluteCandidate) === launcher) return absoluteCandidate;
+  }
+  throw new Error(`MCP stdio command ${launcher} does not resolve to a trusted system executable`);
+}
+
+function validateLauncherArgs(launcher: string, args: string[]): void {
+  if (args.some((arg) => CODE_EXEC_ARG.test(arg) || arg === "-"))
+    throw new Error("MCP stdio eval/preload/shell-style arguments are forbidden");
+  if (["node", "python", "python3", "bun"].includes(launcher) && (!args[0] || args[0].startsWith("-")))
+    throw new Error(`${launcher} MCP launch must begin with a script path`);
+  if (["npx", "uvx"].includes(launcher) && (!args[0] || !PACKAGE_SPEC.test(args[0])))
+    throw new Error(`${launcher} MCP launch must begin with a package specifier`);
+  if (launcher === "pnpm" && (args[0] !== "dlx" || !args[1] || !PACKAGE_SPEC.test(args[1])))
+    throw new Error("pnpm MCP launch must use: pnpm dlx <package>");
+  if (launcher === "uv" && (args[0] !== "run" || !args[1] || args[1].startsWith("-")))
+    throw new Error("uv MCP launch must use: uv run <command-or-script>");
+  if (launcher === "deno" && args[0] !== "run") throw new Error("deno MCP launch must use the run subcommand");
+}
+
+export function resolveTrustedStdioCommand(server: McpServerConfig): string | undefined {
+  if (!server.command) return;
+  const command = trustedExecutable(server.command);
+  validateLauncherArgs(basename(command), server.args ?? []);
+  return command;
+}
+
 export function validateStdioDefinition(server: McpServerConfig): void {
   if (server.command) {
-    const launcher = basename(server.command);
-    if (!STDIO_LAUNCHERS.has(launcher)) throw new Error(`MCP stdio command ${launcher} is not an approved launcher`);
-    if ((server.args ?? []).some((arg) => FORBIDDEN_EXEC_ARGS.has(arg)))
-      throw new Error("MCP stdio eval/shell-style arguments are forbidden");
+    resolveTrustedStdioCommand(server);
     if ((server.args ?? []).some((arg) => SECRETISH.test(arg)))
       throw new Error("MCP stdio arguments must not contain inline credentials");
     for (const [key, value] of Object.entries(server.env ?? {})) {
@@ -176,12 +218,7 @@ export function loadMcpServers(configPath = MCP_CONFIG_PATH): McpServersConfig {
   }
   for (const server of Object.values(result.data.servers)) validateStdioDefinition(server);
   return {
-    servers: Object.fromEntries(
-      Object.entries(result.data.servers).map(([name, server]) => [
-        name,
-        { read_only: server.read_only ?? true, ...server },
-      ]),
-    ),
+    servers: Object.fromEntries(Object.entries(result.data.servers).map(([name, server]) => [name, { ...server }])),
   };
 }
 
@@ -369,7 +406,7 @@ function createMcpConnection(serverConfig: McpServerConfig): { client: Client; t
         fetch: (input, init) => networkPolicy.pinnedFetch(String(input), init),
       })
     : new StdioClientTransport({
-        command: serverConfig.command!,
+        command: resolveTrustedStdioCommand(serverConfig)!,
         args: serverConfig.args,
         env: serverConfig.env ? resolveReferences(serverConfig.env, "environment") : undefined,
       });

@@ -238,7 +238,20 @@ async function checkTelegram(
 }
 
 async function checkMcp(deps: DiagnosticsDependencies, signal: AbortSignal): Promise<CheckResult> {
-  if (!deps.mcpHealth) return { name: "mcp", findings: [] };
+  if (!deps.mcpHealth) {
+    return {
+      name: "mcp",
+      findings: [
+        finding(
+          "mcp-execution-skipped",
+          "mcp",
+          "info",
+          "MCP process/network health checks were skipped because they require exact authenticated owner approval.",
+          "Ask JARVIS to test a specific MCP integration and approve the exact execution plan.",
+        ),
+      ],
+    };
+  }
   const results = await deps.mcpHealth(signal);
   return {
     name: "mcp",

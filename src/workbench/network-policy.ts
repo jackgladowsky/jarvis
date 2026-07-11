@@ -18,6 +18,31 @@ interface CacheEntry {
 
 const DEFAULT_DNS_TTL_MS = 15_000;
 const MAX_CACHE_ENTRIES = 256;
+export const MAX_PINNED_RESPONSE_BYTES = 8 * 1024 * 1024;
+const CROSS_ORIGIN_HEADERS = ["authorization", "cookie", "proxy-authorization", "origin", "referer"];
+const ENTITY_HEADERS = ["content-length", "content-type", "content-encoding", "transfer-encoding"];
+
+function redirectedRequestInit(init: RequestInit, status: number, from: URL, to: URL): RequestInit {
+  const headers = new Headers(init.headers);
+  if (from.origin !== to.origin) for (const name of CROSS_ORIGIN_HEADERS) headers.delete(name);
+  const method = (init.method ?? "GET").toUpperCase();
+  const rewrite = status === 303 ? method !== "HEAD" : (status === 301 || status === 302) && method === "POST";
+  if (rewrite) {
+    for (const name of ENTITY_HEADERS) headers.delete(name);
+    return { ...init, method: "GET", body: undefined, headers };
+  }
+  return { ...init, headers };
+}
+
+function responseHeaders(headers: Headers): Headers {
+  const safe = new Headers(headers);
+  // Node fetch transparently decodes transfer/content encodings. Forwarding the
+  // original encoding or compressed length would make the fulfilled response malformed.
+  safe.delete("content-encoding");
+  safe.delete("content-length");
+  safe.delete("transfer-encoding");
+  return safe;
+}
 
 function ipv4Number(value: string): number | undefined {
   if (isIP(value) !== 4) return;
@@ -95,6 +120,7 @@ export class WorkbenchNetworkPolicy {
     private readonly resolver: WorkbenchResolver = async (hostname) => lookup(hostname, { all: true, verbatim: true }),
     private readonly ttlMs = DEFAULT_DNS_TTL_MS,
     private readonly now: () => number = Date.now,
+    private readonly fetcher: typeof fetch = fetch,
   ) {}
 
   async resolveUrl(input: string, forceRevalidate = false): Promise<ResolvedAddress[]> {
@@ -134,11 +160,17 @@ export class WorkbenchNetworkPolicy {
   }
 
   /** Fetch through an address pinned to the validated DNS result while retaining the URL hostname for TLS SNI. */
-  async pinnedFetch(input: string, init: RequestInit = {}, redirects = 5): Promise<Response> {
+  async pinnedFetch(
+    input: string,
+    init: RequestInit = {},
+    redirects = 5,
+    maxBytes = MAX_PINNED_RESPONSE_BYTES,
+  ): Promise<Response> {
     let url = new URL(input);
+    let requestInit = { ...init };
     for (let hop = 0; hop <= redirects; hop += 1) {
       const addresses = await this.resolveUrl(url.toString(), true);
-      if (addresses.length === 0) return fetch(url, init);
+      if (addresses.length === 0) return this.fetcher(url, requestInit);
       const allowed = new Set(addresses.map(({ address }) => address));
       const dispatcher = new Agent({
         connect: {
@@ -151,10 +183,9 @@ export class WorkbenchNetworkPolicy {
         },
       });
       try {
-        const response = await fetch(url, {
-          ...init,
+        const response = await this.fetcher(url, {
+          ...requestInit,
           redirect: "manual",
-          // Node's fetch accepts undici's dispatcher although it is not in the DOM RequestInit type.
           dispatcher,
         } as unknown as RequestInit);
         const redirect = [301, 302, 303, 307, 308].includes(response.status);
@@ -162,22 +193,28 @@ export class WorkbenchNetworkPolicy {
         if (redirect && location) {
           await response.body?.cancel();
           await dispatcher.close();
-          if (hop === redirects) throw new Error("Network blocked: too many redirects.");
-          url = new URL(location, url);
-          if (
-            response.status === 303 ||
-            ((response.status === 301 || response.status === 302) && init.method === "POST")
-          ) {
-            init = { ...init, method: "GET", body: undefined };
-          }
+          if (hop === redirects) throw new Error("Network blocked: redirects are not allowed for this request.");
+          const nextUrl = new URL(location, url);
+          requestInit = redirectedRequestInit(requestInit, response.status, url, nextUrl);
+          url = nextUrl;
           continue;
+        }
+        const declared = Number(response.headers.get("content-length"));
+        if (Number.isFinite(declared) && declared > maxBytes) {
+          await response.body?.cancel();
+          throw new Error(`Network blocked: response exceeds ${maxBytes} bytes.`);
         }
         if (!response.body) {
           await dispatcher.close();
-          return response;
+          return new Response(null, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: responseHeaders(response.headers),
+          });
         }
         const reader = response.body.getReader();
         let closed = false;
+        let received = 0;
         const close = async () => {
           if (closed) return;
           closed = true;
@@ -190,7 +227,14 @@ export class WorkbenchNetworkPolicy {
               if (chunk.done) {
                 controller.close();
                 await close();
-              } else controller.enqueue(chunk.value);
+              } else {
+                received += chunk.value.byteLength;
+                if (received > maxBytes) {
+                  await reader.cancel("response limit exceeded");
+                  controller.error(new Error(`Network blocked: response exceeds ${maxBytes} bytes.`));
+                  await close();
+                } else controller.enqueue(chunk.value);
+              }
             } catch (error) {
               controller.error(error);
               await close();
@@ -204,7 +248,7 @@ export class WorkbenchNetworkPolicy {
         return new Response(body, {
           status: response.status,
           statusText: response.statusText,
-          headers: response.headers,
+          headers: responseHeaders(response.headers),
         });
       } catch (error) {
         await dispatcher.close().catch(() => undefined);
@@ -220,13 +264,24 @@ export class WorkbenchNetworkPolicy {
     await context.route("**/*", async (route: Route) => {
       const request = route.request();
       try {
-        const response = await this.pinnedFetch(request.url(), {
-          method: request.method(),
-          headers: request.headers(),
-          body: request.method() === "GET" || request.method() === "HEAD" ? undefined : request.postDataBuffer(),
-        });
+        const response = await this.pinnedFetch(
+          request.url(),
+          {
+            method: request.method(),
+            headers: request.headers(),
+            body: request.method() === "GET" || request.method() === "HEAD" ? undefined : request.postDataBuffer(),
+          },
+          0,
+          MAX_PINNED_RESPONSE_BYTES,
+        );
         const body = Buffer.from(await response.arrayBuffer());
-        await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body });
+        const headers = new Headers(response.headers);
+        // The proxy is deliberately stateless: browser redirects and server-set
+        // cookies are blocked rather than pretending Playwright's fulfill path
+        // has transparent network-stack semantics.
+        headers.delete("set-cookie");
+        headers.delete("set-cookie2");
+        await route.fulfill({ status: response.status, headers: Object.fromEntries(headers), body });
       } catch {
         await route.abort("blockedbyclient");
       }

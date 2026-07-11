@@ -28,6 +28,6 @@ A server defines exactly one transport:
 - An approved MCP launcher (`node`, `npx`, `pnpm`, `bun`, `deno`, `python`, `uv`, or `uvx`) plus bounded non-eval `args` and referenced `env` for stdio. Shell/eval flags and raw credentials are rejected.
 - Public `http`/`https` `url` plus referenced `headers` for HTTP. Every request and redirect is sent through DNS-pinned transport that rejects private, loopback, link-local, metadata, reserved, and rebound addresses.
 
-Manager-created definitions also specify a bounded `timeout_ms` (1–120 seconds) and default to `read_only: true`. `read_only` is an authority declaration and prompt guard, not a protocol-level sandbox; only connect write-capable servers after explicitly deciding to grant that authority.
+Manager-created definitions also specify a bounded `timeout_ms` (1–120 seconds). Set `read_only: true` explicitly to permit scheduled/background use; an omitted legacy value remains unknown and receives no automation authority. `read_only` is an authority declaration and prompt guard, not a protocol-level sandbox; only connect write-capable servers after explicitly deciding to grant that authority.
 
 See [`mcp-servers.example.json`](../mcp-servers.example.json) for transport examples. Server packages and URLs are intentionally placeholders: review a provider's official installation instructions before connecting it.

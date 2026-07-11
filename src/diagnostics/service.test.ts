@@ -135,7 +135,8 @@ test("diagnostics identify and repair only allowlisted permissions, stale cache,
   const oldLockDate = new Date((context.now ?? Date.now()) - 11 * 60_000);
   await utimes(lock, oldLockDate, oldLockDate);
 
-  const report = await runDiagnostics(context, {}, { chromiumPath: () => process.execPath, mcpHealth: async () => [] });
+  const report = await runDiagnostics(context, {}, { chromiumPath: () => process.execPath });
+  assert.ok(ids(report).includes("mcp-execution-skipped"));
   assert.ok(ids(report).includes("permissions-insecure"));
   assert.ok(ids(report).includes("cache-stale"));
   assert.ok(ids(report).includes("locks-stale"));

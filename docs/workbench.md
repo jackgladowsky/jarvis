@@ -15,7 +15,7 @@ The model cannot mint or self-assert approval. Changed URLs, selectors, text, va
 
 ## Network isolation
 
-Every navigation, redirect, and subresource is intercepted. Hostnames are resolved before access, DNS answers are cached briefly and revalidated, and changed answers are treated as rebinding. Loopback, private, carrier-grade NAT, link-local, metadata, documentation, benchmark, multicast, reserved, IPv4-mapped IPv6, and non-global IPv6 ranges are blocked. `about:blank`, page-local `data:` and `blob:` browser internals are allowed.
+Every navigation and subresource is intercepted. Hostnames are resolved before access, DNS answers are cached briefly and revalidated, and changed answers are treated as rebinding. Loopback, private, carrier-grade NAT, link-local, metadata, documentation, benchmark, multicast, reserved, IPv4-mapped IPv6, and non-global IPv6 ranges are blocked. Browser redirects are deliberately blocked; JARVIS must validate and open the destination as a new navigation. Intercepted responses are byte-bounded, decoded encoding headers are normalized, and `Set-Cookie` is discarded because the fulfill proxy does not claim transparent browser cookie semantics. `about:blank`, page-local `data:` and `blob:` browser internals are allowed.
 
 ## Runtime data
 

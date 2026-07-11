@@ -32,11 +32,25 @@ test("MCP config follows JARVIS_DATA_DIR and reports actionable JSON/shape error
   assert.equal(mcp.MCP_CONFIG_PATH, join(dataDir, "mcp-servers.json"));
 
   const validPath = join(dataDir, "valid.json");
-  await writeFile(
-    validPath,
-    JSON.stringify({ servers: { local: { command: process.execPath, args: ["--version"] } } }),
+  const scriptPath = join(dataDir, "fixture-server.mjs");
+  await writeFile(scriptPath, "// fixture");
+  await writeFile(validPath, JSON.stringify({ servers: { local: { command: process.execPath, args: [scriptPath] } } }));
+  const loaded = mcp.loadMcpServers(validPath).servers.local;
+  assert.equal(loaded.command, process.execPath);
+  assert.equal(loaded.read_only, undefined, "omitted legacy authority must stay unknown");
+
+  for (const args of [
+    ["--eval=process.exit()"],
+    ["-eprocess.exit()"],
+    ["-peval('x')"],
+    ["--require=./evil.cjs", scriptPath],
+  ]) {
+    assert.throws(() => mcp.validateStdioDefinition({ command: process.execPath, args }), /forbidden|script path/);
+  }
+  assert.throws(
+    () => mcp.validateStdioDefinition({ command: "/tmp/node", args: [scriptPath] }),
+    /trusted system executable/,
   );
-  assert.equal(mcp.loadMcpServers(validPath).servers.local.command, process.execPath);
 
   const invalidJsonPath = join(dataDir, "invalid-json.json");
   await writeFile(invalidJsonPath, "{ definitely not JSON", "utf-8");
@@ -55,6 +69,17 @@ test("MCP config follows JARVIS_DATA_DIR and reports actionable JSON/shape error
       return true;
     },
   );
+});
+
+test("legacy MCP definitions without explicit read_only cannot receive automation authority", async () => {
+  const { mcp } = await fixture;
+  await writeFile(
+    mcp.MCP_CONFIG_PATH,
+    JSON.stringify({ servers: { legacy: { url: "https://mcp.example.test/api" } } }),
+  );
+  const result = await mcp.executeMcpCall({ server: "legacy", tool: "read" }, undefined, "automation");
+  assert.equal(result.isError, true);
+  assert.match(result.content, /explicitly read-only/);
 });
 
 test("MCP HTTP transport rejects private and metadata endpoints before connecting", async () => {

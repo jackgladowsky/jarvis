@@ -38,7 +38,10 @@ test("manager atomically adds, lists, updates, reloads, and removes definitions"
         {
           action: "add",
           server: "home_assistant",
-          config: { url: "https://mcp.example.test/api", headers: { Authorization: "Bearer $HA_TOKEN" } },
+          config: {
+            url: "https://mcp.example.test/api",
+            headers: { Authorization: "Bearer $HA_TOKEN" },
+          },
         },
         undefined,
         path,
@@ -52,7 +55,11 @@ test("manager atomically adds, lists, updates, reloads, and removes definitions"
     );
     assert.deepEqual(listed.servers?.[0]?.environmentKeys, ["TEST_MCP_TOKEN"]);
     assert.deepEqual(listed.servers?.[1]?.headerKeys, ["Authorization"]);
-    assert.equal(listed.servers?.[1]?.readOnly, true, "legacy omitted read_only defaults safely to true");
+    assert.equal(
+      listed.servers?.[1]?.readOnly,
+      null,
+      "legacy omitted read_only remains unknown and cannot authorize automation",
+    );
     assert.doesNotMatch(JSON.stringify(listed), /Bearer|\$HA_TOKEN|\$TEST_MCP_TOKEN/);
 
     await manageMcp(

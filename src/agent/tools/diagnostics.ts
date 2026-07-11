@@ -3,9 +3,7 @@ import { Type, type Static } from "typebox";
 import { chromium } from "playwright";
 import { config, env } from "../../config.js";
 import { repairDiagnosticFinding, runDiagnostics, type DiagnosticsContext } from "../../diagnostics/service.js";
-import { manageMcp } from "../../integrations/mcp-manager.js";
 import { paths } from "../../paths.js";
-import { loadMcpServers, MCP_CONFIG_PATH } from "./mcp.js";
 import { withToolAudit } from "./audited.js";
 
 const schema = Type.Object(
@@ -54,22 +52,7 @@ const rawDiagnosticsTool: AgentTool<typeof schema> = {
     const result = await runDiagnostics(
       context(),
       { probeTelegram: args.probe_telegram },
-      {
-        chromiumPath: () => chromium.executablePath(),
-        mcpHealth: async (signal) => {
-          const mcp = await loadMcpServers(MCP_CONFIG_PATH);
-          return Promise.all(
-            Object.keys(mcp.servers).map(async (name) => {
-              try {
-                await manageMcp({ action: "test", server: name }, signal);
-                return { name, ok: true };
-              } catch {
-                return { name, ok: false };
-              }
-            }),
-          );
-        },
-      },
+      { chromiumPath: () => chromium.executablePath() },
     );
     return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], details: result };
   },
