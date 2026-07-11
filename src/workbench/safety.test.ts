@@ -60,28 +60,26 @@ test("workbench action allowlist admits basic click/type/submit but not download
   assert.equal(assertWorkbenchActionAllowed("download").allowed, false);
 });
 
-test("validateWorkbenchSteps allows benign open/click/type/submit plan", () => {
-  const result = validateWorkbenchSteps([
-    { action: "open_url", url: "https://example.com" },
-    { action: "click", text: "More information" },
-    { action: "type", selector: "input[name=q]", value: "non-secret smoke text" },
-    { action: "submit", text: "Search" },
-  ]);
-  assert.equal(result.allowed, true);
+test("validateWorkbenchSteps allows benign navigation/click/type but gates submit", () => {
+  const steps = [
+    { action: "open_url" as const, url: "https://example.com" },
+    { action: "click" as const, text: "More information" },
+    { action: "type" as const, selector: "input[name=q]", value: "non-secret smoke text" },
+    { action: "submit" as const, text: "Search" },
+  ];
+  assert.equal(validateWorkbenchSteps(steps).allowed, false);
+  assert.equal(validateWorkbenchSteps(steps, { hasCapability: true }).allowed, true);
 });
 
-test("validateWorkbenchSteps gates side-effect language without explicit approval", () => {
-  const blocked = validateWorkbenchSteps([{ action: "open_url", url: "https://example.com" }], {
-    request: "Click checkout and place the order",
-  });
-  assert.equal(blocked.allowed, false);
-  assert.match(blocked.reason ?? "", /Explicit approval object required|Ask Jack|approval/i);
-
-  const approved = validateWorkbenchSteps([{ action: "open_url", url: "https://example.com" }], {
-    request: "Click checkout and place the order",
-    approval: { approved: true, approvedBy: "Jack", reason: "Reviewer test only; no real purchase executed." },
-  });
-  assert.equal(approved.allowed, true);
+test("validateWorkbenchSteps permanently blocks unimplemented purchases", () => {
+  for (const hasCapability of [false, true]) {
+    const result = validateWorkbenchSteps([{ action: "open_url", url: "https://example.com" }], {
+      request: "Click checkout and place the order",
+      hasCapability,
+    });
+    assert.equal(result.allowed, false);
+    assert.match(result.reason ?? "", /not implemented/i);
+  }
 });
 
 test("validateWorkbenchSteps blocks sensitive fields regardless of approval", () => {
@@ -99,5 +97,5 @@ test("validateWorkbenchSteps blocks dangerous click labels unless approved", () 
     { action: "click", text: "Submit payment" },
   ]);
   assert.equal(blocked.allowed, false);
-  assert.match(blocked.reason ?? "", /approval/i);
+  assert.match(blocked.reason ?? "", /capability/i);
 });

@@ -101,6 +101,7 @@ export const paths = {
   workbenchDownloads: join(DATA_BASE, "data", "workbench", "downloads"),
   workbenchScreenshots: join(DATA_BASE, "data", "workbench", "screenshots"),
   workbenchArtifacts: join(DATA_BASE, "data", "workbench", "artifacts"),
+  workbenchApprovals: join(DATA_BASE, "data", "workbench", "approvals"),
 
   // Append-only audit log of every tool call. See DESIGN.md §13.
   audit: join(DATA_BASE, "data", "audit.log"),

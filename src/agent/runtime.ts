@@ -38,6 +38,7 @@ import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { getSystemPrompt } from "./system-prompt.js";
 import { makeAbortableTool } from "./tools/abortable.js";
+import { createBrowserWorkbenchTool, type BrowserWorkbenchAuthority } from "./tools/browser-workbench.js";
 import { allTools } from "./tools/index.js";
 import { createSendArtifactTool, type ArtifactSender } from "./tools/send-artifact.js";
 import {
@@ -62,6 +63,8 @@ export interface ModelOverride {
 export interface ChatRunCapabilities {
   /** Present only for a real inbound Telegram chat turn. */
   sendArtifact?: ArtifactSender;
+  /** Authenticated Telegram owner identity and approval prompt delivery. */
+  browserAuthority?: BrowserWorkbenchAuthority;
 }
 
 export interface StreamCallbacks {
@@ -628,9 +631,15 @@ export async function handleMessage(
       }
     }
 
+    const baseChatTools = capabilities.browserAuthority
+      ? [
+          ...cancellableTools.filter((tool) => tool.name !== "browser_workbench"),
+          makeAbortableTool(createBrowserWorkbenchTool(capabilities.browserAuthority)),
+        ]
+      : cancellableTools;
     const chatTools = capabilities.sendArtifact
       ? [
-          ...cancellableTools,
+          ...baseChatTools,
           makeAbortableTool(
             createSendArtifactTool({
               send: capabilities.sendArtifact,
@@ -638,7 +647,7 @@ export async function handleMessage(
             }),
           ),
         ]
-      : cancellableTools;
+      : baseChatTools;
 
     const attempts: Attempt[] = [primaryAttempts[0]];
     let completedMessages: AgentMessage[] | undefined;

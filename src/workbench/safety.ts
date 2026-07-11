@@ -13,12 +13,6 @@ export interface ApprovalDecision {
   reason?: string;
 }
 
-export interface WorkbenchApproval {
-  approved: boolean;
-  approvedBy: string;
-  reason: string;
-}
-
 export interface WorkbenchStep {
   action: "open_url" | "click" | "type" | "fill" | "submit";
   url?: string;
@@ -130,8 +124,17 @@ export function assessHumanHandoff(text: string): ApprovalDecision {
   };
 }
 
-export function approvalIsExplicit(approval: WorkbenchApproval | undefined): boolean {
-  return Boolean(approval?.approved && approval.approvedBy.trim() && approval.reason.trim());
+export function isUnimplementedPurchaseRequest(text: string): boolean {
+  return /\b(buy|purchase|checkout|place\s+(?:the\s+)?order|pay(?:ment)?|doordash|instacart|cart)\b/i.test(text);
+}
+
+export function workbenchPlanRequiresCapability(steps: WorkbenchStep[], request = ""): boolean {
+  if (assessWorkbenchRequest(request).approvalRequired) return true;
+  return steps.some(
+    (step) =>
+      step.action === "submit" ||
+      (step.action === "click" && DANGEROUS_CLICK_TEXT.test([step.selector, step.text].filter(Boolean).join(" "))),
+  );
 }
 
 export function assertWorkbenchActionAllowed(action: WorkbenchAction): SafetyDecision {
@@ -147,14 +150,17 @@ export function assertReadOnlyWorkbenchAction(action: WorkbenchAction): SafetyDe
 
 export function validateWorkbenchSteps(
   steps: WorkbenchStep[],
-  options: { request?: string; approval?: WorkbenchApproval; allowNoOpen?: boolean } = {},
+  options: { request?: string; hasCapability?: boolean; allowNoOpen?: boolean } = {},
 ): SafetyDecision {
   if (!steps.length) return { allowed: false, reason: "At least one workbench step is required." };
   if (steps.length > 20) return { allowed: false, reason: "Workbench run is limited to 20 steps." };
 
+  if (isUnimplementedPurchaseRequest(options.request ?? "")) {
+    return { allowed: false, reason: "Purchases, checkout, orders, and payments are not implemented." };
+  }
   const requestApproval = assessWorkbenchRequest(options.request ?? "");
-  if (requestApproval.approvalRequired && !approvalIsExplicit(options.approval)) {
-    return { allowed: false, reason: `${requestApproval.reason} Explicit approval object required.` };
+  if (requestApproval.approvalRequired && !options.hasCapability) {
+    return { allowed: false, reason: `${requestApproval.reason} Owner-issued capability required.` };
   }
 
   let hasOpen = false;
@@ -181,10 +187,13 @@ export function validateWorkbenchSteps(
 
     if (step.action === "click" || step.action === "submit") {
       if (step.value) return { allowed: false, reason: `Step ${index + 1}: ${step.action} does not accept value.` };
-      if (DANGEROUS_CLICK_TEXT.test(stepText) && !approvalIsExplicit(options.approval)) {
+      if (step.action === "submit" && !options.hasCapability) {
+        return { allowed: false, reason: `Step ${index + 1}: submit requires an owner-issued capability.` };
+      }
+      if (DANGEROUS_CLICK_TEXT.test(stepText) && !options.hasCapability) {
         return {
           allowed: false,
-          reason: `Step ${index + 1}: ${step.action} target looks side-effect/destructive; explicit approval object required.`,
+          reason: `Step ${index + 1}: ${step.action} target looks side-effect/destructive; owner-issued capability required.`,
         };
       }
       continue;

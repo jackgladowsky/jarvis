@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- secure browser side effects with owner-issued one-time Telegram approvals and per-request DNS network isolation
 - remove the standalone observability dashboard and its LLM telemetry integration
 
 ## 0.6.0

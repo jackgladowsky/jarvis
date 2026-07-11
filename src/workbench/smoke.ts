@@ -37,6 +37,7 @@ const run = target
       ],
       {
         fixtureHtml,
+        capabilityGranted: true,
         request:
           "Smoke test: click benign link, type non-secret sample text, and submit a benign local fixture search.",
       },

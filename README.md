@@ -162,7 +162,7 @@ Delivery is restricted to bounded regular files in approved repository, outbound
 
 ## Browser workbench
 
-The browser workbench is local-only. The `browser_workbench` agent tool can open a public `http(s)` URL in a persistent Chromium profile, capture title/visible text, and write screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. It also supports small validated `run_steps` plans for benign `click`, `type`, `fill`, and benign `submit` actions. It blocks local/private URLs, credentials/login/2FA/CAPTCHA, and includes hard approval gates for purchase/order/booking/send/post/delete/cancel/account/financial/legal/medical requests; real purchase/ride/order execution is not implemented.
+The browser workbench is local-only. It opens public `http(s)` pages in a persistent Chromium profile, captures title/visible text, and writes screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. Every navigation, redirect, and subresource is DNS-checked against private/reserved ranges. Benign reading, clicking, and non-secret text entry are automatic; submit and side-effect actions require a short-lived, exact-plan, one-time capability issued by the allowlisted owner through Telegram buttons. The model cannot mint approval. Resolved DOM semantics are checked before activation, while credentials/login/2FA/CAPTCHA and purchases/payments remain hard-blocked.
 
 Smoke test:
 
@@ -172,7 +172,7 @@ pnpm run workbench:smoke                # deterministic local fixture: benign cl
 pnpm run workbench:smoke -- https://example.com
 ```
 
-See `docs/workbench.md` for data paths, click/type boundaries, safety notes, and current limitations. CAPTCHA bypass, login/2FA automation, downloads, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented. Benign submits like search forms are allowed; risky submits still require explicit approval.
+See `docs/workbench.md` for capability binding, replay protection, network isolation, data paths, and current limitations. CAPTCHA bypass, login/2FA automation, purchases, downloads, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented.
 
 ## Conversation recall
 

@@ -4,12 +4,14 @@ import { registerStopCallback } from "./stop.js";
 import { registerBackgroundCallback } from "./background.js";
 import { registerModelCallback } from "./model.js";
 import { registerToggleCallback } from "./toggle.js";
+import { registerWorkbenchApprovalCallback } from "./workbench-approval.js";
 
 export function registerAllCallbacks(): void {
   registerStopCallback();
   registerBackgroundCallback();
   registerModelCallback();
   registerToggleCallback();
+  registerWorkbenchApprovalCallback();
 }
 
 export { buildBackgroundKeyboard } from "./background.js";

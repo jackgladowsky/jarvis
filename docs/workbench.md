@@ -1,86 +1,67 @@
 # Browser workbench
 
-JARVIS has a local-only Playwright browser workbench. It can open a public `http(s)` URL, inspect title/visible text, save screenshot/artifact files, and run small validated step plans with benign `click`, `type`, `fill`, and benign `submit` actions.
+JARVIS has a local-only Playwright browser workbench. It opens public `http(s)` pages, inspects visible content, saves screenshots/artifacts, and can run small guarded `click`, `type`, `fill`, and `submit` plans.
 
-It does **not** automate credentials, login, 2FA, CAPTCHA, downloads, purchases/orders, bookings/rides, sends/posts/messages, deletes/cancels, account changes, or financial/legal/medical actions. Benign submits like search forms are allowed; sensitive/side-effect submits are blocked unless explicitly approved. Those are blocked unless the tool receives an explicit approval object where applicable, and real purchasing/rides/etc. are still not implemented.
+## Owner authority
+
+Reading, benign navigation, and non-secret text entry do not need approval. Submit and side-effect-like actions use an owner-authenticated capability:
+
+1. The tool records a hash of the exact normalized action plan and sends Telegram **Approve once** / **Deny** buttons.
+2. Only the allowlisted Telegram user in the originating chat can decide it.
+3. Approval expires after ten minutes and is valid for exactly that plan.
+4. JARVIS supplies the returned `capabilityId` when retrying the identical plan. It is consumed before execution and cannot be replayed, including after a crash.
+
+The model cannot mint or self-assert approval. Changed URLs, selectors, text, values, or actions need a new approval. Purchases/orders/payments, credentials, login, 2FA, and CAPTCHA remain hard-blocked even with approval.
+
+## Network isolation
+
+Every navigation, redirect, and subresource is intercepted. Hostnames are resolved before access, DNS answers are cached briefly and revalidated, and changed answers are treated as rebinding. Loopback, private, carrier-grade NAT, link-local, metadata, documentation, benchmark, multicast, reserved, IPv4-mapped IPv6, and non-global IPv6 ranges are blocked. `about:blank`, page-local `data:` and `blob:` browser internals are allowed.
 
 ## Runtime data
 
-All browser state is host-local and outside git under `~/.jarvis/data/workbench/`:
+All state is host-local under `~/.jarvis/data/workbench/`:
 
 ```text
 profile/       persistent Chromium profile
-downloads/     Playwright download target
 screenshots/   PNG screenshots per run
 artifacts/     JSON page snapshots per run
+approvals/     short-lived approval records and replay state
+downloads/     reserved target; download actions remain unimplemented
 ```
 
-Do not put credentials, secrets, 2FA codes, private account data, or payment details in repo docs, prompts, logs, or workflow notes. Login/2FA/CAPTCHA flows stop with human handoff; CAPTCHA bypass is explicitly out of scope.
+Do not put credentials, secrets, private account data, or payment details into browser requests.
 
 ## Agent tool shape
 
-The `browser_workbench` tool supports:
+Read a page:
 
 ```json
 { "action": "open_url", "url": "https://example.com", "request": "Open example.com" }
 ```
 
-and small step plans:
+Run a benign plan:
 
 ```json
 {
   "action": "run_steps",
-  "request": "Open a docs page, click a benign link, and type sample text into search.",
+  "request": "Open documentation and search for retries.",
   "steps": [
-    { "action": "open_url", "url": "https://example.com" },
-    { "action": "click", "text": "More information" },
-    { "action": "fill", "selector": "input[name=q]", "value": "non-secret sample text" }
+    { "action": "open_url", "url": "https://example.com/docs" },
+    { "action": "fill", "selector": "input[name=q]", "value": "retries" }
   ]
 }
 ```
 
-Outputs are clipped text plus artifact paths, not screenshot bytes or base64 blobs.
+When approval is required, the tool returns `PENDING_OWNER_APPROVAL` and sends Telegram buttons. After approval, it retries the same plan with the returned `capabilityId`.
 
-## Click/type boundaries
-
-Allowed without special approval:
-
-- `open_url` for public `http(s)` URLs only.
-- `click` on benign links/buttons for navigation or page expansion.
-- `type`/`fill` with non-secret sample text into generic text/search/email/url/tel/textarea/contenteditable fields.
-
-Blocked/handoff:
-
-- Local/private network URLs and non-HTTP schemes.
-- Password, OTP/2FA, CAPTCHA, API key/token/secret, credit-card/CVV/SSN/payment-like fields.
-- Login/sign-in pages or requests.
-- Submit/send/post/publish/buy/purchase/checkout/pay/place-order/book/reserve/confirm/delete/cancel/account-update/transfer-like targets unless an explicit approval object is supplied; real purchase/ride/order execution is not implemented.
-- `download` actions are not implemented. Benign `submit` is implemented for safe forms like search; sensitive/side-effect submits are gated.
+Before click/submit, JARVIS inspects the resolved DOM element's role, visible text, accessible label, input/button type, link, and enclosing form action/method. This prevents a benign-looking selector from bypassing side-effect or sensitive-target checks. Submit defaults to denied without a capability.
 
 ## Smoke test
 
-Install the Chromium browser binary if needed:
-
 ```bash
 pnpm exec playwright install chromium
-```
-
-Then run a deterministic local-fixture smoke test for benign click + fill:
-
-```bash
 pnpm run workbench:smoke
-```
-
-Or run the legacy public URL open smoke:
-
-```bash
 pnpm run workbench:smoke -- https://example.com
 ```
 
-The command builds the TypeScript project, opens Chromium headlessly, and prints the title, clipped visible text, step summaries, screenshot path, and JSON artifact path.
-
-## Safety gates
-
-Safety checks run before the plan and after each browser action. The tool detects approval-required requests involving purchases/orders, rides/bookings, sends/posts, deletes/cancels, account changes, financial/legal/medical actions, and similar side effects. It detects credential/login/2FA/CAPTCHA-like requests or pages and stops with a human-handoff error.
-
-noVNC/KasmVNC-style human takeover and Docker Compose packaging are future iterations, not implemented here.
+The local fixture uses a test-only capability flag; it does not mint a production approval.

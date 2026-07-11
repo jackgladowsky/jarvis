@@ -13,7 +13,7 @@
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
 import { join } from "node:path";
-import { Bot, InputFile, type Context } from "grammy";
+import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { handleMessage } from "../agent/runtime.js";
 import type { PreparedArtifact } from "../agent/tools/send-artifact.js";
@@ -51,6 +51,7 @@ import { withLock } from "../lib/mutex.js";
 import { downloadTelegramFile } from "../lib/telegram-media.js";
 import { withTelegramRetry } from "../lib/telegram-delivery.js";
 import { paths } from "../paths.js";
+import type { WorkbenchApprovalRecord } from "../workbench/approval.js";
 import { enrichTelegramPrompt, replyParametersForMessage } from "./message-context.js";
 import "./commands/handlers/index.js";
 import { botMenuCommands, findCommand } from "./commands/registry.js";
@@ -783,6 +784,18 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
       },
       images,
       {
+        browserAuthority: {
+          chatId,
+          userId: ctx.from!.id,
+          requestApproval: async (record: WorkbenchApprovalRecord) => {
+            const keyboard = new InlineKeyboard()
+              .text("Approve once", `wbap:a:${record.id}`)
+              .text("Deny", `wbap:d:${record.id}`);
+            await replyReliably(ctx, `Browser approval requested (expires in 10 minutes):\n\n${record.planSummary}`, {
+              reply_markup: keyboard,
+            });
+          },
+        },
         sendArtifact: async (artifact) => {
           await clearStatus();
           const receipt = await deliverTelegramArtifact(

@@ -5,8 +5,9 @@ import { atomicWriteFile } from "../lib/durable-file.js";
 import { paths } from "../paths.js";
 import { withWorkbenchLock } from "./lock.js";
 import { clipVisibleText, type WorkbenchPageSnapshot, type WorkbenchStepResult } from "./render.js";
+import { assessResolvedElement, type ResolvedElementSemantics } from "./dom-safety.js";
+import { WorkbenchNetworkPolicy } from "./network-policy.js";
 import {
-  type WorkbenchApproval,
   type WorkbenchStep,
   assertReadOnlyWorkbenchAction,
   validateWorkbenchSteps,
@@ -21,7 +22,8 @@ export interface OpenUrlOptions {
 
 export interface RunStepsOptions extends OpenUrlOptions {
   request?: string;
-  approval?: WorkbenchApproval;
+  capabilityGranted?: boolean;
+  networkPolicy?: WorkbenchNetworkPolicy;
   /** Test/smoke-only escape hatch for deterministic local fixture pages. Not exposed via the agent tool. */
   fixtureHtml?: string;
 }
@@ -133,7 +135,7 @@ export async function runStepsInWorkbench(
 ): Promise<WorkbenchPageSnapshot> {
   const validation = validateWorkbenchSteps(steps, {
     request: options.request,
-    approval: options.approval,
+    hasCapability: options.capabilityGranted,
     allowNoOpen: Boolean(options.fixtureHtml),
   });
   if (!validation.allowed) throw new Error(validation.reason ?? "Workbench steps are not allowed.");
@@ -179,6 +181,7 @@ async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOption
       timeout: options.timeoutMs ?? 30_000,
     });
     throwIfWorkbenchAborted(options.signal);
+    if (!options.fixtureHtml) await (options.networkPolicy ?? new WorkbenchNetworkPolicy()).install(context);
     const page = context.pages()[0] ?? (await context.newPage());
     if (options.fixtureHtml) {
       throwIfWorkbenchAborted(options.signal);
@@ -203,7 +206,9 @@ async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOption
         await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
       } else if (step.action === "click" || step.action === "submit") {
         await assertNoHumanHandoffSignals(page);
-        await locatorForStep(page, step).click({ timeout: options.timeoutMs ?? 10_000 });
+        const locator = locatorForStep(page, step);
+        await assertLocatorActionIsSafe(locator, Boolean(options.capabilityGranted));
+        await locator.click({ timeout: options.timeoutMs ?? 10_000 });
         await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
       } else if (step.action === "type") {
         await assertNoHumanHandoffSignals(page);
@@ -252,6 +257,37 @@ function abortReason(signal: AbortSignal): Error {
 
 function throwIfWorkbenchAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortReason(signal);
+}
+
+async function assertLocatorActionIsSafe(locator: Locator, hasCapability: boolean): Promise<void> {
+  const semantics = await locator.evaluate((element) => {
+    const node = element as unknown as {
+      tagName?: string;
+      type?: string;
+      value?: string;
+      form?: { action?: string; method?: string } | null;
+      href?: string;
+      innerText?: string;
+      textContent?: string | null;
+      getAttribute: (name: string) => string | null;
+      closest: (selector: string) => unknown;
+    };
+    return {
+      tagName: node.tagName?.toLowerCase() ?? "",
+      role: node.getAttribute("role")?.toLowerCase() ?? "",
+      type: node.type?.toLowerCase() ?? "",
+      text: node.innerText ?? node.textContent ?? "",
+      ariaLabel: node.getAttribute("aria-label") ?? "",
+      title: node.getAttribute("title") ?? "",
+      value: node.value ?? "",
+      href: node.href ?? "",
+      formAction: node.form?.action ?? "",
+      formMethod: node.form?.method ?? "",
+      insideForm: Boolean(node.form ?? node.closest("form")),
+    } satisfies ResolvedElementSemantics;
+  });
+  const decision = assessResolvedElement(semantics, hasCapability);
+  if (!decision.allowed) throw new Error(`Refusing to activate resolved element: ${decision.reason}.`);
 }
 
 async function assertLocatorIsSafeTextInput(locator: Locator): Promise<void> {
