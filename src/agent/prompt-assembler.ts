@@ -207,5 +207,12 @@ export function buildSystemPrompt(assemblyPaths: PromptAssemblyPaths = defaultPr
   const mcpPrompt = buildMcpPrompt(assemblyPaths.mcpConfig);
   if (mcpPrompt) sections.push(mcpPrompt);
 
+  sections.push(
+    [
+      "## Self-Diagnostics",
+      "When the owner asks whether JARVIS is healthy, why a subsystem is failing, or to fix a diagnosed operational issue, use `diagnostics` instead of improvising shell probes. Diagnose first. Apply `repair_by_finding_id` only for an exact repairable finding returned by that diagnosis. Package installation, credential changes, service restarts, and destructive cleanup must remain proposed actions requiring the appropriate owner-controlled path.",
+    ].join("\n"),
+  );
+
   return sections.join("\n\n");
 }

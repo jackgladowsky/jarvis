@@ -20,6 +20,7 @@ import { withToolAudit } from "./audited.js";
 import { bashTool } from "./bash.js";
 import { browserWorkbenchTool } from "./browser-workbench.js";
 import { configControlTool } from "./config-control.js";
+import { diagnosticsTool } from "./diagnostics.js";
 import { editTool } from "./edit.js";
 import { mcpCallTool, summarizeMcpAuditArgs, summarizeMcpAuditError } from "./mcp.js";
 import { mcpManagerTool, summarizeMcpManagerAuditArgs, summarizeMcpManagerAuditError } from "./mcp-manager.js";
@@ -48,6 +49,7 @@ export const allTools: AgentTool<any>[] = [
   webSearchTool,
   browserWorkbenchTool,
   configControlTool,
+  diagnosticsTool,
   schedulerControlTool,
   searchMemoryTool,
   auditedMcpManagerTool,
