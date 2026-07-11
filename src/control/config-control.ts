@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseDocument } from "yaml";
 import { parseConfig, type Config } from "../config-schema.js";
-import { atomicWriteFile, withFileLock } from "../lib/durable-file.js";
+import { atomicWriteFile, atomicWriteJson, withFileLock } from "../lib/durable-file.js";
 import { paths } from "../paths.js";
 
 export interface ConfigPatchOperation {
@@ -78,6 +78,32 @@ function candidate(raw: string, operations: ConfigPatchOperation[]): ConfigChang
   };
 }
 
+function agentRouteChanged(current: Config, next: Config): boolean {
+  return current.agent.provider !== next.agent.provider || current.agent.model !== next.agent.model;
+}
+
+async function writeConfigAndRuntimeModel(
+  currentRaw: string,
+  current: Config,
+  nextRaw: string,
+  next: Config,
+): Promise<void> {
+  await atomicWriteFile(paths.configYaml, nextRaw, { mode: 0o600 });
+  if (!agentRouteChanged(current, next)) return;
+  try {
+    await atomicWriteJson(
+      paths.runtimeModel,
+      { provider: next.agent.provider, modelId: next.agent.model },
+      { mode: 0o600 },
+    );
+  } catch (err) {
+    // Do not report a successful model config change that the persisted runtime
+    // override would silently defeat on restart.
+    await atomicWriteFile(paths.configYaml, currentRaw, { mode: 0o600 });
+    throw err;
+  }
+}
+
 async function saveHistory(raw: string, revision: string): Promise<void> {
   await mkdir(paths.configHistory, { recursive: true, mode: 0o700 });
   const name = `${Date.now()}-${revision}.yaml`;
@@ -112,7 +138,7 @@ export async function applyConfigChange(
     }
     const { raw, ...plan } = candidate(current.raw, operations);
     await saveHistory(current.raw, current.revision);
-    await atomicWriteFile(paths.configYaml, raw, { mode: 0o600 });
+    await writeConfigAndRuntimeModel(current.raw, current.config, raw, plan.config);
     return plan;
   });
 }
@@ -133,13 +159,14 @@ export async function rollbackConfig(expectedRevision: string, targetRevision?: 
       throw new Error(targetRevision ? `Rollback revision not found: ${targetRevision}` : "No rollback history");
     const raw = await readFile(join(paths.configHistory, selected), "utf-8");
     const restored = parseConfig(parseDocument(raw).toJS(), "rollback config");
+    const modelChanged = agentRouteChanged(current.config, restored);
     await saveHistory(current.raw, current.revision);
-    await atomicWriteFile(paths.configYaml, raw, { mode: 0o600 });
+    await writeConfigAndRuntimeModel(current.raw, current.config, raw, restored);
     return {
       previousRevision: current.revision,
       revision: configRevision(raw),
       config: restored,
-      changedPaths: ["*"],
+      changedPaths: modelChanged ? ["*", "agent.provider", "agent.model"] : ["*"],
       restartRequired: true,
     };
   });

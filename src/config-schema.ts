@@ -22,10 +22,12 @@ const ProviderModelOverrideSchema = z
     });
   });
 
-const ModelSelectionSchema = z.object({
-  provider: z.enum(["codex", "anthropic", "openrouter"]),
-  model: z.string().min(1),
-});
+const ModelSelectionSchema = z
+  .object({
+    provider: z.enum(["codex", "anthropic", "openrouter"]),
+    model: z.string().min(1),
+  })
+  .strict();
 
 export const CURRENT_CONFIG_SCHEMA_VERSION = 1 as const;
 
@@ -34,33 +36,42 @@ export const CURRENT_CONFIG_SCHEMA_VERSION = 1 as const;
 export const ConfigSchema = z
   .object({
     schema_version: z.literal(CURRENT_CONFIG_SCHEMA_VERSION),
-    agent: z.object({
-      provider: z.enum(["codex", "anthropic", "openrouter"]),
-      model: z.string().min(1),
-    }),
-    session: z.object({
-      inactivity_threshold_minutes: z.number().int().positive(),
-      max_duration_hours: z.number().positive(),
-      summarize_on_rotation: z.boolean(),
-      announce_new_session: z.boolean(),
-    }),
+    agent: z
+      .object({
+        provider: z.enum(["codex", "anthropic", "openrouter"]),
+        model: z.string().min(1),
+      })
+      .strict(),
+    session: z
+      .object({
+        inactivity_threshold_minutes: z.number().int().positive(),
+        max_duration_hours: z.number().positive(),
+        summarize_on_rotation: z.boolean(),
+        announce_new_session: z.boolean(),
+      })
+      .strict(),
     // Compaction settings mirror pi-coding-agent's defaults. See DESIGN.md §10.
-    compaction: z.object({
-      enabled: z.boolean(),
-      reserve_tokens: z.number().int().positive(),
-      keep_recent_tokens: z.number().int().positive(),
-    }),
-    tools: z.object({
-      bash: z
-        .object({
-          default_timeout_seconds: z.number().int().positive(),
-          max_timeout_seconds: z.number().int().positive(),
-        })
-        .refine((value) => value.default_timeout_seconds <= value.max_timeout_seconds, {
-          message: "default_timeout_seconds must be <= max_timeout_seconds",
-          path: ["default_timeout_seconds"],
-        }),
-    }),
+    compaction: z
+      .object({
+        enabled: z.boolean(),
+        reserve_tokens: z.number().int().positive(),
+        keep_recent_tokens: z.number().int().positive(),
+      })
+      .strict(),
+    tools: z
+      .object({
+        bash: z
+          .object({
+            default_timeout_seconds: z.number().int().positive(),
+            max_timeout_seconds: z.number().int().positive(),
+          })
+          .strict()
+          .refine((value) => value.default_timeout_seconds <= value.max_timeout_seconds, {
+            message: "default_timeout_seconds must be <= max_timeout_seconds",
+            path: ["default_timeout_seconds"],
+          }),
+      })
+      .strict(),
     background: z
       .object({
         max_concurrent_workers: z.number().int().positive().max(16),
@@ -74,54 +85,68 @@ export const ConfigSchema = z
           })
           .strict(),
       })
+      .strict()
       .optional(),
-    telegram: z.object({
-      show_typing: z.boolean(),
-      long_tool_call_seconds: z.number().int().positive(),
-      parse_mode: z.enum(["none", "MarkdownV2", "HTML"]),
-      model_favorites: z
-        .array(
-          z.object({
-            label: z.string(),
-            provider: z.enum(["codex", "anthropic", "openrouter"]),
-            model_id: z.string(),
-          }),
-        )
-        .optional(),
-    }),
-    stt: z.object({
-      provider: z.enum(["disabled", "local-whisper-cpp"]),
-      local_whisper_cpp: z.object({
-        whisper_binary_path: z.string().min(1),
-        model_path: z.string().min(1),
-        ffmpeg_path: z.string().min(1).nullable(),
-        max_audio_mb: z.number().int().positive(),
-        timeout_seconds: z.number().int().positive(),
-      }),
-    }),
-    scheduler: z.object({
-      enabled: z.boolean(),
-      timezone: z.string().min(1).refine(isIanaTimezone, "timezone must be a valid IANA timezone"),
-      telegram_chat_id: z.number().int(),
-      tasks: z.array(
-        ProviderModelOverrideSchema.and(
-          z.object({
-            id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
-            name: z.string().min(1),
-            schedule: z.string().min(1),
-            prompt: z.string().min(1),
-            notify: z.enum(["always", "on_issue", "never"]),
-          }),
+    telegram: z
+      .object({
+        show_typing: z.boolean(),
+        long_tool_call_seconds: z.number().int().positive(),
+        parse_mode: z.enum(["none", "MarkdownV2", "HTML"]),
+        model_favorites: z
+          .array(
+            z
+              .object({
+                label: z.string(),
+                provider: z.enum(["codex", "anthropic", "openrouter"]),
+                model_id: z.string(),
+              })
+              .strict(),
+          )
+          .optional(),
+      })
+      .strict(),
+    stt: z
+      .object({
+        provider: z.enum(["disabled", "local-whisper-cpp"]),
+        local_whisper_cpp: z
+          .object({
+            whisper_binary_path: z.string().min(1),
+            model_path: z.string().min(1),
+            ffmpeg_path: z.string().min(1).nullable(),
+            max_audio_mb: z.number().int().positive(),
+            timeout_seconds: z.number().int().positive(),
+          })
+          .strict(),
+      })
+      .strict(),
+    scheduler: z
+      .object({
+        enabled: z.boolean(),
+        timezone: z.string().min(1).refine(isIanaTimezone, "timezone must be a valid IANA timezone"),
+        telegram_chat_id: z.number().int(),
+        tasks: z.array(
+          ProviderModelOverrideSchema.and(
+            z.object({
+              id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
+              name: z.string().min(1),
+              schedule: z.string().min(1),
+              prompt: z.string().min(1),
+              notify: z.enum(["always", "on_issue", "never"]),
+            }),
+          ),
         ),
-      ),
-    }),
-    logging: z.object({
-      audit_log_enabled: z.boolean(),
-      audit_log_max_value_bytes: z.number().int().positive(),
-      audit_log_redact_patterns: z.boolean(),
-      level: z.enum(["debug", "info", "warn", "error"]),
-    }),
+      })
+      .strict(),
+    logging: z
+      .object({
+        audit_log_enabled: z.boolean(),
+        audit_log_max_value_bytes: z.number().int().positive(),
+        audit_log_redact_patterns: z.boolean(),
+        level: z.enum(["debug", "info", "warn", "error"]),
+      })
+      .strict(),
   })
+  .strict()
   .superRefine((value, ctx) => {
     if (value.scheduler.enabled && value.scheduler.telegram_chat_id === 0) {
       ctx.addIssue({

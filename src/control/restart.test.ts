@@ -39,6 +39,41 @@ test("guarded restart verifies only jarvis.service and detaches through the test
   assert.equal(detached, 5);
   const marker = JSON.parse(await readFile(join(root, "data/control/restart-pending.json"), "utf-8"));
   assert.equal(marker.reason, "Apply timezone");
+  assert.equal(marker.chat_id, 1);
+});
+
+test("restart fails before service access without a notification destination and removes failed markers", async () => {
+  const root = await prepare();
+  const { scheduleJarvisRestart } = await import(`./restart.js?test=${Date.now()}destination`);
+  let execCalls = 0;
+  const exec = (async () => {
+    execCalls++;
+    return { stdout: "loaded\n", stderr: "" };
+  }) as any;
+  await assert.rejects(
+    () =>
+      scheduleJarvisRestart("x", "a".repeat(64), 5, {
+        platform: "linux",
+        notificationChatId: null,
+        exec,
+      }),
+    /notification|allowlisted owner/i,
+  );
+  assert.equal(execCalls, 0);
+
+  await assert.rejects(
+    () =>
+      scheduleJarvisRestart("x", "a".repeat(64), 5, {
+        platform: "linux",
+        notificationChatId: 1,
+        exec,
+        detach: () => {
+          throw new Error("detach failed");
+        },
+      }),
+    /detach failed/,
+  );
+  await assert.rejects(() => readFile(join(root, "data/control/restart-pending.json")), /ENOENT/);
 });
 
 test("restart rejects non-Linux and background worker contexts before service access", async () => {

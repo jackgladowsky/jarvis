@@ -207,7 +207,7 @@ function resolveCustomCodexModel(modelId: string): Model<any> | undefined {
 }
 
 // Persisted runtime choice (set by /model) so the selection survives restarts.
-const RUNTIME_MODEL_PATH = join(paths.data, "runtime-model.json");
+const RUNTIME_MODEL_PATH = paths.runtimeModel;
 
 interface RuntimeModelConfig {
   provider: string;

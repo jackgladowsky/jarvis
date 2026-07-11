@@ -33,6 +33,7 @@ export const paths = {
   configControl: join(DATA_BASE, "data", "control"),
   configHistory: join(DATA_BASE, "data", "control", "config-history"),
   configRestartPending: join(DATA_BASE, "data", "control", "restart-pending.json"),
+  runtimeModel: join(DATA_BASE, "runtime-model.json"),
 
   // Hand-curated environment docs and host-local prompts.
   agentsMd: join(DATA_BASE, "AGENTS.md"),

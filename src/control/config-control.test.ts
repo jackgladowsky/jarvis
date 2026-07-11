@@ -37,13 +37,19 @@ test("config control plans, atomically applies with CAS, preserves comments, and
   assert.equal(rolledBack.config.scheduler.timezone, "UTC");
 });
 
-test("config control rejects invalid candidates and treats model-only changes as live", async () => {
-  await prepare();
+test("config control rejects invalid and unknown paths without changing the file", async () => {
+  const root = await prepare();
   const control = await import(`./config-control.js?test=${Date.now()}b`);
+  const before = await readFile(join(root, "config.yaml"), "utf-8");
   await assert.rejects(
     () => control.planConfigChange([{ op: "set", path: "scheduler.timezone", value: "Mars/Olympus" }]),
     /IANA timezone/,
   );
+  await assert.rejects(
+    () => control.planConfigChange([{ op: "set", path: "scheduler.timezne", value: "Europe/London" }]),
+    /unrecognized key|timezne/i,
+  );
+  assert.equal(await readFile(join(root, "config.yaml"), "utf-8"), before);
   const plan = await control.planConfigChange([{ op: "set", path: "agent.model", value: "another-model" }]);
   assert.equal(plan.restartRequired, false);
   await assert.rejects(
@@ -60,4 +66,27 @@ test("config control rejects invalid candidates and treats model-only changes as
   } finally {
     delete process.env.JARVIS_BACKGROUND_BOOTSTRAPPED;
   }
+});
+
+test("mixed model patches and model rollbacks reconcile the persisted runtime override", async () => {
+  await prepare();
+  const control = await import(`./config-control.js?test=${Date.now()}c`);
+  const { paths } = await import("../paths.js");
+  const initial = await control.getConfigView();
+  const applied = await control.applyConfigChange(initial.revision, [
+    { op: "set", path: "agent.model", value: "mixed-model" },
+    { op: "set", path: "scheduler.timezone", value: "Europe/London" },
+  ]);
+  assert.equal(applied.restartRequired, true);
+  assert.deepEqual(JSON.parse(await readFile(paths.runtimeModel, "utf-8")), {
+    provider: "codex",
+    modelId: "mixed-model",
+  });
+
+  const rolledBack = await control.rollbackConfig(applied.revision);
+  assert.ok(rolledBack.changedPaths.includes("agent.model"));
+  assert.deepEqual(JSON.parse(await readFile(paths.runtimeModel, "utf-8")), {
+    provider: "codex",
+    modelId: "gpt-5.1",
+  });
 });

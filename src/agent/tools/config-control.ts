@@ -79,14 +79,19 @@ const rawConfigControlTool: AgentTool<typeof schema> = {
     if (args.action === "apply") {
       if (!args.expected_revision) throw new Error("expected_revision is required for apply");
       const proposed = await planConfigChange(operations(args));
-      if (!proposed.restartRequired) resolveModel(proposed.config.agent.provider, proposed.config.agent.model);
+      const modelChanged = proposed.changedPaths.some((path) => path.startsWith("agent."));
+      if (modelChanged) resolveModel(proposed.config.agent.provider, proposed.config.agent.model);
       const result = await applyConfigChange(args.expected_revision, operations(args));
-      if (!result.restartRequired) switchModel(result.config.agent.provider, result.config.agent.model);
+      if (modelChanged) switchModel(result.config.agent.provider, result.config.agent.model);
       return { content: [{ type: "text", text: summary(result) }], details: result };
     }
     if (args.action === "rollback") {
       if (!args.expected_revision) throw new Error("expected_revision is required for rollback");
       const result = await rollbackConfig(args.expected_revision, args.target_revision);
+      if (result.changedPaths.some((path) => path.startsWith("agent."))) {
+        resolveModel(result.config.agent.provider, result.config.agent.model);
+        switchModel(result.config.agent.provider, result.config.agent.model);
+      }
       return { content: [{ type: "text", text: summary(result) }], details: result };
     }
     if (!args.confirmed) throw new Error("Explicit owner confirmation is required for restart");
