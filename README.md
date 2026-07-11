@@ -94,6 +94,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Natural-language lexical recall across notes and past user/assistant conversations, with bounded cited results and no external indexing service.
 - Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, and read-only browser workbench.
 - Telegram image input, bounded PDF/text/source/config document ingestion, and optional local whisper.cpp voice/audio transcription.
+- Automatic reply, quote, and forwarded-message context with strict untrusted-content boundaries and threaded first responses.
 - Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
 - Conversational reminders and recurring automations with strict timezone-aware parsing, durable cancellation/history, and cron support through a validated scheduler control tool.
 - Detached background workers using isolated git worktrees and role pipelines.

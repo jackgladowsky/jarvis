@@ -50,6 +50,7 @@ import { withLock } from "../lib/mutex.js";
 import { downloadTelegramFile } from "../lib/telegram-media.js";
 import { withTelegramRetry } from "../lib/telegram-delivery.js";
 import { paths } from "../paths.js";
+import { enrichTelegramPrompt, replyParametersForMessage } from "./message-context.js";
 import "./commands/handlers/index.js";
 import { botMenuCommands, findCommand } from "./commands/registry.js";
 import { consumeSttBenchmarkNext, getStatusMode } from "./commands/handlers/state.js";
@@ -572,7 +573,12 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     );
     return;
   }
-  const promptText = documentPrompt ?? transcribedPrompt ?? (userText.trim() || "Describe the attached image(s).");
+  const basePrompt = documentPrompt ?? transcribedPrompt ?? (userText.trim() || "Describe the attached image(s).");
+  // Command dispatch above intentionally examines only `userText`. Quoted and
+  // forwarded slash-prefixed content is reference data and can never dispatch.
+  const promptText = enrichTelegramPrompt(ctx.message, basePrompt).prompt;
+  const inboundReplyParameters = replyParametersForMessage(ctx.message);
+  let firstAgentReply = true;
   let visibleResponseDelivered = false;
 
   // ── Streaming placeholder state ─────────────────────────────────────────
@@ -685,9 +691,13 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         {
           parse_mode: formatted.parse_mode,
           link_preview_options: { is_disabled: true },
+          ...(firstAgentReply && inboundReplyParameters
+            ? { reply_parameters: { ...inboundReplyParameters, allow_sending_without_reply: true } }
+            : {}),
         },
         first,
       );
+      firstAgentReply = false;
       visibleResponseDelivered = true;
     }
 
