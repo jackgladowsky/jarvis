@@ -1,0 +1,21 @@
+{
+  "servers": {
+    "local-readonly": {
+      "command": "npx",
+      "args": ["-y", "@example/read-only-mcp-server"],
+      "env": {
+        "SERVICE_TOKEN": "$SERVICE_TOKEN"
+      },
+      "timeout_ms": 15000,
+      "read_only": true
+    },
+    "hosted-readonly": {
+      "url": "https://mcp.example.net/mcp",
+      "headers": {
+        "Authorization": "Bearer $HOSTED_MCP_TOKEN"
+      },
+      "timeout_ms": 15000,
+      "read_only": true
+    }
+  }
+}

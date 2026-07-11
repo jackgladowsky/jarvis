@@ -21,6 +21,10 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  /** Per-server operation deadline. Manager-created configs are bounded to 1s–120s. */
+  timeout_ms?: number;
+  /** Operator declaration used by the integration manager and prompt guidance. */
+  read_only?: boolean;
 }
 
 export interface McpServersConfig {
@@ -68,6 +72,8 @@ const serverConfigSchema = z
       }, "must use http:// or https://")
       .optional(),
     headers: z.record(z.string()).optional(),
+    timeout_ms: z.number().int().min(1_000).max(120_000).optional(),
+    read_only: z.boolean().optional(),
   })
   .strict()
   .superRefine((server, context) => {
@@ -133,18 +139,22 @@ export function loadMcpServers(configPath = MCP_CONFIG_PATH): McpServersConfig {
   return result.data;
 }
 
-function resolveHeaders(headers: Record<string, string>): Record<string, string> {
+function resolveReferences(values: Record<string, string>, kind: "header" | "environment"): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
+  for (const [key, value] of Object.entries(values)) {
     out[key] = value.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, name: string) => {
       const envValue = process.env[name];
       if (envValue === undefined) {
-        throw new Error(`MCP config references env var "${name}" in header "${key}", but it is not set`);
+        throw new Error(`MCP config references env var "${name}" in ${kind} "${key}", but it is not set`);
       }
       return envValue;
     });
   }
   return out;
+}
+
+function resolveHeaders(headers: Record<string, string>): Record<string, string> {
+  return resolveReferences(headers, "header");
 }
 
 // ── Tool schema ─────────────────────────────────────────────────────────────
@@ -302,13 +312,7 @@ async function closeClient(client: Client, transport: Transport): Promise<void> 
   await waitFor(transport.close(), 1_000);
 }
 
-export async function callMcpTool(
-  serverConfig: McpServerConfig,
-  tool: string,
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<{ content: string; isError: boolean }> {
-  throwIfAborted(signal);
+function createMcpConnection(serverConfig: McpServerConfig): { client: Client; transport: Transport } {
   const client = new Client({ name: "jarvis-mcp", version: "1.0.0" }, { capabilities: {} });
   const transport: Transport = serverConfig.url
     ? new StreamableHTTPClientTransport(new URL(serverConfig.url), {
@@ -317,20 +321,68 @@ export async function callMcpTool(
     : new StdioClientTransport({
         command: serverConfig.command!,
         args: serverConfig.args,
-        env: serverConfig.env,
+        env: serverConfig.env ? resolveReferences(serverConfig.env, "environment") : undefined,
       });
+  return { client, transport };
+}
 
+async function connectMcp(
+  serverConfig: McpServerConfig,
+  signal?: AbortSignal,
+): Promise<{ client: Client; transport: Transport }> {
+  throwIfAborted(signal);
+  const connection = createMcpConnection(serverConfig);
+  const timeout = serverConfig.timeout_ms ?? MCP_CONNECT_TIMEOUT_MS;
   try {
-    await client.connect(transport, {
-      signal: boundedSignal(signal, MCP_CONNECT_TIMEOUT_MS),
-      timeout: MCP_CONNECT_TIMEOUT_MS,
-      maxTotalTimeout: MCP_CONNECT_TIMEOUT_MS,
+    await connection.client.connect(connection.transport, {
+      signal: boundedSignal(signal, timeout),
+      timeout,
+      maxTotalTimeout: timeout,
     });
+    return connection;
+  } catch (err) {
+    await closeClient(connection.client, connection.transport);
+    throw err;
+  }
+}
+
+export async function listMcpTools(
+  serverConfig: McpServerConfig,
+  signal?: AbortSignal,
+): Promise<Array<{ name: string; description?: string; inputSchema: unknown }>> {
+  const { client, transport } = await connectMcp(serverConfig, signal);
+  const timeout = serverConfig.timeout_ms ?? MCP_CONNECT_TIMEOUT_MS;
+  try {
+    throwIfAborted(signal);
+    const result = await client.listTools(undefined, {
+      signal: boundedSignal(signal, timeout),
+      timeout,
+      maxTotalTimeout: timeout,
+    });
+    return result.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    }));
+  } finally {
+    await closeClient(client, transport);
+  }
+}
+
+export async function callMcpTool(
+  serverConfig: McpServerConfig,
+  tool: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ content: string; isError: boolean }> {
+  const { client, transport } = await connectMcp(serverConfig, signal);
+  const timeout = serverConfig.timeout_ms ?? MCP_CALL_TIMEOUT_MS;
+  try {
     throwIfAborted(signal);
     const result = await client.callTool({ name: tool, arguments: args }, undefined, {
-      signal: boundedSignal(signal, MCP_CALL_TIMEOUT_MS),
-      timeout: MCP_CALL_TIMEOUT_MS,
-      maxTotalTimeout: MCP_CALL_TIMEOUT_MS,
+      signal: boundedSignal(signal, timeout),
+      timeout,
+      maxTotalTimeout: timeout,
     });
     return { content: normalizeMcpContent(result.content), isError: Boolean(result.isError) };
   } finally {

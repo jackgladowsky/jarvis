@@ -22,6 +22,7 @@ import { browserWorkbenchTool } from "./browser-workbench.js";
 import { configControlTool } from "./config-control.js";
 import { editTool } from "./edit.js";
 import { mcpCallTool, summarizeMcpAuditArgs, summarizeMcpAuditError } from "./mcp.js";
+import { mcpManagerTool, summarizeMcpManagerAuditArgs, summarizeMcpManagerAuditError } from "./mcp-manager.js";
 import { readTool } from "./read.js";
 import { schedulerControlTool } from "./scheduler-control.js";
 import { searchMemoryTool } from "./search-memory.js";
@@ -34,6 +35,10 @@ const auditedMcpCallTool = withToolAudit(mcpCallTool, {
   summarizeArgs: summarizeMcpAuditArgs,
   summarizeError: summarizeMcpAuditError,
 });
+const auditedMcpManagerTool = withToolAudit(mcpManagerTool, {
+  summarizeArgs: summarizeMcpManagerAuditArgs,
+  summarizeError: summarizeMcpManagerAuditError,
+});
 
 export const allTools: AgentTool<any>[] = [
   readTool,
@@ -45,5 +50,6 @@ export const allTools: AgentTool<any>[] = [
   configControlTool,
   schedulerControlTool,
   searchMemoryTool,
+  auditedMcpManagerTool,
   auditedMcpCallTool,
 ];

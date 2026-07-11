@@ -157,26 +157,38 @@ function buildAdaptiveVoicePrompt(adaptiveVoicePromptPath: string): string {
 // ─── MCP server index ─────────────────────────────────────────────────────
 
 function buildMcpPrompt(mcpConfigPath: string): string {
-  if (!existsSync(mcpConfigPath)) return "";
+  const parts: string[] = [
+    "## MCP Integrations",
+    "Use `mcp_manage` when the owner asks conversationally to configure, inspect, validate, remove, or troubleshoot an integration. Never ask for a raw credential in tool arguments: reference an environment variable and guide the owner to install the secret out of band. Prefer read-only integration authority unless the owner explicitly requests writes.",
+  ];
+  if (!existsSync(mcpConfigPath)) {
+    parts.push("No MCP servers are currently configured.");
+    return parts.join("\n");
+  }
 
   try {
     const raw = readFileSync(mcpConfigPath, "utf-8");
-    const config = JSON.parse(raw) as { servers?: Record<string, { command?: string; url?: string }> };
+    const config = JSON.parse(raw) as {
+      servers?: Record<string, { command?: string; url?: string; read_only?: boolean }>;
+    };
     const servers = config.servers;
-    if (!servers || Object.keys(servers).length === 0) return "";
+    if (!servers || Object.keys(servers).length === 0) {
+      parts.push("No MCP servers are currently configured.");
+      return parts.join("\n");
+    }
 
-    const parts: string[] = ["## MCP Servers"];
-    parts.push("The following MCP servers are available. Use `mcp_call` with the server name to invoke their tools.");
-
+    parts.push("Configured servers (use `mcp_call` to invoke discovered tools):");
     for (const [name, cfg] of Object.entries(servers).sort()) {
       const transport = cfg.url ? "HTTP" : "stdio";
-      parts.push(`- \`${name}\` (${transport})`);
+      const authority = cfg.read_only === false ? "write-capable declared" : "read-only/default";
+      parts.push(`- \`${name}\` (${transport}, ${authority})`);
     }
 
     return parts.join("\n");
   } catch (err) {
     log.warn("failed to read MCP server config", { err: String(err) });
-    return "";
+    parts.push("The MCP config is unreadable; use `mcp_manage` with action `reload` to diagnose it.");
+    return parts.join("\n");
   }
 }
 

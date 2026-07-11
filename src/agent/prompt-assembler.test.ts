@@ -32,11 +32,31 @@ test("buildSystemPrompt includes host-local SOUL.md when present", async () => {
   assert.match(prompt, /- Never say sir\./);
 });
 
-test("buildSystemPrompt omits adaptive voice section when SOUL.md is absent", async () => {
+test("buildSystemPrompt omits adaptive voice and advertises conversational MCP management", async () => {
   const assemblyPaths = await makeAssemblyPaths();
 
   const prompt = buildSystemPrompt(assemblyPaths);
 
-  assert.equal(prompt, "Base prompt");
+  assert.match(prompt, /^Base prompt/);
   assert.doesNotMatch(prompt, /Adaptive Voice Memory/);
+  assert.match(prompt, /Use `mcp_manage`/);
+  assert.match(prompt, /No MCP servers are currently configured/);
+});
+
+test("buildSystemPrompt reflects MCP integration updates without restart", async () => {
+  const assemblyPaths = await makeAssemblyPaths();
+  assemblyPaths.mcpConfig = join(assemblyPaths.systemPrompt, "..", "..", "mcp.json");
+  await writeFile(
+    assemblyPaths.mcpConfig,
+    JSON.stringify({ servers: { calendar: { command: "calendar-mcp", read_only: true } } }),
+  );
+  assert.match(buildSystemPrompt(assemblyPaths), /`calendar` \(stdio, read-only\/default\)/);
+
+  await writeFile(
+    assemblyPaths.mcpConfig,
+    JSON.stringify({ servers: { home: { url: "https://example.test/mcp", read_only: false } } }),
+  );
+  const updated = buildSystemPrompt(assemblyPaths);
+  assert.match(updated, /`home` \(HTTP, write-capable declared\)/);
+  assert.doesNotMatch(updated, /`calendar`/);
 });

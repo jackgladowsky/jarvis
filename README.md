@@ -92,7 +92,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Persistent JSONL sessions with rotation, archival, and summaries.
 - Markdown memory notes under `~/.jarvis/data/notes/`, plus optional adaptive voice guidance in `~/.jarvis/prompts/SOUL.md`.
 - Natural-language lexical recall across notes and past user/assistant conversations, with bounded cited results and no external indexing service.
-- Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, and read-only browser workbench.
+- Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, read-only browser workbench, and conversational MCP integration management.
 - Telegram image/document input, optional local whisper.cpp voice/audio transcription, and conversational delivery of generated files back to the active chat.
 - Automatic reply, quote, and forwarded-message context with strict untrusted-content boundaries and threaded first responses.
 - Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
@@ -130,6 +130,8 @@ Important config sections:
 - `logging` — audit log behavior, redaction, truncation, log level.
 
 Configuration is primarily managed conversationally: ask JARVIS to inspect or change a setting. It uses the validated `config_control` capability to plan an atomic change, preserve rollback history, and explain whether a guarded restart is required. Secrets in `.env` are deliberately excluded. Manual edits remain supported. `schema_version` is migrated from the original unversioned format, future versions fail closed, and deployments validate the actual live config before activation.
+
+MCP integrations are also managed conversationally and are re-read without a restart. See [Conversational MCP integrations](docs/mcp-integrations.md) for the credential-reference and authority model.
 
 ## Telegram commands
 
