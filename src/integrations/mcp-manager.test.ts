@@ -5,10 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { manageMcp } from "./mcp-manager.js";
 
-function stdioConfig(script = "process.exit(0)") {
+function stdioConfig(scriptPath = "fixture-server.mjs") {
   return {
     command: process.execPath,
-    args: ["--input-type=module", "-e", script],
+    args: [scriptPath],
     env: { TEST_MCP_TOKEN: "$TEST_MCP_TOKEN" },
     timeout_ms: 5_000,
     read_only: true,
@@ -52,6 +52,7 @@ test("manager atomically adds, lists, updates, reloads, and removes definitions"
     );
     assert.deepEqual(listed.servers?.[0]?.environmentKeys, ["TEST_MCP_TOKEN"]);
     assert.deepEqual(listed.servers?.[1]?.headerKeys, ["Authorization"]);
+    assert.equal(listed.servers?.[1]?.readOnly, true, "legacy omitted read_only defaults safely to true");
     assert.doesNotMatch(JSON.stringify(listed), /Bearer|\$HA_TOKEN|\$TEST_MCP_TOKEN/);
 
     await manageMcp(
@@ -125,22 +126,24 @@ test("test and discovery are bounded, return tools, and close the stdio process"
   process.env.MCP_PID_FILE = pidFile;
   const serverScript = [
     'import { writeFileSync } from "node:fs";',
-    'import { Server } from "@modelcontextprotocol/sdk/server/index.js";',
-    'import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";',
-    'import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";',
+    `import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))};`,
+    `import { StdioServerTransport } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/stdio.js"))};`,
+    `import { ListToolsRequestSchema } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/types.js"))};`,
     "writeFileSync(process.env.MCP_PID_FILE, String(process.pid));",
     'const server = new Server({ name: "discover-test", version: "1.0.0" }, { capabilities: { tools: {} } });',
     'server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "read_calendar", description: "Read upcoming events", inputSchema: { type: "object" } }] }));',
     "await server.connect(new StdioServerTransport());",
   ].join(" ");
   try {
+    const serverFile = join(dir, "discovery-server.mjs");
+    await writeFile(serverFile, serverScript);
     await manageMcp(
       {
         action: "add",
         server: "calendar",
         config: {
           command: process.execPath,
-          args: ["--input-type=module", "-e", serverScript],
+          args: [serverFile],
           env: { MCP_PID_FILE: "$MCP_PID_FILE" },
           timeout_ms: 5_000,
         },

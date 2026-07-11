@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { chromium, type BrowserContext, type Locator, type Page } from "playwright";
+import { chromium, type BrowserContext, type ElementHandle, type Locator, type Page } from "playwright";
 import { atomicWriteFile } from "../lib/durable-file.js";
 import { paths } from "../paths.js";
 import { withWorkbenchLock } from "./lock.js";
@@ -177,6 +177,7 @@ async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOption
       acceptDownloads: true,
       downloadsPath: paths.workbenchDownloads,
       headless: true,
+      serviceWorkers: "block",
       viewport: { width: 1365, height: 768 },
       timeout: options.timeoutMs ?? 30_000,
     });
@@ -207,19 +208,25 @@ async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOption
       } else if (step.action === "click" || step.action === "submit") {
         await assertNoHumanHandoffSignals(page);
         const locator = locatorForStep(page, step);
-        await assertLocatorActionIsSafe(locator, Boolean(options.capabilityGranted));
-        await locator.click({ timeout: options.timeoutMs ?? 10_000 });
+        const element = await locator.elementHandle({ timeout: options.timeoutMs ?? 10_000 });
+        if (!element) throw new Error(`Step ${index + 1}: target disappeared.`);
+        await assertElementActionIsSafe(element, Boolean(options.capabilityGranted));
+        await element.click({ timeout: options.timeoutMs ?? 10_000 });
         await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
       } else if (step.action === "type") {
         await assertNoHumanHandoffSignals(page);
         const locator = locatorForStep(page, step);
-        await assertLocatorIsSafeTextInput(locator);
-        await locator.pressSequentially(step.value ?? "", { timeout: options.timeoutMs ?? 10_000 });
+        const element = await locator.elementHandle({ timeout: options.timeoutMs ?? 10_000 });
+        if (!element) throw new Error(`Step ${index + 1}: target disappeared.`);
+        await assertElementIsSafeTextInput(element);
+        await element.type(step.value ?? "", { timeout: options.timeoutMs ?? 10_000 });
       } else if (step.action === "fill") {
         await assertNoHumanHandoffSignals(page);
         const locator = locatorForStep(page, step);
-        await assertLocatorIsSafeTextInput(locator);
-        await locator.fill(step.value ?? "", { timeout: options.timeoutMs ?? 10_000 });
+        const element = await locator.elementHandle({ timeout: options.timeoutMs ?? 10_000 });
+        if (!element) throw new Error(`Step ${index + 1}: target disappeared.`);
+        await assertElementIsSafeTextInput(element);
+        await element.fill(step.value ?? "", { timeout: options.timeoutMs ?? 10_000 });
       }
 
       throwIfWorkbenchAborted(options.signal);
@@ -259,8 +266,8 @@ function throwIfWorkbenchAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortReason(signal);
 }
 
-async function assertLocatorActionIsSafe(locator: Locator, hasCapability: boolean): Promise<void> {
-  const semantics = await locator.evaluate((element) => {
+async function assertElementActionIsSafe(element: ElementHandle, hasCapability: boolean): Promise<void> {
+  const semantics = await element.evaluate((element) => {
     const node = element as unknown as {
       tagName?: string;
       type?: string;
@@ -290,8 +297,8 @@ async function assertLocatorActionIsSafe(locator: Locator, hasCapability: boolea
   if (!decision.allowed) throw new Error(`Refusing to activate resolved element: ${decision.reason}.`);
 }
 
-async function assertLocatorIsSafeTextInput(locator: Locator): Promise<void> {
-  const safe = await locator.evaluate((element) => {
+async function assertElementIsSafeTextInput(element: ElementHandle): Promise<void> {
+  const safe = await element.evaluate((element) => {
     const node = element as unknown as {
       tagName?: string;
       type?: string;

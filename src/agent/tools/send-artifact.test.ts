@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -123,6 +123,33 @@ test("send_artifact records the boundary before upload, audits metadata, and ref
     await assert.rejects(tool.execute("send-2", { path: file }, undefined), /already delivered/);
     assert.equal(sent.length, 1);
     assert.deepEqual(events, ["boundary", "send"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("send_artifact streams the already-validated descriptor across path replacement", async () => {
+  const root = await mkdtemp(join(tmpdir(), "jarvis-send-artifact-fd-"));
+  try {
+    const file = join(root, "report.txt");
+    await writeFile(file, "original");
+    let delivered = "";
+    const tool = createSendArtifactTool({
+      allowedRoots: [root],
+      blockedRoots: [],
+      blockedFiles: [],
+      audit: async () => undefined,
+      beforeDelivery: async () => {
+        await unlink(file);
+        await writeFile(file, "replacement");
+      },
+      send: async (artifact) => {
+        for await (const chunk of artifact.stream!) delivered += Buffer.from(chunk).toString();
+        return { messageId: 1 };
+      },
+    });
+    await tool.execute("fd", { path: file }, undefined);
+    assert.equal(delivered, "original");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

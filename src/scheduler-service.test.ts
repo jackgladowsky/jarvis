@@ -11,9 +11,12 @@ import {
   parseRecurringSchedule,
   readDynamicTaskFile,
   setSchedulerReconciler,
+  setSchedulerEnabledCheckForTests,
   snoozeDynamicTask,
   updateDynamicTask,
 } from "./scheduler-service.js";
+
+setSchedulerEnabledCheckForTests(() => true);
 
 const now = new Date("2026-03-06T17:00:00.000Z");
 test("natural one-time grammar is deterministic and timezone aware", () => {
@@ -43,6 +46,15 @@ test("recurring phrase grammar produces validated cron", () => {
   assert.equal(parseRecurringSchedule("every 10 minutes"), "*/10 * * * *");
   assert.equal(parseRecurringSchedule("0 3 * * *"), "0 3 * * *");
   assert.throws(() => parseRecurringSchedule("every so often"), /Unsupported recurrence/);
+});
+
+test("mutations fail actionably while scheduler is disabled", async () => {
+  setSchedulerEnabledCheckForTests(() => false);
+  await assert.rejects(
+    createDynamicTask({ name: "Nope", prompt: "Nope", when: "in 1 hour" }),
+    /Scheduler is disabled.*scheduler.enabled/,
+  );
+  setSchedulerEnabledCheckForTests(() => true);
 });
 
 test("dynamic operations are locked, revisioned, idempotent, and reconciled", async () => {

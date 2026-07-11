@@ -83,7 +83,16 @@ test("mixed model patches and model rollbacks reconcile the persisted runtime ov
     modelId: "mixed-model",
   });
 
-  const rolledBack = await control.rollbackConfig(applied.revision);
+  const beforeRejectedRollback = await readFile(paths.configYaml, "utf-8");
+  await assert.rejects(
+    control.rollbackConfig(applied.revision, undefined, () => {
+      throw new Error("unknown rollback model");
+    }),
+    /unknown rollback model/,
+  );
+  assert.equal(await readFile(paths.configYaml, "utf-8"), beforeRejectedRollback);
+
+  const rolledBack = await control.rollbackConfig(applied.revision, undefined, () => undefined);
   assert.ok(rolledBack.changedPaths.includes("agent.model"));
   assert.deepEqual(JSON.parse(await readFile(paths.runtimeModel, "utf-8")), {
     provider: "codex",

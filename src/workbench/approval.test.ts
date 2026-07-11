@@ -19,6 +19,17 @@ async function reset(): Promise<void> {
   await rm(paths.workbenchApprovals, { recursive: true, force: true });
 }
 
+test("approval summaries show benign values but redact secret-like values with a digest", async () => {
+  const { summarizeWorkbenchPlan } = await import("./approval.js");
+  assert.match(
+    summarizeWorkbenchPlan([{ action: "fill", text: "query", value: "weather tomorrow" }]),
+    /weather tomorrow/,
+  );
+  const secret = summarizeWorkbenchPlan([{ action: "fill", text: "query", value: "Bearer super-secret-token-value" }]);
+  assert.match(secret, /\[redacted \d+ chars sha256:[a-f0-9]{12}\]/);
+  assert.doesNotMatch(secret, /super-secret-token-value/);
+});
+
 test("approval is bound to owner/chat and exact normalized plan", async () => {
   await reset();
   const record = await createWorkbenchApproval({ chatId: 7, userId: 9, steps: plan });

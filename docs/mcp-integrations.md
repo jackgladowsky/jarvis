@@ -6,7 +6,7 @@ MCP integrations are managed primarily through normal conversation. Examples:
 - “Test the calendar integration and show me its tools.”
 - “Remove the old GitHub integration.”
 
-JARVIS routes these requests through the typed `mcp_manage` control tool. The tool validates and atomically updates `~/.jarvis/mcp-servers.json`; the existing `mcp_call` tool invokes configured tools. Prompt assembly reads the file for every turn, so successful updates require no service restart.
+JARVIS routes these requests through the typed, active-owner-chat-only `mcp_manage` control tool. Mutations, health/discovery executions, stdio calls, and write-capable HTTP calls require an exact-plan, expiring, one-time Telegram approval. The tool validates and atomically updates `~/.jarvis/mcp-servers.json`; the existing `mcp_call` tool invokes configured tools. Prompt assembly reads the file for every turn, so successful updates require no service restart.
 
 ## Credential boundary
 
@@ -25,8 +25,8 @@ Install the referenced environment variable through the host's protected service
 
 A server defines exactly one transport:
 
-- `command` plus optional `args` and referenced `env` for stdio.
-- Public `http`/`https` `url` plus optional referenced `headers` for HTTP.
+- An approved MCP launcher (`node`, `npx`, `pnpm`, `bun`, `deno`, `python`, `uv`, or `uvx`) plus bounded non-eval `args` and referenced `env` for stdio. Shell/eval flags and raw credentials are rejected.
+- Public `http`/`https` `url` plus referenced `headers` for HTTP. Every request and redirect is sent through DNS-pinned transport that rejects private, loopback, link-local, metadata, reserved, and rebound addresses.
 
 Manager-created definitions also specify a bounded `timeout_ms` (1–120 seconds) and default to `read_only: true`. `read_only` is an authority declaration and prompt guard, not a protocol-level sandbox; only connect write-capable servers after explicitly deciding to grant that authority.
 

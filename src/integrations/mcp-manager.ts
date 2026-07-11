@@ -7,6 +7,7 @@ import {
   MCP_CONFIG_PATH,
   type McpServerConfig,
   type McpServersConfig,
+  validateStdioDefinition,
 } from "../agent/tools/mcp.js";
 
 const SERVER_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -138,6 +139,7 @@ function parseManagedConfig(value: unknown): ManagedMcpServerConfig {
     throw new Error(
       `Invalid MCP server configuration: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "server"}: ${issue.message}`).join("; ")}`,
     );
+  validateStdioDefinition(parsed.data);
   return parsed.data;
 }
 
@@ -145,7 +147,7 @@ function publicServer(name: string, server: McpServerConfig) {
   return {
     name,
     transport: (server.url ? "http" : "stdio") as "http" | "stdio",
-    readOnly: server.read_only ?? false,
+    readOnly: server.read_only ?? true,
     timeoutMs: server.timeout_ms ?? 15_000,
     environmentKeys: Object.keys(server.env ?? {}).sort(),
     headerKeys: Object.keys(server.headers ?? {}).sort(),

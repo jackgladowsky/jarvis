@@ -1,4 +1,6 @@
-import { lstat, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
+import type { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
@@ -23,6 +25,10 @@ export interface PreparedArtifact {
   size: number;
   mimeType: string;
   caption?: string;
+  /** Run-scoped descriptor stream; transport must prefer this over reopening path. */
+  stream?: Readable;
+  /** Validation identity used to fence path replacement before descriptor open. */
+  identity?: { dev: number; ino: number };
 }
 
 export interface ArtifactDeliveryReceipt {
@@ -194,6 +200,7 @@ export async function prepareArtifact(
     size,
     mimeType: mimeTypeFor(canonicalPath),
     caption: clippedCaption(caption),
+    identity: { dev: requestedStat.dev, ino: requestedStat.ino },
   };
 }
 
@@ -224,33 +231,47 @@ export function createSendArtifactTool(options: SendArtifactToolOptions): AgentT
         if (delivered.has(prepared.path))
           throw new Error("This artifact was already delivered during the current turn.");
 
-        // This durable write must finish before Telegram sees any bytes. If it
-        // fails, delivery is refused rather than leaving an unrecorded side effect.
-        await options.beforeDelivery();
-        const receipt = await options.send(prepared);
-        delivered.add(prepared.path);
-        await writeAudit({
-          tool: "send_artifact",
-          args: {
-            path: prepared.path,
+        let handle: FileHandle | undefined;
+        try {
+          handle = await open(prepared.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+          const stat = await handle.stat();
+          if (
+            !stat.isFile() ||
+            stat.dev !== prepared.identity?.dev ||
+            stat.ino !== prepared.identity?.ino ||
+            stat.size !== prepared.size
+          ) {
+            throw new Error("Artifact changed after validation; delivery refused.");
+          }
+          prepared.stream = handle.createReadStream({ autoClose: false });
+          // This durable write must finish before Telegram sees any bytes. If it
+          // fails, delivery is refused rather than leaving an unrecorded side effect.
+          await options.beforeDelivery();
+          const receipt = await options.send(prepared);
+          delivered.add(prepared.path);
+          await writeAudit({
+            tool: "send_artifact",
+            args: {
+              path: prepared.path,
+              size: prepared.size,
+              mime_type: prepared.mimeType,
+              has_caption: Boolean(prepared.caption),
+            },
+            outcome: "ok",
+            duration_ms: Date.now() - startedAt,
+            bytes: prepared.size,
+          });
+          const details = {
+            messageId: receipt.messageId,
+            fileName: prepared.fileName,
             size: prepared.size,
-            mime_type: prepared.mimeType,
-            has_caption: Boolean(prepared.caption),
-          },
-          outcome: "ok",
-          duration_ms: Date.now() - startedAt,
-          bytes: prepared.size,
-        });
-        const details = {
-          messageId: receipt.messageId,
-          fileName: prepared.fileName,
-          size: prepared.size,
-          mimeType: prepared.mimeType,
-        };
-        return {
-          content: [{ type: "text", text: `Artifact delivered: ${JSON.stringify(details)}` }],
-          details,
-        };
+            mimeType: prepared.mimeType,
+          };
+          return { content: [{ type: "text", text: `Artifact delivered: ${JSON.stringify(details)}` }], details };
+        } finally {
+          prepared.stream?.destroy();
+          await handle?.close().catch(() => undefined);
+        }
       } catch (error) {
         await writeAudit({
           tool: "send_artifact",

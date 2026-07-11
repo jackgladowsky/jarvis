@@ -1,6 +1,8 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type, type Static } from "typebox";
 import { manageMcp, type McpManagerRequest } from "../../integrations/mcp-manager.js";
+import type { BrowserWorkbenchAuthority } from "./browser-workbench.js";
+import { pendingCapabilityResult, requireOwnerCapability } from "../../control/owner-capability.js";
 
 const serverConfigSchema = Type.Object(
   {
@@ -37,6 +39,7 @@ const schema = Type.Object(
     ]),
     server: Type.Optional(Type.String({ description: "Lowercase server name for all actions except list/reload" })),
     config: Type.Optional(serverConfigSchema),
+    capability_id: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );
@@ -54,15 +57,28 @@ export function summarizeMcpManagerAuditError(_error: unknown, params: Static<ty
   return `MCP manager ${params.action}${params.server ? ` for ${params.server}` : ""} failed (details omitted)`;
 }
 
-export const mcpManagerTool: AgentTool<typeof schema> = {
-  name: "mcp_manage",
-  label: "Manage MCP integrations",
-  description:
-    "Manage host-local MCP integrations conversationally. List, add, replace, remove, health-test, reload/validate, or discover tools. " +
-    "Credential fields accept environment-variable references only, never raw secret values. Prefer read_only=true unless the owner explicitly asks for write authority.",
-  parameters: schema,
-  execute: async (_toolCallId, params, signal) => {
-    const result = await manageMcp(params as McpManagerRequest, signal);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], details: result };
-  },
-};
+export function createMcpManagerTool(authority?: BrowserWorkbenchAuthority): AgentTool<typeof schema> {
+  return {
+    name: "mcp_manage",
+    label: "Manage MCP integrations",
+    description:
+      "Manage host-local MCP integrations conversationally. List, add, replace, remove, health-test, reload/validate, or discover tools. " +
+      "Credential fields accept environment-variable references only, never raw secret values. Prefer read_only=true unless the owner explicitly asks for write authority.",
+    parameters: schema,
+    execute: async (_toolCallId, params, signal) => {
+      const gated = ["add", "update", "remove", "test", "discover_tools"].includes(params.action);
+      if (gated) {
+        const approval = await requireOwnerCapability({
+          authority,
+          capabilityId: params.capability_id,
+          tool: "MCP management",
+          plan: { action: params.action, server: params.server, config: params.config },
+        });
+        if (approval.pending) return pendingCapabilityResult("MCP management", approval.pending);
+      }
+      const result = await manageMcp(params as McpManagerRequest, signal);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], details: result };
+    },
+  };
+}
+export const mcpManagerTool = createMcpManagerTool();

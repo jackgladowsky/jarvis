@@ -16,8 +16,8 @@ export async function handleWorkbenchApproval(ctx: Context, data: string): Promi
   await ctx
     .editMessageText(
       decision === "approved"
-        ? `Browser plan approved once until ${record.expiresAt}. Tell JARVIS to continue.`
-        : "Browser plan denied.",
+        ? `Plan approved once until ${record.expiresAt}. Tell JARVIS to continue.`
+        : "Plan denied.",
     )
     .catch(() => undefined);
 }

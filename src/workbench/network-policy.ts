@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { BrowserContext, Route } from "playwright";
+import { Agent } from "undici";
 import { validateWorkbenchUrl } from "./safety.js";
 
 export interface ResolvedAddress {
@@ -96,14 +97,14 @@ export class WorkbenchNetworkPolicy {
     private readonly now: () => number = Date.now,
   ) {}
 
-  async assertUrlAllowed(input: string, forceRevalidate = false): Promise<void> {
+  async resolveUrl(input: string, forceRevalidate = false): Promise<ResolvedAddress[]> {
     if (
       input === "about:blank" ||
       input.startsWith("about:blank#") ||
       input.startsWith("data:") ||
       input.startsWith("blob:")
     )
-      return;
+      return [];
     const validated = validateWorkbenchUrl(input);
     if (!validated.allowed || !validated.url) throw new Error(validated.reason ?? "URL is blocked.");
     const hostname = validated.url.hostname.replace(/^\[(.*)\]$/, "$1");
@@ -125,14 +126,107 @@ export class WorkbenchNetworkPolicy {
     }
     const blocked = addresses.find(({ address }) => !isPublicNetworkAddress(address));
     if (blocked) throw new Error(`Network blocked: ${hostname} resolved to non-public address ${blocked.address}.`);
+    return addresses;
+  }
+
+  async assertUrlAllowed(input: string, forceRevalidate = false): Promise<void> {
+    await this.resolveUrl(input, forceRevalidate);
+  }
+
+  /** Fetch through an address pinned to the validated DNS result while retaining the URL hostname for TLS SNI. */
+  async pinnedFetch(input: string, init: RequestInit = {}, redirects = 5): Promise<Response> {
+    let url = new URL(input);
+    for (let hop = 0; hop <= redirects; hop += 1) {
+      const addresses = await this.resolveUrl(url.toString(), true);
+      if (addresses.length === 0) return fetch(url, init);
+      const allowed = new Set(addresses.map(({ address }) => address));
+      const dispatcher = new Agent({
+        connect: {
+          lookup: (_hostname, options, callback) => {
+            const family = typeof options === "object" && options ? options.family : undefined;
+            const chosen = addresses.find((entry) => !family || entry.family === family) ?? addresses[0]!;
+            if (!allowed.has(chosen.address)) return callback(new Error("DNS pinning failed"), "", 0);
+            callback(null, chosen.address, chosen.family);
+          },
+        },
+      });
+      try {
+        const response = await fetch(url, {
+          ...init,
+          redirect: "manual",
+          // Node's fetch accepts undici's dispatcher although it is not in the DOM RequestInit type.
+          dispatcher,
+        } as unknown as RequestInit);
+        const redirect = [301, 302, 303, 307, 308].includes(response.status);
+        const location = redirect ? response.headers.get("location") : undefined;
+        if (redirect && location) {
+          await response.body?.cancel();
+          await dispatcher.close();
+          if (hop === redirects) throw new Error("Network blocked: too many redirects.");
+          url = new URL(location, url);
+          if (
+            response.status === 303 ||
+            ((response.status === 301 || response.status === 302) && init.method === "POST")
+          ) {
+            init = { ...init, method: "GET", body: undefined };
+          }
+          continue;
+        }
+        if (!response.body) {
+          await dispatcher.close();
+          return response;
+        }
+        const reader = response.body.getReader();
+        let closed = false;
+        const close = async () => {
+          if (closed) return;
+          closed = true;
+          await dispatcher.close();
+        };
+        const body = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const chunk = await reader.read();
+              if (chunk.done) {
+                controller.close();
+                await close();
+              } else controller.enqueue(chunk.value);
+            } catch (error) {
+              controller.error(error);
+              await close();
+            }
+          },
+          async cancel(reason) {
+            await reader.cancel(reason);
+            await close();
+          },
+        });
+        return new Response(body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      } catch (error) {
+        await dispatcher.close().catch(() => undefined);
+        throw error;
+      }
+    }
+    throw new Error("Network blocked: redirect limit exceeded.");
   }
 
   async install(context: BrowserContext): Promise<void> {
+    // WebSockets cannot use the pinned HTTP dispatcher, so fail closed by mocking them without a server connection.
+    await context.routeWebSocket("**/*", () => undefined);
     await context.route("**/*", async (route: Route) => {
       const request = route.request();
       try {
-        await this.assertUrlAllowed(request.url(), request.isNavigationRequest());
-        await route.continue();
+        const response = await this.pinnedFetch(request.url(), {
+          method: request.method(),
+          headers: request.headers(),
+          body: request.method() === "GET" || request.method() === "HEAD" ? undefined : request.postDataBuffer(),
+        });
+        const body = Buffer.from(await response.arrayBuffer());
+        await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body });
       } catch {
         await route.abort("blockedbyclient");
       }

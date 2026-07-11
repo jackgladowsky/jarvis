@@ -57,6 +57,18 @@ test("MCP config follows JARVIS_DATA_DIR and reports actionable JSON/shape error
   );
 });
 
+test("MCP HTTP transport rejects private and metadata endpoints before connecting", async () => {
+  const { mcp } = await fixture;
+  await assert.rejects(
+    mcp.listMcpTools({ url: "http://127.0.0.1:12345/mcp", read_only: true, timeout_ms: 1000 }),
+    /fetch failed|Network blocked|non-public|private|loopback|link-local|MCP error/i,
+  );
+  await assert.rejects(
+    mcp.listMcpTools({ url: "http://169.254.169.254/latest", read_only: true, timeout_ms: 1000 }),
+    /fetch failed|Network blocked|non-public|private|loopback|link-local|MCP error/i,
+  );
+});
+
 test("MCP content normalization caps text and omits binary payloads", async () => {
   const { mcp } = await fixture;
   const binary = "QUJD".repeat(50_000);
@@ -80,9 +92,9 @@ test("MCP calls honor cancellation and close their stdio child", async () => {
   await mkdir(dataDir, { recursive: true });
   const serverScript = `
     import { writeFileSync } from "node:fs";
-    import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-    import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-    import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+    import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))};
+    import { StdioServerTransport } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/stdio.js"))};
+    import { CallToolRequestSchema, ListToolsRequestSchema } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/types.js"))};
     writeFileSync(process.env.PID_FILE, String(process.pid));
     const server = new Server({ name: "hang-test", version: "1.0.0" }, { capabilities: { tools: {} } });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -96,12 +108,16 @@ test("MCP calls honor cancellation and close their stdio child", async () => {
     });
     await server.connect(new StdioServerTransport());
   `;
+  const serverFile = join(dataDir, "hang-server.mjs");
+  await writeFile(serverFile, serverScript);
+  process.env.PID_FILE = pidFile;
+  process.env.CALL_STARTED_FILE = callStartedFile;
   const controller = new AbortController();
   const call = mcp.callMcpTool(
     {
       command: process.execPath,
-      args: ["--input-type=module", "-e", serverScript],
-      env: { PID_FILE: pidFile, CALL_STARTED_FILE: callStartedFile },
+      args: [serverFile],
+      env: { PID_FILE: "$PID_FILE", CALL_STARTED_FILE: "$CALL_STARTED_FILE" },
     },
     "hang",
     {},
@@ -136,6 +152,8 @@ test("MCP calls honor cancellation and close their stdio child", async () => {
     }
   }
   assert.equal(alive, false, `MCP stdio child ${pid} should be closed after cancellation`);
+  delete process.env.PID_FILE;
+  delete process.env.CALL_STARTED_FILE;
 });
 
 test("MCP audit metadata never includes arbitrary argument values", async () => {

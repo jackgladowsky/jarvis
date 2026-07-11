@@ -114,7 +114,7 @@ export async function deliverTelegramArtifact(
   replyParameters?: ReturnType<typeof replyParametersForMessage>,
 ): Promise<{ messageId: number }> {
   const sent = await withTelegramRetry(() =>
-    ctx.replyWithDocument(new InputFile(artifact.path, artifact.fileName), {
+    ctx.replyWithDocument(new InputFile(artifact.stream ?? artifact.path, artifact.fileName), {
       ...(artifact.caption ? { caption: artifact.caption } : {}),
       ...(replyParameters ? { reply_parameters: { ...replyParameters, allow_sending_without_reply: true } } : {}),
     }),
@@ -791,7 +791,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
             const keyboard = new InlineKeyboard()
               .text("Approve once", `wbap:a:${record.id}`)
               .text("Deny", `wbap:d:${record.id}`);
-            await replyReliably(ctx, `Browser approval requested (expires in 10 minutes):\n\n${record.planSummary}`, {
+            await replyReliably(ctx, `Owner approval requested (expires in 10 minutes):\n\n${record.planSummary}`, {
               reply_markup: keyboard,
             });
           },

@@ -39,7 +39,18 @@ import { summarizeArchived } from "./summarizer.js";
 import { getSystemPrompt } from "./system-prompt.js";
 import { makeAbortableTool } from "./tools/abortable.js";
 import { createBrowserWorkbenchTool, type BrowserWorkbenchAuthority } from "./tools/browser-workbench.js";
+import { createConfigControlTool } from "./tools/config-control.js";
+import { diagnosticsTool } from "./tools/diagnostics.js";
 import { allTools } from "./tools/index.js";
+import { createMcpCallTool, summarizeMcpAuditArgs, summarizeMcpAuditError } from "./tools/mcp.js";
+import {
+  createMcpManagerTool,
+  summarizeMcpManagerAuditArgs,
+  summarizeMcpManagerAuditError,
+} from "./tools/mcp-manager.js";
+import { schedulerControlTool } from "./tools/scheduler-control.js";
+import { createSearchMemoryTool } from "./tools/search-memory.js";
+import { withToolAudit } from "./tools/audited.js";
 import { createSendArtifactTool, type ArtifactSender } from "./tools/send-artifact.js";
 import {
   beginChatTurn,
@@ -633,8 +644,24 @@ export async function handleMessage(
 
     const baseChatTools = capabilities.browserAuthority
       ? [
-          ...cancellableTools.filter((tool) => tool.name !== "browser_workbench"),
+          ...cancellableTools.filter((tool) => !["browser_workbench", "mcp_call"].includes(tool.name)),
           makeAbortableTool(createBrowserWorkbenchTool(capabilities.browserAuthority)),
+          makeAbortableTool(createConfigControlTool(capabilities.browserAuthority)),
+          makeAbortableTool(diagnosticsTool),
+          makeAbortableTool(schedulerControlTool),
+          makeAbortableTool(createSearchMemoryTool(capabilities.browserAuthority)),
+          makeAbortableTool(
+            withToolAudit(createMcpManagerTool(capabilities.browserAuthority), {
+              summarizeArgs: summarizeMcpManagerAuditArgs,
+              summarizeError: summarizeMcpManagerAuditError,
+            }),
+          ),
+          makeAbortableTool(
+            withToolAudit(createMcpCallTool(capabilities.browserAuthority), {
+              summarizeArgs: summarizeMcpAuditArgs,
+              summarizeError: summarizeMcpAuditError,
+            }),
+          ),
         ]
       : cancellableTools;
     const chatTools = capabilities.sendArtifact

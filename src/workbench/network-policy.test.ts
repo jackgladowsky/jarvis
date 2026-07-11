@@ -44,16 +44,31 @@ test("route interception blocks private redirects and subresources", async () =>
     { address: hostname === "public.example" ? "8.8.8.8" : "169.254.169.254", family: 4 },
   ];
   const policy = new WorkbenchNetworkPolicy(resolver);
+  policy.pinnedFetch = async (url: string) => {
+    await policy.assertUrlAllowed(url, true);
+    return new Response("ok", { status: 200 });
+  };
   let handler: ((route: any) => Promise<void>) | undefined;
-  await policy.install({ route: async (_pattern: string, value: typeof handler) => void (handler = value) } as any);
+  let websocketBlocked = false;
+  await policy.install({
+    routeWebSocket: async () => void (websocketBlocked = true),
+    route: async (_pattern: string, value: typeof handler) => void (handler = value),
+  } as any);
+  assert.equal(websocketBlocked, true);
   assert.ok(handler);
 
   const exercise = async (url: string, navigation: boolean) => {
     let continued = false;
     let aborted = false;
     await handler!({
-      request: () => ({ url: () => url, isNavigationRequest: () => navigation }),
-      continue: async () => void (continued = true),
+      request: () => ({
+        url: () => url,
+        isNavigationRequest: () => navigation,
+        method: () => "GET",
+        headers: () => ({}),
+        postDataBuffer: () => null,
+      }),
+      fulfill: async () => void (continued = true),
       abort: async () => void (aborted = true),
     });
     return { continued, aborted };

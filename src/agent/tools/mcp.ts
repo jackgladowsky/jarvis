@@ -3,7 +3,7 @@
 // underlying HTTP connection or stdio child without affecting another call.
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -12,6 +12,9 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Type } from "typebox";
 import { z } from "zod";
 import { paths } from "../../paths.js";
+import { WorkbenchNetworkPolicy } from "../../workbench/network-policy.js";
+import type { BrowserWorkbenchAuthority } from "./browser-workbench.js";
+import { pendingCapabilityResult, requireOwnerCapability } from "../../control/owner-capability.js";
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -53,6 +56,41 @@ export const MCP_CONFIG_PATH = join(paths.data, "mcp-servers.json");
 export const MCP_CONNECT_TIMEOUT_MS = 15_000;
 export const MCP_CALL_TIMEOUT_MS = 60_000;
 export const MCP_OUTPUT_MAX_CHARS = 32_000;
+
+const STDIO_LAUNCHERS = new Set(["node", "npx", "pnpm", "bun", "deno", "python", "python3", "uv", "uvx"]);
+const FORBIDDEN_EXEC_ARGS = new Set(["-c", "--eval", "-e", "--print", "-p"]);
+const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+const ENV_REFERENCE = /^\$[A-Z_][A-Z0-9_]*$/;
+const SECRETISH =
+  /(?:sk-|ghp_|github_pat_|bearer\s+(?!\$)[A-Za-z0-9._-]{8,}|eyJ[A-Za-z0-9_-]+\.|(?:token|secret|password|api[_-]?key)[=:][^$\s]{4,})/i;
+
+export function validateStdioDefinition(server: McpServerConfig): void {
+  if (server.command) {
+    const launcher = basename(server.command);
+    if (!STDIO_LAUNCHERS.has(launcher)) throw new Error(`MCP stdio command ${launcher} is not an approved launcher`);
+    if ((server.args ?? []).some((arg) => FORBIDDEN_EXEC_ARGS.has(arg)))
+      throw new Error("MCP stdio eval/shell-style arguments are forbidden");
+    if ((server.args ?? []).some((arg) => SECRETISH.test(arg)))
+      throw new Error("MCP stdio arguments must not contain inline credentials");
+    for (const [key, value] of Object.entries(server.env ?? {})) {
+      if (!ENV_NAME.test(key) || !ENV_REFERENCE.test(value))
+        throw new Error("MCP stdio environment entries must be uppercase env references");
+    }
+  }
+  for (const value of Object.values(server.headers ?? {})) {
+    if (!/\$[A-Z_][A-Z0-9_]*/.test(value) || SECRETISH.test(value.replace(/\$[A-Z_][A-Z0-9_]*/g, "$REF")))
+      throw new Error("MCP HTTP headers must use environment references without inline credentials");
+  }
+  if (server.url) {
+    const url = new URL(server.url);
+    if (
+      url.username ||
+      url.password ||
+      [...url.searchParams.keys()].some((key) => /(token|secret|password|key|auth)/i.test(key))
+    )
+      throw new Error("MCP HTTP URL must not embed credentials");
+  }
+}
 
 const serverConfigSchema = z
   .object({
@@ -136,7 +174,15 @@ export function loadMcpServers(configPath = MCP_CONFIG_PATH): McpServersConfig {
   if (!result.success) {
     throw new Error(`Invalid MCP configuration at ${configPath}: ${describeConfigIssues(result.error)}.`);
   }
-  return result.data;
+  for (const server of Object.values(result.data.servers)) validateStdioDefinition(server);
+  return {
+    servers: Object.fromEntries(
+      Object.entries(result.data.servers).map(([name, server]) => [
+        name,
+        { read_only: server.read_only ?? true, ...server },
+      ]),
+    ),
+  };
 }
 
 function resolveReferences(values: Record<string, string>, kind: "header" | "environment"): Record<string, string> {
@@ -166,6 +212,7 @@ const schema = Type.Object({
     maxLength: 200,
   }),
   tool: Type.String({ description: "Name of the MCP tool to invoke.", minLength: 1, maxLength: 300 }),
+  capability_id: Type.Optional(Type.String()),
   arguments: Type.Optional(
     Type.Record(Type.String(), Type.Any(), {
       description: "Arguments to pass to the tool, as a JSON object.",
@@ -313,10 +360,13 @@ async function closeClient(client: Client, transport: Transport): Promise<void> 
 }
 
 function createMcpConnection(serverConfig: McpServerConfig): { client: Client; transport: Transport } {
+  validateStdioDefinition(serverConfig);
   const client = new Client({ name: "jarvis-mcp", version: "1.0.0" }, { capabilities: {} });
+  const networkPolicy = new WorkbenchNetworkPolicy();
   const transport: Transport = serverConfig.url
     ? new StreamableHTTPClientTransport(new URL(serverConfig.url), {
         requestInit: serverConfig.headers ? { headers: resolveHeaders(serverConfig.headers) } : undefined,
+        fetch: (input, init) => networkPolicy.pinnedFetch(String(input), init),
       })
     : new StdioClientTransport({
         command: serverConfig.command!,
@@ -393,6 +443,7 @@ export async function callMcpTool(
 export async function executeMcpCall(
   params: McpCallParams,
   signal?: AbortSignal,
+  authority: "automation" | "interactive" = "automation",
 ): Promise<{ content: string; isError: boolean }> {
   throwIfAborted(signal);
   const config = loadMcpServers();
@@ -408,24 +459,40 @@ export async function executeMcpCall(
       isError: true,
     };
   }
+  if (authority !== "interactive" && (serverConfig.command || serverConfig.read_only !== true)) {
+    return { content: "Automation may call only explicitly read-only public HTTP MCP servers.", isError: true };
+  }
   return callMcpTool(serverConfig, params.tool, params.arguments ?? {}, signal);
 }
 
-export const mcpCallTool: AgentTool<typeof schema> = {
-  name: "mcp_call",
-  label: "MCP Server",
-  description:
-    "Call a tool on a configured MCP (Model Context Protocol) server. " +
-    `Servers are configured in ${MCP_CONFIG_PATH}. Returned text is compacted and binary payloads are omitted.`,
-  parameters: schema,
-  execute: async (_toolCallId, params, signal) => {
-    const { content, isError } = await executeMcpCall(params, signal);
-    // pi-agent-core treats thrown tool failures as errors; extra result fields
-    // are not part of AgentToolResult and would otherwise be silently ignored.
-    if (isError) throw new Error(content);
-    return {
-      content: [{ type: "text" as const, text: content }],
-      details: {},
-    };
-  },
-};
+export function createMcpCallTool(authority?: BrowserWorkbenchAuthority): AgentTool<typeof schema> {
+  return {
+    name: "mcp_call",
+    label: "MCP Server",
+    description:
+      "Call a tool on a configured MCP (Model Context Protocol) server. " +
+      `Servers are configured in ${MCP_CONFIG_PATH}. Returned text is compacted and binary payloads are omitted.`,
+    parameters: schema,
+    execute: async (_toolCallId, params, signal) => {
+      const server = loadMcpServers().servers[params.server];
+      if (authority && server && (Boolean(server.command) || server.read_only !== true)) {
+        const approval = await requireOwnerCapability({
+          authority,
+          capabilityId: params.capability_id,
+          tool: "MCP execution",
+          plan: { server: params.server, tool: params.tool, arguments: params.arguments },
+        });
+        if (approval.pending) return pendingCapabilityResult("MCP execution", approval.pending);
+      } else if (params.capability_id) throw new Error("Capability is not valid for this MCP call.");
+      const { content, isError } = await executeMcpCall(params, signal, authority ? "interactive" : "automation");
+      // pi-agent-core treats thrown tool failures as errors; extra result fields
+      // are not part of AgentToolResult and would otherwise be silently ignored.
+      if (isError) throw new Error(content);
+      return {
+        content: [{ type: "text" as const, text: content }],
+        details: {},
+      };
+    },
+  };
+}
+export const mcpCallTool = createMcpCallTool();

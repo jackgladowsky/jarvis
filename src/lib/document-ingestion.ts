@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { atomicWriteFile } from "./durable-file.js";
 
 export const MAX_DOCUMENT_BYTES = 15 * 1024 * 1024;
@@ -133,40 +134,30 @@ function clipText(text: string, maxChars: number): { text: string; truncated: bo
 }
 
 async function extractPdf(bytes: Buffer, maxChars: number, maxPages: number): Promise<ExtractedDocument> {
-  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const task = getDocument({ data: new Uint8Array(bytes), disableFontFace: true, maxImageSize: 0 });
+  const worker = new Worker(new URL("./pdf-worker.js", import.meta.url), {
+    resourceLimits: { maxOldGenerationSizeMb: 192, maxYoungGenerationSizeMb: 32, stackSizeMb: 4 },
+  });
+  const timeoutMs = 20_000;
   try {
-    const pdf = await task.promise;
-    const pageLimit = Math.min(pdf.numPages, maxPages);
-    const parts: string[] = [];
-    let chars = 0;
-    let hasText = false;
-    let truncated = pdf.numPages > pageLimit;
-    for (let pageNumber = 1; pageNumber <= pageLimit && chars < maxChars; pageNumber += 1) {
-      const page = await pdf.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const text = content.items
-        .map((item) => ("str" in item ? item.str : ""))
-        .filter(Boolean)
-        .join(" ")
-        .trim();
-      if (text) hasText = true;
-      const section = `--- Page ${pageNumber} ---\n${text}`;
-      const remaining = maxChars - chars;
-      if (section.length > remaining) {
-        parts.push(section.slice(0, remaining));
-        truncated = true;
-        break;
-      }
-      parts.push(section);
-      chars += section.length + 2;
-    }
-    if (!hasText) throw new Error("PDF contained no extractable text within limits");
-    return { kind: "pdf", text: parts.join("\n\n"), pages: pdf.numPages, truncated };
-  } catch (error) {
-    throw new Error(`could not extract PDF text: ${error instanceof Error ? error.message : String(error)}`);
+    return await new Promise<ExtractedDocument>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        void worker.terminate();
+        reject(new Error(`could not extract PDF text: timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref();
+      worker.once("error", (error) => {
+        clearTimeout(timer);
+        reject(new Error(`could not extract PDF text: ${error.message}`));
+      });
+      worker.once("message", (message: { ok: boolean; result?: ExtractedDocument; error?: string }) => {
+        clearTimeout(timer);
+        if (message.ok && message.result) resolve(message.result);
+        else reject(new Error(`could not extract PDF text: ${message.error ?? "worker failed"}`));
+      });
+      worker.postMessage({ bytes: new Uint8Array(bytes), maxChars, maxPages });
+    });
   } finally {
-    await task.destroy().catch(() => undefined);
+    await worker.terminate().catch(() => undefined);
   }
 }
 

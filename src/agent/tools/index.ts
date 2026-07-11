@@ -19,14 +19,9 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { withToolAudit } from "./audited.js";
 import { bashTool } from "./bash.js";
 import { browserWorkbenchTool } from "./browser-workbench.js";
-import { configControlTool } from "./config-control.js";
-import { diagnosticsTool } from "./diagnostics.js";
 import { editTool } from "./edit.js";
 import { mcpCallTool, summarizeMcpAuditArgs, summarizeMcpAuditError } from "./mcp.js";
-import { mcpManagerTool, summarizeMcpManagerAuditArgs, summarizeMcpManagerAuditError } from "./mcp-manager.js";
 import { readTool } from "./read.js";
-import { schedulerControlTool } from "./scheduler-control.js";
-import { searchMemoryTool } from "./search-memory.js";
 import { webSearchTool } from "./web-search.js";
 import { writeTool } from "./write.js";
 
@@ -36,11 +31,6 @@ const auditedMcpCallTool = withToolAudit(mcpCallTool, {
   summarizeArgs: summarizeMcpAuditArgs,
   summarizeError: summarizeMcpAuditError,
 });
-const auditedMcpManagerTool = withToolAudit(mcpManagerTool, {
-  summarizeArgs: summarizeMcpManagerAuditArgs,
-  summarizeError: summarizeMcpManagerAuditError,
-});
-
 export const allTools: AgentTool<any>[] = [
   readTool,
   writeTool,
@@ -48,10 +38,5 @@ export const allTools: AgentTool<any>[] = [
   bashTool,
   webSearchTool,
   browserWorkbenchTool,
-  configControlTool,
-  diagnosticsTool,
-  schedulerControlTool,
-  searchMemoryTool,
-  auditedMcpManagerTool,
   auditedMcpCallTool,
 ];

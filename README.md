@@ -92,10 +92,10 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Persistent JSONL sessions with rotation, archival, and summaries.
 - Markdown memory notes under `~/.jarvis/data/notes/`, plus optional adaptive voice guidance in `~/.jarvis/prompts/SOUL.md`.
 - Natural-language lexical recall across notes and past user/assistant conversations, with bounded cited results and no external indexing service.
-- Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, read-only browser workbench, and conversational MCP integration management.
+- Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, approval-gated browser workbench, and conversational MCP integration management.
 - Telegram image/document input, optional local whisper.cpp voice/audio transcription, and conversational delivery of generated files back to the active chat.
 - Automatic reply, quote, and forwarded-message context with strict untrusted-content boundaries and threaded first responses.
-- Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
+- Local-only Playwright browser workbench for page inspection plus guarded benign interaction, with persistent profile, screenshots, and JSON artifacts.
 - Conversational reminders and recurring automations with strict timezone-aware parsing, durable cancellation/history, and cron support through a validated scheduler control tool.
 - Detached background workers using isolated git worktrees and role pipelines.
 - Guarded self-deploy that verifies, pushes, caches, and atomically activates the exact reviewed local `main` commit.

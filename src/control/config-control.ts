@@ -143,7 +143,11 @@ export async function applyConfigChange(
   });
 }
 
-export async function rollbackConfig(expectedRevision: string, targetRevision?: string): Promise<ConfigChangePlan> {
+export async function rollbackConfig(
+  expectedRevision: string,
+  targetRevision?: string,
+  preflight?: (config: Config) => void | Promise<void>,
+): Promise<ConfigChangePlan> {
   assertMutationAllowed();
   return withFileLock(paths.configYaml, async () => {
     const current = await readCurrent();
@@ -160,6 +164,10 @@ export async function rollbackConfig(expectedRevision: string, targetRevision?: 
     const raw = await readFile(join(paths.configHistory, selected), "utf-8");
     const restored = parseConfig(parseDocument(raw).toJS(), "rollback config");
     const modelChanged = agentRouteChanged(current.config, restored);
+    if (modelChanged) {
+      if (!preflight) throw new Error("Rollback model route requires preflight validation");
+      await preflight(restored);
+    }
     await saveHistory(current.raw, current.revision);
     await writeConfigAndRuntimeModel(current.raw, current.config, raw, restored);
     return {

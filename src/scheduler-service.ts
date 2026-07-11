@@ -81,6 +81,17 @@ export const DynamicTaskSchema = z.union([RecurringTaskSchema, OneTimeTaskSchema
 export const DynamicTasksFileSchema = z.object({ tasks: z.array(DynamicTaskSchema) }).strict();
 
 let reconcile: (() => Promise<void>) | undefined;
+let schedulerEnabledCheck = (): boolean => config.scheduler.enabled;
+export function setSchedulerEnabledCheckForTests(check?: () => boolean): void {
+  schedulerEnabledCheck = check ?? (() => config.scheduler.enabled);
+}
+function assertSchedulerEnabled(): void {
+  if (!schedulerEnabledCheck()) {
+    throw new Error(
+      "Scheduler is disabled. Enable scheduler.enabled and configure telegram_chat_id before managing reminders.",
+    );
+  }
+}
 export function setSchedulerReconciler(fn: (() => Promise<void>) | undefined): void {
   reconcile = fn;
 }
@@ -298,6 +309,7 @@ export interface CreateTaskInput {
   idempotencyKey?: string;
 }
 export async function createDynamicTask(input: CreateTaskInput): Promise<{ task: DynamicTask; created: boolean }> {
+  assertSchedulerEnabled();
   const timezone = input.timezone ?? config.scheduler.timezone;
   if (Boolean(input.when) === Boolean(input.recurrence)) throw new Error("Specify exactly one of when or recurrence");
   const fingerprint = createHash("sha256")
@@ -392,6 +404,7 @@ function assertMutable(task: DynamicTask): void {
     throw new Error("Recurring task is cancelled; it cannot be changed");
 }
 export async function updateDynamicTask(input: UpdateTaskInput): Promise<DynamicTask> {
+  assertSchedulerEnabled();
   return mutateTask(input.id, input.expectedRevision, input.mutationKey, (current) => {
     assertMutable(current);
     const timezone = input.timezone ?? current.timezone ?? config.scheduler.timezone;
@@ -424,6 +437,7 @@ export async function snoozeDynamicTask(
   expectedRevision?: number,
   mutationKey?: string,
 ): Promise<DynamicTask> {
+  assertSchedulerEnabled();
   return mutateTask(id, expectedRevision, mutationKey, (current) => {
     if (!("run_at" in current)) throw new Error("Only one-time tasks can be snoozed");
     assertMutable(current);
@@ -443,6 +457,7 @@ export async function cancelDynamicTask(
   expectedRevision?: number,
   mutationKey?: string,
 ): Promise<DynamicTask> {
+  assertSchedulerEnabled();
   return mutateTask(id, expectedRevision, mutationKey, (current) => {
     if ("run_at" in current && current.status === "running")
       throw new Error("A running task cannot be cancelled because its side-effect outcome would be unknown");
@@ -452,6 +467,7 @@ export async function cancelDynamicTask(
   });
 }
 export async function listDynamicTasks(options: { includeTerminal?: boolean } = {}): Promise<DynamicTask[]> {
+  assertSchedulerEnabled();
   const tasks = (await readDynamicTaskFile()).tasks;
   if (options.includeTerminal) return tasks;
   return tasks.filter((task) =>

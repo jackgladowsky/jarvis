@@ -24,7 +24,7 @@ const APPROVAL_TTL_MS = 10 * 60_000;
 const ID_PATTERN = /^[a-f0-9]{24}$/;
 
 function recordPath(id: string): string {
-  if (!ID_PATTERN.test(id)) throw new Error("invalid browser approval id");
+  if (!ID_PATTERN.test(id)) throw new Error("invalid owner approval id");
   return join(paths.workbenchApprovals, `${id}.json`);
 }
 
@@ -46,14 +46,27 @@ export function workbenchPlanHash(steps: WorkbenchStep[]): string {
 
 export function summarizeWorkbenchPlan(steps: WorkbenchStep[]): string {
   return steps
-    .map((step, index) => `${index + 1}. ${step.action}: ${step.url ?? step.text ?? step.selector ?? "(target)"}`)
+    .map((step, index) => {
+      const target = step.url ?? step.text ?? step.selector ?? "(target)";
+      let value = "";
+      if (step.value !== undefined) {
+        const sensitive =
+          /(?:bearer\s+\S+|sk-[A-Za-z0-9_-]+|ghp_|github_pat_|eyJ[A-Za-z0-9_-]+\.|password|secret|token|api.?key)/i.test(
+            step.value,
+          );
+        value = sensitive
+          ? ` value=[redacted ${step.value.length} chars sha256:${createHash("sha256").update(step.value).digest("hex").slice(0, 12)}]`
+          : ` value=${JSON.stringify(step.value.slice(0, 160))}${step.value.length > 160 ? "…" : ""}`;
+      }
+      return `${index + 1}. ${step.action}: ${target}${value}`;
+    })
     .join("\n")
     .slice(0, 1500);
 }
 
 async function readRecord(id: string): Promise<WorkbenchApprovalRecord> {
   const parsed = JSON.parse(await readFile(recordPath(id), "utf-8")) as WorkbenchApprovalRecord;
-  if (parsed.id !== id) throw new Error("browser approval record id mismatch");
+  if (parsed.id !== id) throw new Error("owner approval record id mismatch");
   return parsed;
 }
 
@@ -88,10 +101,10 @@ export async function decideWorkbenchApproval(
   return withFileLock(recordPath(id), async () => {
     const record = await readRecord(id);
     if (record.chatId !== identity.chatId || record.userId !== identity.userId) {
-      throw new Error("This browser approval belongs to a different chat or owner.");
+      throw new Error("This owner approval belongs to a different chat or owner.");
     }
-    if (Date.parse(record.expiresAt) <= now.getTime()) throw new Error("This browser approval expired.");
-    if (record.status !== "pending") throw new Error(`This browser approval is already ${record.status}.`);
+    if (Date.parse(record.expiresAt) <= now.getTime()) throw new Error("This owner approval expired.");
+    if (record.status !== "pending") throw new Error(`This owner approval is already ${record.status}.`);
     const updated = { ...record, status: decision, decidedAt: now.toISOString() };
     await atomicWriteJson(recordPath(id), updated);
     return updated;
@@ -108,14 +121,13 @@ export async function consumeWorkbenchApproval(
   return withFileLock(recordPath(id), async () => {
     const record = await readRecord(id);
     if (record.chatId !== identity.chatId || record.userId !== identity.userId) {
-      throw new Error("Browser approval is not valid for this chat and owner.");
+      throw new Error("Owner approval is not valid for this chat and owner.");
     }
-    if (record.planHash !== workbenchPlanHash(steps))
-      throw new Error("Browser approval does not match this exact plan.");
-    if (Date.parse(record.expiresAt) <= now.getTime()) throw new Error("Browser approval expired.");
+    if (record.planHash !== workbenchPlanHash(steps)) throw new Error("Owner approval does not match this exact plan.");
+    if (Date.parse(record.expiresAt) <= now.getTime()) throw new Error("Owner approval expired.");
     if (record.status !== "approved") {
       throw new Error(
-        record.status === "consumed" ? "Browser approval was already used." : `Browser approval is ${record.status}.`,
+        record.status === "consumed" ? "Owner approval was already used." : `Owner approval is ${record.status}.`,
       );
     }
     const updated = { ...record, status: "consumed" as const, consumedAt: now.toISOString() };

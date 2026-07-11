@@ -4,7 +4,10 @@ import { allTools } from "./index.js";
 import { summarizeMcpManagerAuditArgs, summarizeMcpManagerAuditError } from "./mcp-manager.js";
 
 test("mcp manager is naturally routable and audit metadata excludes configuration values", () => {
-  assert.ok(allTools.some((tool) => tool.name === "mcp_manage"));
+  assert.ok(
+    !allTools.some((tool) => tool.name === "mcp_manage"),
+    "MCP management must be injected only into authenticated chat runs",
+  );
   const summary = summarizeMcpManagerAuditArgs({
     action: "add",
     server: "calendar",
