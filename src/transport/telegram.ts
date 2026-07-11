@@ -13,9 +13,10 @@
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
 import { join } from "node:path";
-import { Bot, type Context } from "grammy";
+import { Bot, InputFile, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { handleMessage } from "../agent/runtime.js";
+import type { PreparedArtifact } from "../agent/tools/send-artifact.js";
 import { config, env } from "../config.js";
 import { isAllowed } from "../lib/allowlist.js";
 import {
@@ -104,6 +105,20 @@ async function safe<T>(label: string, p: Promise<T>): Promise<T | undefined> {
     log.debug("telegram call failed", { label, err: err instanceof Error ? err.message : err });
     return undefined;
   }
+}
+
+export async function deliverTelegramArtifact(
+  ctx: Context,
+  artifact: PreparedArtifact,
+  replyParameters?: ReturnType<typeof replyParametersForMessage>,
+): Promise<{ messageId: number }> {
+  const sent = await withTelegramRetry(() =>
+    ctx.replyWithDocument(new InputFile(artifact.path, artifact.fileName), {
+      ...(artifact.caption ? { caption: artifact.caption } : {}),
+      ...(replyParameters ? { reply_parameters: { ...replyParameters, allow_sending_without_reply: true } } : {}),
+    }),
+  );
+  return { messageId: sent.message_id };
 }
 
 async function replyReliably(
@@ -767,6 +782,19 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
         statusMode: runStatusMode,
       },
       images,
+      {
+        sendArtifact: async (artifact) => {
+          await clearStatus();
+          const receipt = await deliverTelegramArtifact(
+            ctx,
+            artifact,
+            firstAgentReply ? inboundReplyParameters : undefined,
+          );
+          firstAgentReply = false;
+          visibleResponseDelivered = true;
+          return receipt;
+        },
+      },
     );
   } catch (err) {
     log.error("handler error", { err: err instanceof Error ? err.message : err });

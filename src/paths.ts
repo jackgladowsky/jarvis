@@ -58,6 +58,9 @@ export const paths = {
   // Original Telegram documents accepted as bounded, untrusted reference material.
   telegramDocuments: join(DATA_BASE, "data", "telegram-documents"),
 
+  // Files deliberately prepared for delivery back to the active Telegram chat.
+  outboundArtifacts: join(DATA_BASE, "data", "outbound"),
+
   // Scheduled job state — independent persistent sessions per task.
   scheduledJobs: join(DATA_BASE, "data", "jobs"),
   scheduledJobTasks: join(DATA_BASE, "data", "jobs", "tasks.json"),

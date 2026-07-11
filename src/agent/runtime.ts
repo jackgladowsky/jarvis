@@ -39,6 +39,7 @@ import { summarizeArchived } from "./summarizer.js";
 import { getSystemPrompt } from "./system-prompt.js";
 import { makeAbortableTool } from "./tools/abortable.js";
 import { allTools } from "./tools/index.js";
+import { createSendArtifactTool, type ArtifactSender } from "./tools/send-artifact.js";
 import {
   beginChatTurn,
   finishChatTurn,
@@ -56,6 +57,11 @@ export type StatusMode = "off" | "thinking" | "verbose";
 export interface ModelOverride {
   provider?: string;
   model?: string;
+}
+
+export interface ChatRunCapabilities {
+  /** Present only for a real inbound Telegram chat turn. */
+  sendArtifact?: ArtifactSender;
 }
 
 export interface StreamCallbacks {
@@ -371,15 +377,32 @@ function injectSkillNudge(messages: AgentMessage[]): void {
 // Build a fresh Agent for a given session. Tools and model are process-level;
 // the system prompt is reassembled per run so host-local prompt edits are live
 // on the next prompt/session.
-function buildAgent(messages: AgentMessage[], agentModel = model, sessionId?: string, telegramChatId?: number): Agent {
+function buildAgent(
+  messages: AgentMessage[],
+  agentModel = model,
+  sessionId?: string,
+  telegramChatId?: number,
+  tools = cancellableTools,
+): Agent {
+  const hasSendArtifact = tools.some((tool) => tool.name === "send_artifact");
   const systemPrompt = telegramChatId
-    ? `${getSystemPrompt()}\n\n## Current Transport Context\n- Telegram chat ID: \`${telegramChatId}\`\nPass this exact ID to trusted repo scripts that require an explicit notification destination.`
+    ? [
+        getSystemPrompt(),
+        "## Current Transport Context",
+        `- Telegram chat ID: \`${telegramChatId}\``,
+        "Pass this exact ID to trusted repo scripts that require an explicit notification destination.",
+        ...(hasSendArtifact
+          ? [
+              "- `send_artifact` is available for this inbound chat turn. Use it when the owner asks you to deliver a local file; do not merely return the host path.",
+            ]
+          : []),
+      ].join("\n\n")
     : getSystemPrompt();
   return new Agent({
     initialState: {
       systemPrompt,
       model: agentModel,
-      tools: cancellableTools,
+      tools,
       messages,
       thinkingLevel: getReasoningLevel(),
     },
@@ -521,6 +544,7 @@ export async function handleMessage(
   text: string,
   callbacks: StreamCallbacks = {},
   images: ImageContent[] = [],
+  capabilities: ChatRunCapabilities = {},
 ): Promise<void> {
   const run = activeAgentRuns.start("chat", chatId);
   let turn: ChatTurnJournal | undefined;
@@ -604,6 +628,18 @@ export async function handleMessage(
       }
     }
 
+    const chatTools = capabilities.sendArtifact
+      ? [
+          ...cancellableTools,
+          makeAbortableTool(
+            createSendArtifactTool({
+              send: capabilities.sendArtifact,
+              beforeDelivery: () => recordChatVisibleOutput(chatTurn),
+            }),
+          ),
+        ]
+      : cancellableTools;
+
     const attempts: Attempt[] = [primaryAttempts[0]];
     let completedMessages: AgentMessage[] | undefined;
     let terminalFailure: string | undefined;
@@ -634,7 +670,7 @@ export async function handleMessage(
     for (let i = 0; i < attempts.length; i++) {
       ensureNotAborted(run);
       const attempt = attempts[i];
-      const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, session.sessionId, chatId);
+      const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, session.sessionId, chatId, chatTools);
       const detachAgent = run.attachAgent(agent);
       let currentMsgIsAbandoned = false;
       let promptError: string | undefined;

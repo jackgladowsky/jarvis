@@ -93,7 +93,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Markdown memory notes under `~/.jarvis/data/notes/`, plus optional adaptive voice guidance in `~/.jarvis/prompts/SOUL.md`.
 - Natural-language lexical recall across notes and past user/assistant conversations, with bounded cited results and no external indexing service.
 - Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, and read-only browser workbench.
-- Telegram image input, bounded PDF/text/source/config document ingestion, and optional local whisper.cpp voice/audio transcription.
+- Telegram image/document input, optional local whisper.cpp voice/audio transcription, and conversational delivery of generated files back to the active chat.
 - Automatic reply, quote, and forwarded-message context with strict untrusted-content boundaries and threaded first responses.
 - Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
 - Conversational reminders and recurring automations with strict timezone-aware parsing, durable cancellation/history, and cron support through a validated scheduler control tool.
@@ -151,6 +151,12 @@ Configuration is primarily managed conversationally: ask JARVIS to inspect or ch
 /goal list|status|log <id>      inspect goal state/events
 /goal pause|resume|stop|next <id> control a goal loop
 ```
+
+## Outbound artifacts
+
+During an interactive Telegram turn, JARVIS can use its run-scoped `send_artifact` capability to return generated reports, patches, archives, and browser screenshots directly to the current chat. The capability accepts only a local path and optional caption—it cannot select another chat or fetch a URL. Generated deliverables should normally be written under `~/.jarvis/data/outbound/` first.
+
+Delivery is restricted to bounded regular files in approved repository, outbound, workbench, inbound-document, or temporary roots. Symlinks, devices, directories, oversized files, credentials, configuration, transcripts, notification state, dependency trees, and other protected state are rejected. Scheduled jobs and background workers do not receive this tool. Each upload crosses the durable chat replay boundary before any bytes are sent, so a later model or persistence failure cannot automatically repeat the delivery.
 
 ## Browser workbench
 
