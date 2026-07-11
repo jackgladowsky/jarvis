@@ -497,9 +497,9 @@ First-read latency. When the owner mentions a project, JARVIS does an extra `rea
 
 The risk is JARVIS _not_ reading when it should. Mitigation: the prompt is explicit about read triggers, and the first weeks of usage will surface where the rules need to be tightened.
 
-### Episodic memory (v2 — not built)
+### Episodic memory (local lexical recall)
 
-Searchable history of past sessions. "What did we decide about X two weeks ago?" Out of scope for v1. The JSONL archive plus monthly archives of `recent.md` and projects make this addable later (grep first; vector embeddings if grep isn't enough).
+The `search_memory` agent tool incrementally indexes Markdown notes and the user/assistant text in active and archived session JSONL. It returns bounded snippets with note-line or session-record citations and dates; tool calls/results are excluded. Source fingerprints provide freshness and deletion reconciliation without a native database or external disclosure. New sessions receive prospective chat-ownership metadata for optional `current_chat` filtering. Because JARVIS remains a trusted single-owner product, legacy archives without ownership metadata are available only in the owner-global scope. See `docs/memory-search.md`.
 
 ---
 

@@ -128,6 +128,30 @@ async function persistActive(next: ActiveSessions): Promise<void> {
   active = next;
 }
 
+async function readSessionOwners(): Promise<Record<string, number>> {
+  try {
+    const parsed = JSON.parse(await readFile(paths.sessionOwners, "utf-8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const owners: Record<string, number> = Object.create(null) as Record<string, number>;
+    for (const [sessionId, chatId] of Object.entries(parsed)) {
+      if (/^[A-Za-z0-9_-]+$/.test(sessionId) && typeof chatId === "number" && Number.isSafeInteger(chatId)) {
+        owners[sessionId] = chatId;
+      }
+    }
+    return owners;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw err;
+  }
+}
+
+async function recordSessionOwner(sessionId: string, chatId: number): Promise<void> {
+  const owners = await readSessionOwners();
+  if (owners[sessionId] === chatId) return;
+  owners[sessionId] = chatId;
+  await atomicWriteJson(paths.sessionOwners, owners);
+}
+
 async function reserveSession(now: Date): Promise<string> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const sessionId = newSessionId(now);
@@ -235,6 +259,11 @@ export async function init(): Promise<void> {
     }
     if (repaired) await persistActive(next);
     else active = next;
+    // The active mapping lets upgraded installations prospectively attach
+    // ownership metadata without rewriting immutable historical transcripts.
+    for (const [chatId, entry] of Object.entries(next)) {
+      await recordSessionOwner(entry.sessionId, Number(chatId));
+    }
     await archiveUnreferencedSessions(next);
   });
   log.info("session manager loaded", {
@@ -264,6 +293,7 @@ export async function resolveSession(chatId: number): Promise<ResolvedSession> {
     const rotatedFrom = current?.sessionId;
     const sessionId = await reserveSession(new Date(timestamp));
     next[key] = { sessionId, startedAt: timestamp, lastMessageAt: timestamp };
+    await recordSessionOwner(sessionId, chatId);
     await persistActive(next);
     if (rotatedFrom) {
       log.info("rotating session (auto)", { chatId: key, sessionId: rotatedFrom });
@@ -292,6 +322,7 @@ export async function forceRotate(chatId: number): Promise<ResolvedSession> {
     const timestamp = Date.now();
     const sessionId = await reserveSession(new Date(timestamp));
     next[key] = { sessionId, startedAt: timestamp, lastMessageAt: timestamp };
+    await recordSessionOwner(sessionId, chatId);
     await persistActive(next);
     if (previous) {
       log.info("rotating session (manual)", { chatId: key, sessionId: previous });

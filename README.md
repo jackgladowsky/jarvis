@@ -91,6 +91,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Telegram bot interface with hard allowlisting by numeric Telegram user ID.
 - Persistent JSONL sessions with rotation, archival, and summaries.
 - Markdown memory notes under `~/.jarvis/data/notes/`, plus optional adaptive voice guidance in `~/.jarvis/prompts/SOUL.md`.
+- Natural-language lexical recall across notes and past user/assistant conversations, with bounded cited results and no external indexing service.
 - Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, and read-only browser workbench.
 - Telegram image input, bounded PDF/text/source/config document ingestion, and optional local whisper.cpp voice/audio transcription.
 - Initial local-only Playwright browser workbench for read-only page inspection with persistent profile, screenshots, and JSON artifacts.
@@ -163,6 +164,10 @@ pnpm run workbench:smoke -- https://example.com
 ```
 
 See `docs/workbench.md` for data paths, click/type boundaries, safety notes, and current limitations. CAPTCHA bypass, login/2FA automation, downloads, Docker Compose packaging, and noVNC/KasmVNC human takeover are not implemented. Benign submits like search forms are allowed; risky submits still require explicit approval.
+
+## Conversation recall
+
+Ask JARVIS naturally about an earlier discussion, decision, or saved fact. The audited `search_memory` capability incrementally reconciles host-local Markdown notes and active/archived session text, then returns bounded snippets with source/date citations. Tool calls and tool results are excluded. See [`docs/memory-search.md`](docs/memory-search.md) for indexing, ownership, deletion, and privacy behavior.
 
 ## Telegram documents
 

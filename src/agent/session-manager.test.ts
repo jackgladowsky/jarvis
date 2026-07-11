@@ -109,6 +109,13 @@ test("chat compaction rewrite preserves the deliberately kept recent tail", asyn
   assert.ok(active["123"]);
   assert.ok(active["456"]);
   assert.ok(active["789"]);
+  const owners = JSON.parse(await readFile(join(dataDir, "data", "sessions", "owners.json"), "utf-8")) as Record<
+    string,
+    number
+  >;
+  assert.equal(owners[sessionId], 123);
+  assert.equal(owners[(active["456"] as { sessionId: string }).sessionId], 456);
+  assert.equal(owners[(active["789"] as { sessionId: string }).sessionId], 789);
 
   const orphan = join(dataDir, "data", "sessions", "orphan-session.jsonl");
   await writeFile(orphan, `${JSON.stringify(user("unreferenced"))}\n`, "utf-8");

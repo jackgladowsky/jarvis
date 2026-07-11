@@ -44,6 +44,8 @@ export const paths = {
   sessions: join(DATA_BASE, "data", "sessions"),
   sessionsArchive: join(DATA_BASE, "data", "sessions", "archive"),
   activeSessions: join(DATA_BASE, "data", "sessions", "active.json"),
+  sessionOwners: join(DATA_BASE, "data", "sessions", "owners.json"),
+  memorySearchIndex: join(DATA_BASE, "cache", "memory-search-index.json"),
   turnJournalActive: join(DATA_BASE, "data", "runs", "active"),
   turnJournalArchive: join(DATA_BASE, "data", "runs", "archive"),
   chatLocks: join(DATA_BASE, "data", "runs", "chat-locks"),
