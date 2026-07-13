@@ -62,3 +62,14 @@ If `gh` is unavailable or unauthenticated, report that and provide the branch/su
 5. After GitHub merges the PR, fast-forward local `main` to the exact remote merge result and run `pnpm deploy:self`; safe deploy never pushes `main`.
 
 Do not assume worker output is correct. That is how tiny fires become scheduled fires.
+
+## Durable CI watch (main JARVIS only)
+
+Immediately **after** the branch push succeeds and `gh pr create` returns an open PR, record its exact head SHA and start the read-only durable watch:
+
+```bash
+HEAD_SHA="$(gh pr view <number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid)"
+pnpm pr:watch -- start --repo <owner>/<repo> --pr <number> --head "$HEAD_SHA" --chat-id <current-telegram-chat-id>
+```
+
+Do not start it before the push/open succeeds. It persists one current watch in `~/.jarvis/data/pr-ci-watch.json`, reconciles changed heads, and emits one internal event for a green exact SHA or a bounded red-check summary. Main JARVIS alone decides any later merge/deploy; the watcher only calls read-only `gh pr view`/`gh api` endpoints.

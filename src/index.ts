@@ -8,6 +8,7 @@ import * as sessions from "./agent/session-manager.js";
 import { model } from "./agent/model.js";
 import { resumeUnsummarizedArchives } from "./agent/summarizer.js";
 import { startBackgroundWorkerSupervisor } from "./background/supervisor.js";
+import { startPrCiWatcher } from "./pr-ci/service.js";
 import { notifyPendingConfigRestart } from "./control/restart.js";
 import { notifyPendingDeployComplete } from "./lib/deploy-notify.js";
 import { log } from "./lib/logger.js";
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
 
   const stopScheduler = await startScheduler();
   const stopBackgroundSupervisor = await startBackgroundWorkerSupervisor();
+  const stopPrCiWatcher = await startPrCiWatcher();
 
   const beginShutdown = (sig: NodeJS.Signals): void => {
     if (shuttingDown) return;
@@ -35,6 +37,7 @@ async function main(): Promise<void> {
     shutdownController.abort(new Error(`shutdown: ${sig}`));
     stopScheduler();
     stopBackgroundSupervisor();
+    stopPrCiWatcher();
     const aborted = abortAllActiveRuns(`Shutdown requested (${sig}).`);
     log.info("active agent runs aborted", { aborted });
   };
@@ -61,6 +64,7 @@ async function main(): Promise<void> {
     shutdownController.abort(new Error("telegram stopped"));
     stopScheduler();
     stopBackgroundSupervisor();
+    stopPrCiWatcher();
     abortAllActiveRuns("Process exiting.");
     const drainedRuns = await waitForActiveRuns(ACTIVE_RUN_SHUTDOWN_WAIT_MS);
     if (!drainedRuns) log.warn("timed out waiting for active agent runs to stop");
