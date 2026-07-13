@@ -292,3 +292,67 @@ test("dead-pump fallback atomically claims deterministic notifications", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+test("delivery mode routing respects explicit and default conventions", async () => {
+  const { mod, paths } = await loaded;
+
+  // Explicit `delivery: "plain"` forces plain delivery for any source.
+  const plain = await mod.enqueueInternalNotification({
+    id: "routing-explicit-plain",
+    source: "background",
+    delivery: "plain",
+    chat_id: 123,
+    title: "Plain progress",
+    body: "worker starting",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(plain), true);
+
+  // Explicit `delivery: "prompt"` forces agent delivery for any source.
+  const prompt = await mod.enqueueInternalNotification({
+    id: "routing-explicit-prompt",
+    source: "deploy",
+    delivery: "prompt",
+    chat_id: 123,
+    title: "Deploy prompt",
+    body: "deploy body",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(prompt), false);
+
+  // Deploy defaults to plain so pre-existing queue files survive upgrades.
+  const legacyDeploy = await mod.enqueueInternalNotification({
+    id: "routing-legacy-deploy",
+    source: "deploy",
+    chat_id: 123,
+    title: "Legacy deploy",
+    body: "no delivery field",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(legacyDeploy), true);
+
+  // Background without an explicit delivery field routes through agent delivery.
+  // This is the critical regression guard: the glow-comet ready_for_pr gap
+  // was caused by ALL `source: "background"` events bypassing the agent pump.
+  const background = await mod.enqueueInternalNotification({
+    id: "routing-background-lifecycle",
+    source: "background",
+    chat_id: 123,
+    title: "ready for PR",
+    body: "next action",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(background), false);
+
+  // Scheduler always routes through agent delivery (no delivery field needed).
+  const scheduler = await mod.enqueueInternalNotification({
+    id: "routing-scheduler-default",
+    source: "scheduler",
+    chat_id: 123,
+    title: "Run",
+    body: "job triggered",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(scheduler), false);
+
+  // Clean up all pending notifications for other tests.
+  for (const notification of await mod.listPendingInternalNotifications()) {
+    const claimed = await mod.claimInternalNotification(notification);
+    if (claimed) await mod.finishInternalNotification(claimed, "processed");
+  }
+});

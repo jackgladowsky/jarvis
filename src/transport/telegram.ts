@@ -39,6 +39,7 @@ import {
   finishInternalNotification,
   InternalNotificationClaimLostError,
   listPendingInternalNotifications,
+  notificationDeliveryIsPlain,
   renewInternalNotificationClaim,
   renderInternalNotificationPrompt,
   sendTelegramFallback,
@@ -366,9 +367,10 @@ async function sendAgentPromptToTelegram(bot: Bot, chatId: number, prompt: strin
   if (!sentText) throw new Error("agent produced no visible response for internal notification");
 }
 
-// Send background task notifications as plain text. Background task action
-// buttons were intentionally removed: direct commands are clearer and avoid
-// stale inline controls lingering in chat history.
+// Send notifications marked for plain delivery (deploy announcements and
+// ad-hoc background worker progress) as formatted text without running the
+// agent. Lifecycle notifications now route through `sendAgentPromptToTelegram`
+// so main JARVIS can produce a conversational response.
 async function sendPlainNotification(bot: Bot, notification: InternalNotification): Promise<void> {
   const text = notification.fallback_text ?? `[${notification.source}] ${notification.title}\n\n${notification.body}`;
   const formatted = format(text);
@@ -413,7 +415,7 @@ function startInternalNotificationPump(bot: Bot, handle: Handler): () => void {
     };
     let delivered = false;
     try {
-      if (claimed.source === "background" || claimed.source === "deploy") {
+      if (notificationDeliveryIsPlain(claimed)) {
         await sendPlainNotification(bot, claimed);
       } else {
         // Agent delivery is deliberately not promise-raced against a timeout:

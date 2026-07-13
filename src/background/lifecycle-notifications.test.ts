@@ -154,6 +154,48 @@ test("reviewer needs_fix is durably surfaced without a /tasks request", async ()
     );
     assert.ok(failedNotification);
     assert.match(failedNotification.body, /Next action:/);
+
+    // ── Regression: ready_for_pr events must reach the agent pump ─────────
+    // Create a fresh task in the ready_for_pr terminal state and drain its
+    // outbox. The resulting internal notification must NOT opt into plain
+    // delivery — it should route through `sendAgentPromptToTelegram` so
+    // main JARVIS surfaces a conversational response to the owner.
+    // This guards against the glow-comet gap where terminal events were
+    // silently delivered as plain text wall-of-dumps.
+    const readyTask = reviewerRejectedTask();
+    readyTask.id = "glow-sparrow";
+    readyTask.uuid = "uuid-glow-sparrow";
+    readyTask.worktree = join(worktreesDir, "glow-sparrow");
+    readyTask.branch = "worker/glow-sparrow";
+    readyTask.status = "ready_for_pr";
+    const readyQueued = lifecycle.queueBackgroundStatusNotification(readyTask);
+    assert.ok(readyQueued, "ready_for_pr notification must be queued");
+    assert.equal(readyQueued!.event, "terminal-ready-for-pr");
+    await manager.writeBackgroundTask(readyTask);
+    await lifecycle.enqueueBackgroundLifecycleNotifications(readyTask.id);
+
+    const pendingAfterReady = await notifications.listPendingInternalNotifications();
+    const ready = pendingAfterReady.find(
+      (notification: { source: string; title: string }) =>
+        notification.source === "background" && notification.title.includes("ready for PR"),
+    );
+    assert.ok(ready, "ready_for_pr internal notification must exist in the queue");
+    assert.equal(
+      notifications.notificationDeliveryIsPlain(ready),
+      false,
+      "ready_for_pr must route through agent delivery, not plain text",
+    );
+    const readyRendered = notifications.renderInternalNotificationPrompt(ready);
+    assert.match(readyRendered, /prepare the PR/);
+    assert.match(readyRendered, /main JARVIS/);
+
+    // Idempotent drain: a second enqueue pass must not duplicate the event.
+    await lifecycle.enqueueBackgroundLifecycleNotifications(readyTask.id);
+    const redrain = (await notifications.listPendingInternalNotifications()).filter(
+      (notification: { source: string; title: string }) =>
+        notification.source === "background" && notification.title.includes("ready for PR"),
+    );
+    assert.equal(redrain.length, 1);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
