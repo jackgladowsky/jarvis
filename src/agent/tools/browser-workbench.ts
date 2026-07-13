@@ -1,5 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "typebox";
+import { config } from "../../config.js";
 import { auditToolCall } from "../../lib/logger.js";
 import {
   consumeWorkbenchApproval,
@@ -7,6 +8,7 @@ import {
   type WorkbenchApprovalRecord,
 } from "../../workbench/approval.js";
 import { openUrlInWorkbench, runStepsInWorkbench } from "../../workbench/controller.js";
+import { getKernelAuthStatus, startKernelAuth, type KernelSettings } from "../../workbench/kernel.js";
 import { renderWorkbenchResult } from "../../workbench/render.js";
 import { type WorkbenchStep, validateWorkbenchSteps, workbenchPlanRequiresCapability } from "../../workbench/safety.js";
 
@@ -25,12 +27,22 @@ const stepSchema = Type.Object({
 });
 
 const schema = Type.Object({
-  action: Type.Union([Type.Literal("open_url"), Type.Literal("run_steps")]),
+  action: Type.Union([
+    Type.Literal("open_url"),
+    Type.Literal("run_steps"),
+    Type.Literal("kernel_auth_start"),
+    Type.Literal("kernel_auth_status"),
+  ]),
   url: Type.Optional(Type.String()),
   steps: Type.Optional(Type.Array(stepSchema, { maxItems: 20 })),
   request: Type.Optional(Type.String({ description: "The user's natural-language request, without secrets." })),
   capabilityId: Type.Optional(
     Type.String({ description: "Owner-issued approval id returned by a prior pending browser request." }),
+  ),
+  domain: Type.Optional(Type.String({ description: "Public domain for a user-completed Kernel hosted login." })),
+  profileName: Type.Optional(Type.String({ description: "Safe Kernel profile name; no credentials or cookies." })),
+  connectionId: Type.Optional(
+    Type.String({ description: "Safe Kernel auth connection identifier for status lookup." }),
   ),
 });
 
@@ -51,6 +63,9 @@ export function createBrowserWorkbenchTool(authority?: BrowserWorkbenchAuthority
     parameters: schema,
     async execute(_id, args: BrowserArgs, signal) {
       const t0 = Date.now();
+      if (args.action === "kernel_auth_start" || args.action === "kernel_auth_status") {
+        return executeKernelAuth(args, authority, t0);
+      }
       const steps = normalizedSteps(args);
       const auditArgs = {
         action: args.action,
@@ -99,8 +114,16 @@ export function createBrowserWorkbenchTool(authority?: BrowserWorkbenchAuthority
 
         const snapshot =
           args.action === "open_url"
-            ? await openUrlInWorkbench(requiredString(args.url, "url is required for open_url"), { signal })
-            : await runStepsInWorkbench(steps, { request: args.request, capabilityGranted, signal });
+            ? await openUrlInWorkbench(requiredString(args.url, "url is required for open_url"), {
+                signal,
+                ...browserBackendOptions(),
+              })
+            : await runStepsInWorkbench(steps, {
+                request: args.request,
+                capabilityGranted,
+                signal,
+                ...browserBackendOptions(),
+              });
         await auditToolCall({
           tool: "browser_workbench",
           args: auditArgs,
@@ -145,4 +168,116 @@ function normalizedSteps(args: BrowserArgs): WorkbenchStep[] {
 function requiredString(value: string | undefined, message: string): string {
   if (!value) throw new Error(message);
   return value;
+}
+
+function kernelSettings(): KernelSettings {
+  const kernel = config.tools.browser.kernel;
+  return { apiKeyEnv: kernel.api_key_env, profileName: kernel.profile_name, saveChanges: kernel.save_changes };
+}
+
+function browserBackendOptions(): { backend: "local" | "kernel"; kernel?: KernelSettings } {
+  return config.tools.browser.backend === "kernel"
+    ? { backend: "kernel", kernel: kernelSettings() }
+    : { backend: "local" };
+}
+
+function authPlan(args: BrowserArgs): WorkbenchStep[] {
+  return [
+    {
+      action: "submit",
+      text: `Start Kernel hosted authentication for ${requiredString(args.domain, "domain is required for kernel_auth_start")}`,
+      selector: requiredString(args.profileName, "profileName is required for kernel_auth_start"),
+    },
+  ];
+}
+
+function formatAuthStatus(status: {
+  id: string;
+  domain: string;
+  profileName: string;
+  status: string;
+  flowStatus: string | null;
+  flowStep: string | null;
+  flowExpiresAt: string | null;
+}): string {
+  return [
+    `Kernel auth connection: ${status.id}`,
+    `Domain: ${status.domain}`,
+    `Profile: ${status.profileName}`,
+    `Status: ${status.status}`,
+    `Flow: ${status.flowStatus ?? "none"}${status.flowStep ? ` (${status.flowStep})` : ""}`,
+    status.flowExpiresAt ? `Expires: ${status.flowExpiresAt}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function executeKernelAuth(args: BrowserArgs, authority: BrowserWorkbenchAuthority | undefined, t0: number) {
+  const auditArgs = {
+    action: args.action,
+    domain: args.domain,
+    profileName: args.profileName,
+    connectionId: args.connectionId,
+    capabilityId: args.capabilityId ? "[provided]" : undefined,
+  };
+  try {
+    if (config.tools.browser.backend !== "kernel")
+      throw new Error("Kernel auth requires tools.browser.backend: kernel.");
+    const settings = kernelSettings();
+    if (args.action === "kernel_auth_status") {
+      if (args.capabilityId)
+        throw new Error("A capability cannot be attached to a read-only Kernel auth status request.");
+      const status = await getKernelAuthStatus(
+        settings,
+        requiredString(args.connectionId, "connectionId is required for kernel_auth_status"),
+      );
+      await auditToolCall({ tool: "browser_workbench", args: auditArgs, outcome: "ok", duration_ms: Date.now() - t0 });
+      return { content: [{ type: "text" as const, text: formatAuthStatus(status) }], details: { status } };
+    }
+    const plan = authPlan(args);
+    if (!authority) throw new Error("Kernel auth start requires approval from an active Telegram owner chat.");
+    if (!args.capabilityId) {
+      const pending = await createWorkbenchApproval({
+        chatId: authority.chatId,
+        userId: authority.userId,
+        steps: plan,
+      });
+      await authority.requestApproval(pending);
+      await auditToolCall({ tool: "browser_workbench", args: auditArgs, outcome: "ok", duration_ms: Date.now() - t0 });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `PENDING_OWNER_APPROVAL ${pending.id}\nApprove the exact hosted-auth setup before JARVIS creates it.`,
+          },
+        ],
+        details: { status: "pending_approval", approvalId: pending.id, expiresAt: pending.expiresAt },
+      };
+    }
+    await consumeWorkbenchApproval(args.capabilityId, authority, plan);
+    const result = await startKernelAuth(settings, {
+      domain: requiredString(args.domain, "domain is required for kernel_auth_start"),
+      profileName: requiredString(args.profileName, "profileName is required for kernel_auth_start"),
+    });
+    await auditToolCall({ tool: "browser_workbench", args: auditArgs, outcome: "ok", duration_ms: Date.now() - t0 });
+    // Hosted URL is returned only in this approved, in-memory Telegram response; it is never persisted.
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Open this Kernel-hosted page yourself and complete login/2FA/CAPTCHA there:\n${result.hostedUrl}\n\n${formatAuthStatus(result.status)}`,
+        },
+      ],
+      details: { connectionId: result.status.id, status: result.status.status, expiresAt: result.expiresAt },
+    };
+  } catch (err) {
+    await auditToolCall({
+      tool: "browser_workbench",
+      args: auditArgs,
+      outcome: "error",
+      duration_ms: Date.now() - t0,
+      error: err instanceof Error ? err.message : "Kernel auth failed",
+    });
+    throw err;
+  }
 }

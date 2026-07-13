@@ -50,6 +50,18 @@ test("config parser accepts per-scheduled-task model overrides", async () => {
   assert.equal(parseConfig(config, "task-model").scheduler.tasks[0]?.model, "google/gemini-2.5-flash");
 });
 
+test("legacy config migrates to the local browser backend and Kernel references reject literals", async () => {
+  const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
+  const legacy = parseYaml(raw) as any;
+  legacy.schema_version = 1;
+  delete legacy.tools.browser;
+  assert.equal(parseConfig(legacy).tools.browser.backend, "local");
+
+  const unsafe = parseYaml(raw) as any;
+  unsafe.tools.browser.kernel.api_key_env = "actual-secret";
+  assert.throws(() => parseConfig(unsafe), /env-var reference/);
+});
+
 test("config parser requires scheduled provider and model overrides together", async () => {
   const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
   const config = parseYaml(raw) as any;

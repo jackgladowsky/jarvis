@@ -1,7 +1,7 @@
 # JARVIS configuration. Edit freely, restart the service to apply.
 # Secrets live in .env, not here. Copy this to ~/.jarvis/config.yaml.
 
-schema_version: 1
+schema_version: 2
 
 agent:
   provider: codex                             # "codex" / "anthropic" / "openrouter"
@@ -24,6 +24,12 @@ tools:
   bash:
     default_timeout_seconds: 60
     max_timeout_seconds: 600
+  browser:
+    backend: local                         # "local" (default) or "kernel"
+    kernel:
+      api_key_env: $KERNEL_API_KEY         # env-var reference only; never put the key here
+      profile_name: jarvis                 # safe Kernel profile identifier
+      save_changes: false                  # opt in only when remote profile changes should persist
 
 # Background roles inherit the active model unless explicitly routed here.
 # This keeps Anthropic/OpenRouter-only installations working without hidden
