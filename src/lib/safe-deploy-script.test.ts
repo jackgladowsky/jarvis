@@ -74,6 +74,7 @@ test(
     try {
       await mkdir(join(checkout, "scripts"), { recursive: true });
       await mkdir(join(checkout, "prompts"), { recursive: true });
+      await mkdir(join(checkout, ".githooks"), { recursive: true });
       await mkdir(binDir, { recursive: true });
       await cp(script, join(checkout, "scripts/safe-deploy.sh"));
       await writeFile(join(checkout, "package.json"), '{"packageManager":"pnpm@10.26.2"}\n');
@@ -85,13 +86,18 @@ test(
         "dist/\nnode_modules/\n.jarvis-node-modules-previous-*/\n.jarvis-dist-next-*/\n.jarvis-dist-previous-*/\n",
       );
       await writeFile(
+        join(checkout, ".githooks/pre-push"),
+        `#!/usr/bin/env bash\nset -e\n# A production-only checkout has no TypeScript. This proves safe-deploy runs\n# the real pre-push checks in its isolated development-dependency worktree.\ntest -f node_modules/typescript/bin/tsc\npnpm exec tsc --noEmit\npnpm run lint\npnpm run format:check\necho "isolated pre-push validation passed"\n`,
+      );
+      await writeFile(
         join(binDir, "pnpm"),
-        `#!/usr/bin/env bash\nset -e\necho "$*" >> "$FAKE_PNPM_LOG"\nif [[ "\${1:-}" == "--version" ]]; then echo 10.26.2; exit 0; fi\nif [[ "\${1:-}" == "install" ]]; then mkdir -p node_modules/yaml; printf '%s\\n' "module.exports = {};" > node_modules/yaml/index.js; exit 0; fi\nif [[ "\${1:-}" == "prune" && "\${2:-}" == "--prod" ]]; then exit 0; fi\nif [[ "\${1:-}" == "run" && "\${2:-}" == "build" ]]; then\n  mkdir -p dist\n  printf '%s\\n' "module.exports = 'verified-release';" > dist/index.js\n  printf '%s\\n' "const fs=require('node:fs'); require('yaml'); const value=fs.readFileSync(process.argv[2], 'utf8'); if(value.includes('invalid')) process.exit(1); console.log('config valid');" > dist/config-check.js\n  printf '%s\\n' "const test = require('node:test'); test('release smoke', () => {});" > dist/smoke.test.js\n  exit 0\nfi\nexit 2\n`,
+        `#!/usr/bin/env bash\nset -e\necho "$*" >> "$FAKE_PNPM_LOG"\nif [[ "\${1:-}" == "--version" ]]; then echo 10.26.2; exit 0; fi\nif [[ "\${1:-}" == "install" ]]; then mkdir -p node_modules/yaml node_modules/typescript/bin; printf '%s\\n' "module.exports = {};" > node_modules/yaml/index.js; : > node_modules/typescript/bin/tsc; exit 0; fi\nif [[ "\${1:-}" == "prune" && "\${2:-}" == "--prod" ]]; then rm -rf node_modules/typescript; exit 0; fi\nif [[ "\${1:-}" == "exec" && "\${2:-}" == "tsc" ]]; then test -f node_modules/typescript/bin/tsc; exit 0; fi\nif [[ "\${1:-}" == "run" && ( "\${2:-}" == "lint" || "\${2:-}" == "format:check" ) ]]; then exit 0; fi\nif [[ "\${1:-}" == "run" && "\${2:-}" == "build" ]]; then\n  mkdir -p dist\n  printf '%s\\n' "module.exports = 'verified-release';" > dist/index.js\n  printf '%s\\n' "const fs=require('node:fs'); require('yaml'); const value=fs.readFileSync(process.argv[2], 'utf8'); if(value.includes('invalid')) process.exit(1); console.log('config valid');" > dist/config-check.js\n  printf '%s\\n' "const test = require('node:test'); test('release smoke', () => {});" > dist/smoke.test.js\n  exit 0\nfi\nexit 2\n`,
       );
       await writeFile(
         join(binDir, "sudo"),
         '#!/usr/bin/env bash\nif [[ "$*" == *"systemctl show"* ]]; then echo loaded; fi\nexit 0\n',
       );
+      await chmod(join(checkout, ".githooks/pre-push"), 0o755);
       await chmod(join(binDir, "pnpm"), 0o755);
       await chmod(join(binDir, "sudo"), 0o755);
 
@@ -103,6 +109,7 @@ test(
       run("git", ["commit", "-m", "initial"]);
       run("git", ["remote", "add", "origin", remote]);
       run("git", ["push", "-u", "origin", "main"]);
+      run("git", ["config", "core.hooksPath", ".githooks"]);
       await writeFile(join(checkout, "change.txt"), "reviewed change\n");
       run("git", ["add", "change.txt"]);
       run("git", ["commit", "-m", "reviewed change"]);
@@ -129,7 +136,11 @@ test(
         await readFile(join(dataDir, `cache/deploy/${sha}/node_modules/yaml/index.js`), "utf-8"),
         /module\.exports/,
       );
-      assert.equal((await readFile(pnpmLog, "utf-8")).split("\n").filter((line) => line === "prune --prod").length, 1);
+      const firstPnpmLog = await readFile(pnpmLog, "utf-8");
+      assert.match(firstPnpmLog, /exec tsc --noEmit/);
+      assert.match(firstPnpmLog, /run lint/);
+      assert.match(firstPnpmLog, /run format:check/);
+      assert.equal(firstPnpmLog.split("\n").filter((line) => line === "prune --prod").length, 1);
 
       const second = run("bash", [join(checkout, "scripts/safe-deploy.sh"), "--self-main"], checkout, deployEnv);
       assert.match(second, /Using verified deploy cache/);
@@ -160,7 +171,7 @@ test(
         env: { ...process.env, ...deployEnv },
       });
       assert.notEqual(rejected.status, 0);
-      assert.match(rejected.stderr, /Activation failed; restoring the previous release/);
+      assert.doesNotMatch(rejected.stderr, /Activation failed; restoring the previous release/);
       assert.equal(
         await readFile(join(checkout, "node_modules/old-dependency-sentinel"), "utf-8"),
         "old dependencies\n",
