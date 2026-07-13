@@ -1,6 +1,6 @@
 # Browser workbench
 
-JARVIS has a local-only Playwright browser workbench. It opens public `http(s)` pages, inspects visible content, saves screenshots/artifacts, and can run small guarded `click`, `type`, `fill`, and `submit` plans.
+JARVIS defaults to a local Playwright browser workbench. It opens public `http(s)` pages, inspects visible content, saves screenshots/artifacts, and can run small guarded `click`, `type`, `fill`, and `submit` plans. An opt-in Kernel.sh backend can launch the same guarded plan in a hosted browser; if Kernel session acquisition fails before the first step, JARVIS falls back to local Chromium.
 
 ## Owner authority
 
@@ -30,6 +30,32 @@ downloads/     reserved target; download actions remain unimplemented
 ```
 
 Do not put credentials, secrets, private account data, or payment details into browser requests.
+
+## Optional Kernel.sh backend and hosted auth
+
+Kernel is opt-in. Put its API key only in `~/.jarvis/.env` (mode 600), then configure only an environment-variable reference in `~/.jarvis/config.yaml`:
+
+```yaml
+tools:
+  browser:
+    backend: kernel
+    kernel:
+      api_key_env: $KERNEL_API_KEY
+      profile_name: jarvis
+      save_changes: false
+```
+
+Exact owner setup:
+
+1. Create a least-privilege Kernel key and add `KERNEL_API_KEY=...` to `.env`; never paste it into chat or YAML.
+2. Set the config above, validate it, then use JARVIS's normal guarded restart path.
+3. Ask JARVIS to call `browser_workbench` with `action: "kernel_auth_start"`, a public `domain`, and safe `profileName`. Approve the exact plan in Telegram.
+4. Open the returned Kernel-hosted URL yourself and complete all credentials, 2FA, CAPTCHA, and account choices there. JARVIS never types, reads, submits, or stores those values.
+5. Ask for `kernel_auth_status` using the returned connection ID, then use ordinary browser actions. Set `backend: local` to disable hosted browsing.
+
+Only safe auth metadata (connection ID, domain, profile name, timestamps/status) is persisted under the workbench data directory. Hosted URLs, handoff/live-view URLs, API keys, cookies, credentials, and raw Kernel responses are not persisted or included in audit fields. JARVIS explicitly disables Kernel credential saving, session recording, health checks, and automatic reauthentication for both new and reused auth connections. Kernel session deletion is explicit so an opted-in `save_changes: true` profile can persist; profile/connection deletion is never automatic.
+
+The same preflight, exact-plan Telegram approval, DOM checks, and public-network policy apply to the Kernel CDP context. Normal browser login/credential/2FA/CAPTCHA steps remain blocked; the narrowly-scoped hosted-auth handoff is the only exception, and it always requires owner approval.
 
 ## Agent tool shape
 

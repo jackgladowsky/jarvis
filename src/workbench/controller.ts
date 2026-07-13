@@ -1,11 +1,12 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { chromium, type BrowserContext, type ElementHandle, type Locator, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type ElementHandle, type Locator, type Page } from "playwright";
 import { atomicWriteFile } from "../lib/durable-file.js";
 import { paths } from "../paths.js";
 import { withWorkbenchLock } from "./lock.js";
 import { clipVisibleText, type WorkbenchPageSnapshot, type WorkbenchStepResult } from "./render.js";
 import { assessResolvedElement, type ResolvedElementSemantics } from "./dom-safety.js";
+import { createKernelBrowser, deleteKernelBrowser, type KernelSettings } from "./kernel.js";
 import { WorkbenchNetworkPolicy } from "./network-policy.js";
 import {
   type WorkbenchStep,
@@ -18,6 +19,8 @@ export interface OpenUrlOptions {
   timeoutMs?: number;
   now?: Date;
   signal?: AbortSignal;
+  backend?: "local" | "kernel";
+  kernel?: KernelSettings;
 }
 
 export interface RunStepsOptions extends OpenUrlOptions {
@@ -154,10 +157,13 @@ async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOption
   const artifactPath = join(paths.workbenchArtifacts, `${id}.json`);
 
   let context: BrowserContext | undefined;
+  let remoteBrowser: Browser | undefined;
+  let kernelSessionId: string | undefined;
   let closePromise: Promise<void> | undefined;
   const closeContext = (): Promise<void> => {
     if (!context) return Promise.resolve();
-    closePromise ??= context.close().catch(() => undefined);
+    // CDP disconnect must not close Kernel's browser before its API delete can persist profile state.
+    closePromise ??= (remoteBrowser ? remoteBrowser.close() : context.close()).catch(() => undefined);
     return closePromise;
   };
   const onAbort = (): void => {
@@ -173,7 +179,25 @@ async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOption
     : (steps.find((step) => step.action === "open_url")?.url ?? "");
 
   try {
-    context = await chromium.launchPersistentContext(paths.workbenchProfile, {
+    if (options.backend === "kernel" && options.kernel && !options.fixtureHtml) {
+      try {
+        // This is deliberately before any step: fallback can never replay a remote side effect.
+        const kernel = await createKernelBrowser(options.kernel, options.signal);
+        kernelSessionId = kernel.sessionId;
+        remoteBrowser = await chromium.connectOverCDP(kernel.cdpWsUrl, { timeout: options.timeoutMs ?? 30_000 });
+        context = remoteBrowser.contexts()[0];
+        if (!context) throw new Error("Kernel browser has no Playwright context.");
+        // CDP routing is required to retain the same public-network / DNS-rebinding policy.
+        await (options.networkPolicy ?? new WorkbenchNetworkPolicy()).install(context);
+      } catch {
+        await closeContext();
+        if (kernelSessionId) await deleteKernelBrowser(options.kernel, kernelSessionId).catch(() => undefined);
+        kernelSessionId = undefined;
+        remoteBrowser = undefined;
+        context = undefined;
+      }
+    }
+    context ??= await chromium.launchPersistentContext(paths.workbenchProfile, {
       acceptDownloads: true,
       downloadsPath: paths.workbenchDownloads,
       headless: true,
@@ -182,7 +206,8 @@ async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOption
       timeout: options.timeoutMs ?? 30_000,
     });
     throwIfWorkbenchAborted(options.signal);
-    if (!options.fixtureHtml) await (options.networkPolicy ?? new WorkbenchNetworkPolicy()).install(context);
+    if (!options.fixtureHtml && !remoteBrowser)
+      await (options.networkPolicy ?? new WorkbenchNetworkPolicy()).install(context);
     const page = context.pages()[0] ?? (await context.newPage());
     if (options.fixtureHtml) {
       throwIfWorkbenchAborted(options.signal);
@@ -255,6 +280,8 @@ async function runValidatedSteps(steps: WorkbenchStep[], options: RunStepsOption
   } finally {
     options.signal?.removeEventListener("abort", onAbort);
     await closeContext();
+    if (kernelSessionId && options.kernel)
+      await deleteKernelBrowser(options.kernel, kernelSessionId).catch(() => undefined);
   }
 }
 
