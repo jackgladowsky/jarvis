@@ -201,6 +201,7 @@ export async function notifyPendingDeployComplete(): Promise<void> {
     await enqueueInternalNotification({
       id: notificationId,
       source: "deploy",
+      delivery: "plain",
       chat_id: chatId,
       title: `JARVIS back online (v${readVersion()})`,
       body: message,

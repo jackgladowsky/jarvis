@@ -28,6 +28,9 @@ async function notify(chatId: number, title: string, body: string, id?: string):
   await notifyMainOrFallback({
     id,
     source: "background",
+    // Progress notifications are lightweight status blurbs ("reviewer starting")
+    // and should not trigger an agent turn that would delay subsequent delivery.
+    delivery: "plain",
     chat_id: chatId,
     title,
     body,

@@ -292,3 +292,51 @@ test("dead-pump fallback atomically claims deterministic notifications", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+test("delivery mode routing respects explicit and default conventions", async () => {
+  const { mod } = await loaded;
+
+  // Explicit `delivery: "plain"` forces plain delivery for any source.
+  const plain = await mod.enqueueInternalNotification({
+    id: "routing-explicit-plain",
+    source: "background",
+    delivery: "plain",
+    chat_id: 123,
+    title: "Plain progress",
+    body: "worker starting",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(plain), true);
+
+  // Explicit `delivery: "prompt"` forces agent delivery for any source.
+  const prompt = await mod.enqueueInternalNotification({
+    id: "routing-explicit-prompt",
+    source: "deploy",
+    delivery: "prompt",
+    chat_id: 123,
+    title: "Deploy prompt",
+    body: "deploy body",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(prompt), false);
+
+  // Deploy defaults to plain so pre-existing queue files survive upgrades.
+  const legacyDeploy = await mod.enqueueInternalNotification({
+    id: "routing-legacy-deploy",
+    source: "deploy",
+    chat_id: 123,
+    title: "Legacy deploy",
+    body: "no delivery field",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(legacyDeploy), true);
+
+  // Background defaults to prompt so lifecycle events reach agent delivery.
+  const lifecycle = await mod.enqueueInternalNotification({
+    id: "routing-bg-lifecycle",
+    source: "background",
+    chat_id: 123,
+    title: "Reviewer ready",
+    body: "ready_for_pr",
+  });
+  assert.equal(mod.notificationDeliveryIsPlain(lifecycle), false);
+
+  assert.equal(true, true);
+});

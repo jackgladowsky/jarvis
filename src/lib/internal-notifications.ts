@@ -11,6 +11,20 @@ import { fetchWithTimeout, TelegramHttpError, withTelegramRetry } from "./telegr
 
 export type InternalNotificationSource = "background" | "scheduler" | "deploy" | "system";
 
+/**
+ * Controls how the Telegram notification pump delivers a notification:
+ * - `"prompt"`: feeds the notification to main JARVIS as a prompt and sends the
+ *   agent response to chat. Used for lifecycle events that deserve a
+ *   conversational reply (ready_for_pr, failed, needs_fix, scheduler).
+ * - `"plain"`: sends the fallback text as a raw Telegram message without
+ *   running an agent turn. Used for lightweight progress updates and deploy
+ *   back-online messages where a simple status blurb is sufficient.
+ *
+ * When omitted, the pump falls back to legacy source-based routing: only
+ * `"deploy"` uses plain delivery so pre-existing queue files survive upgrades.
+ */
+export type InternalNotificationDelivery = "prompt" | "plain";
+
 export interface InternalNotification {
   id: string;
   source: InternalNotificationSource;
@@ -19,6 +33,8 @@ export interface InternalNotification {
   body: string;
   prompt?: string;
   fallback_text?: string;
+  /** Opt-in to prompt or plain pump delivery; see `InternalNotificationDelivery`. */
+  delivery?: InternalNotificationDelivery;
   created_at: string;
   status: "pending" | "running" | "processed" | "failed";
   updated_at?: string;
@@ -78,6 +94,18 @@ function runningNotificationPath(id: string, claimToken: string): string {
 function runningNameParts(name: string): { id: string; claimToken: string } | undefined {
   const match = name.match(/^(.+)\.([0-9a-f-]{36})\.running\.json$/i);
   return match ? { id: match[1], claimToken: match[2] } : undefined;
+}
+
+/**
+ * Resolve whether a notification should bypass the agent pump and be sent as
+ * a plain Telegram message. Explicit `delivery` takes precedence; the default
+ * keeps `"deploy"` plain so existing queue files survive upgrades without
+ * turning back-online announcements into agent turns.
+ */
+export function notificationDeliveryIsPlain(notification: InternalNotification): boolean {
+  if (notification.delivery === "plain") return true;
+  if (notification.delivery === "prompt") return false;
+  return notification.source === "deploy";
 }
 
 export function renderInternalNotificationPrompt(notification: InternalNotification): string {
