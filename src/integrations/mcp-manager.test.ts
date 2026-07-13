@@ -63,15 +63,39 @@ test("manager atomically adds, lists, updates, reloads, and removes definitions"
     assert.doesNotMatch(JSON.stringify(listed), /Bearer|\$HA_TOKEN|\$TEST_MCP_TOKEN/);
 
     await manageMcp(
+      {
+        action: "add",
+        server: "executor",
+        config: { url: "http://127.0.0.1:4789/mcp", allow_localhost: true },
+      },
+      undefined,
+      path,
+    );
+    assert.equal(
+      (await manageMcp({ action: "list" }, undefined, path)).servers?.find((server) => server.name === "executor")
+        ?.allowLocalhost,
+      true,
+    );
+    await assert.rejects(
+      manageMcp(
+        { action: "add", server: "private", config: { url: "http://10.0.0.1/mcp", allow_localhost: true } },
+        undefined,
+        path,
+      ),
+      /allow_localhost.*localhost or literal loopback/i,
+    );
+
+    await manageMcp(
       { action: "update", server: "calendar", config: { ...stdioConfig(), timeout_ms: 7_000 } },
       undefined,
       path,
     );
     const reloaded = await manageMcp({ action: "reload" }, undefined, path);
-    assert.match(reloaded.message, /Validated and reloaded 2/);
+    assert.match(reloaded.message, /Validated and reloaded 3/);
     assert.equal(reloaded.servers?.find((server) => server.name === "calendar")?.timeoutMs, 7_000);
 
     await manageMcp({ action: "remove", server: "home_assistant" }, undefined, path);
+    await manageMcp({ action: "remove", server: "executor" }, undefined, path);
     assert.deepEqual(Object.keys(JSON.parse(await readFile(path, "utf-8")).servers), ["calendar"]);
     await assert.rejects(
       manageMcp({ action: "add", server: "calendar", config: stdioConfig() }, undefined, path),

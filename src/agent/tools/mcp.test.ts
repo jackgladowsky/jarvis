@@ -69,6 +69,18 @@ test("MCP config follows JARVIS_DATA_DIR and reports actionable JSON/shape error
       return true;
     },
   );
+
+  const localPath = join(dataDir, "local.json");
+  await writeFile(
+    localPath,
+    JSON.stringify({ servers: { executor: { url: "http://127.0.0.1:4789/mcp", allow_localhost: true } } }),
+  );
+  assert.equal(mcp.loadMcpServers(localPath).servers.executor?.allow_localhost, true);
+  await writeFile(
+    localPath,
+    JSON.stringify({ servers: { unsafe: { url: "http://10.0.0.1/mcp", allow_localhost: true } } }),
+  );
+  assert.throws(() => mcp.loadMcpServers(localPath), /allow_localhost.*localhost or literal loopback/i);
 });
 
 test("legacy MCP definitions without explicit read_only cannot receive automation authority", async () => {

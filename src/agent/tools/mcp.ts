@@ -12,7 +12,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Type } from "typebox";
 import { z } from "zod";
 import { paths } from "../../paths.js";
-import { WorkbenchNetworkPolicy } from "../../workbench/network-policy.js";
+import { isLoopbackHostname, WorkbenchNetworkPolicy } from "../../workbench/network-policy.js";
 import type { BrowserWorkbenchAuthority } from "./browser-workbench.js";
 import { pendingCapabilityResult, requireOwnerCapability } from "../../control/owner-capability.js";
 
@@ -28,6 +28,8 @@ export interface McpServerConfig {
   timeout_ms?: number;
   /** Operator declaration used by the integration manager and prompt guidance. */
   read_only?: boolean;
+  /** Explicit opt-in for an HTTP endpoint bound only to localhost/loopback. */
+  allow_localhost?: boolean;
 }
 
 export interface McpServersConfig {
@@ -154,6 +156,7 @@ const serverConfigSchema = z
     headers: z.record(z.string()).optional(),
     timeout_ms: z.number().int().min(1_000).max(120_000).optional(),
     read_only: z.boolean().optional(),
+    allow_localhost: z.boolean().optional(),
   })
   .strict()
   .superRefine((server, context) => {
@@ -177,6 +180,19 @@ const serverConfigSchema = z
         path: ["headers"],
         message: 'is only valid for an HTTP server with "url"',
       });
+    }
+    if (server.allow_localhost) {
+      if (
+        !server.url ||
+        new URL(server.url).protocol !== "http:" ||
+        !isLoopbackHostname(new URL(server.url).hostname)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["allow_localhost"],
+          message: "is only valid for an http:// localhost or literal loopback HTTP endpoint",
+        });
+      }
     }
   });
 
@@ -403,7 +419,10 @@ function createMcpConnection(serverConfig: McpServerConfig): { client: Client; t
   const transport: Transport = serverConfig.url
     ? new StreamableHTTPClientTransport(new URL(serverConfig.url), {
         requestInit: serverConfig.headers ? { headers: resolveHeaders(serverConfig.headers) } : undefined,
-        fetch: (input, init) => networkPolicy.pinnedFetch(String(input), init),
+        fetch: (input, init) =>
+          networkPolicy.pinnedFetch(String(input), init, 5, undefined, {
+            allowLoopback: serverConfig.allow_localhost === true,
+          }),
       })
     : new StdioClientTransport({
         command: resolveTrustedStdioCommand(serverConfig)!,

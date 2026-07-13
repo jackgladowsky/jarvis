@@ -1,5 +1,5 @@
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import type { BrowserContext, Route } from "playwright";
 import { Agent } from "undici";
 import { validateWorkbenchUrl } from "./safety.js";
@@ -7,6 +7,11 @@ import { validateWorkbenchUrl } from "./safety.js";
 export interface ResolvedAddress {
   address: string;
   family: number;
+}
+
+export interface NetworkPolicyOptions {
+  /** Only for explicit loopback endpoints; never permits other private ranges. */
+  allowLoopback?: boolean;
 }
 
 export type WorkbenchResolver = (hostname: string) => Promise<ResolvedAddress[]>;
@@ -77,6 +82,19 @@ function inV4(value: number, base: string, bits: number): boolean {
   return (value & mask) === (start & mask);
 }
 
+export function isLoopbackNetworkAddress(address: string): boolean {
+  const v4 = ipv4Number(address);
+  if (v4 !== undefined) return inV4(v4, "127.0.0.0", 8);
+  const v6 = ipv6Number(address);
+  return v6 === 1n;
+}
+
+/** Accept only the conventional localhost name or a literal loopback address. */
+export function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  return normalized === "localhost" || isLoopbackNetworkAddress(normalized);
+}
+
 export function isPublicNetworkAddress(address: string): boolean {
   const v4 = ipv4Number(address);
   if (v4 !== undefined) {
@@ -113,6 +131,25 @@ export function isPublicNetworkAddress(address: string): boolean {
   return global && !documentation;
 }
 
+/**
+ * Return a Node-compatible lookup callback that always connects to a previously
+ * validated address. Node 22+ may request `all: true`; that callback form must
+ * receive an address array, not a scalar address and undefined family.
+ */
+export function createPinnedLookup(addresses: readonly ResolvedAddress[]): LookupFunction {
+  const allowed = new Set(addresses.map(({ address }) => address));
+  return (_hostname, options, callback) => {
+    const family = options.family === "IPv4" ? 4 : options.family === "IPv6" ? 6 : options.family;
+    const candidates = addresses.filter((entry) => !family || entry.family === family);
+    if (candidates.length === 0 || candidates.some((entry) => !allowed.has(entry.address))) {
+      return callback(Object.assign(new Error("DNS pinning failed"), { code: "ENOTFOUND" }), "", 0);
+    }
+    if (options.all) return callback(null, candidates);
+    const chosen = candidates[0]!;
+    callback(null, chosen.address, chosen.family);
+  };
+}
+
 export class WorkbenchNetworkPolicy {
   private readonly cache = new Map<string, CacheEntry>();
 
@@ -123,7 +160,11 @@ export class WorkbenchNetworkPolicy {
     private readonly fetcher: typeof fetch = fetch,
   ) {}
 
-  async resolveUrl(input: string, forceRevalidate = false): Promise<ResolvedAddress[]> {
+  async resolveUrl(
+    input: string,
+    forceRevalidate = false,
+    options: NetworkPolicyOptions = {},
+  ): Promise<ResolvedAddress[]> {
     if (
       input === "about:blank" ||
       input.startsWith("about:blank#") ||
@@ -131,7 +172,14 @@ export class WorkbenchNetworkPolicy {
       input.startsWith("blob:")
     )
       return [];
-    const validated = validateWorkbenchUrl(input);
+    let validated = validateWorkbenchUrl(input);
+    if (!validated.allowed && options.allowLoopback) {
+      // This exception is used only by explicitly configured HTTP MCP endpoints.
+      // It retains the normal workbench default while admitting conventional
+      // loopback names for the policy's separately pinned connection path.
+      const local = new URL(input);
+      if (local.protocol === "http:" && isLoopbackHostname(local.hostname)) validated = { allowed: true, url: local };
+    }
     if (!validated.allowed || !validated.url) throw new Error(validated.reason ?? "URL is blocked.");
     const hostname = validated.url.hostname.replace(/^\[(.*)\]$/, "$1");
     const directIp = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : undefined;
@@ -150,13 +198,16 @@ export class WorkbenchNetworkPolicy {
         this.cache.delete(this.cache.keys().next().value!);
       this.cache.set(hostname, { addresses: normalized, expiresAt: this.now() + this.ttlMs });
     }
-    const blocked = addresses.find(({ address }) => !isPublicNetworkAddress(address));
+    const loopbackAllowed = options.allowLoopback && isLoopbackHostname(hostname);
+    const blocked = addresses.find(
+      ({ address }) => !isPublicNetworkAddress(address) && !(loopbackAllowed && isLoopbackNetworkAddress(address)),
+    );
     if (blocked) throw new Error(`Network blocked: ${hostname} resolved to non-public address ${blocked.address}.`);
     return addresses;
   }
 
-  async assertUrlAllowed(input: string, forceRevalidate = false): Promise<void> {
-    await this.resolveUrl(input, forceRevalidate);
+  async assertUrlAllowed(input: string, forceRevalidate = false, options: NetworkPolicyOptions = {}): Promise<void> {
+    await this.resolveUrl(input, forceRevalidate, options);
   }
 
   /** Fetch through an address pinned to the validated DNS result while retaining the URL hostname for TLS SNI. */
@@ -165,22 +216,15 @@ export class WorkbenchNetworkPolicy {
     init: RequestInit = {},
     redirects = 5,
     maxBytes = MAX_PINNED_RESPONSE_BYTES,
+    options: NetworkPolicyOptions = {},
   ): Promise<Response> {
     let url = new URL(input);
     let requestInit = { ...init };
     for (let hop = 0; hop <= redirects; hop += 1) {
-      const addresses = await this.resolveUrl(url.toString(), true);
+      const addresses = await this.resolveUrl(url.toString(), true, options);
       if (addresses.length === 0) return this.fetcher(url, requestInit);
-      const allowed = new Set(addresses.map(({ address }) => address));
       const dispatcher = new Agent({
-        connect: {
-          lookup: (_hostname, options, callback) => {
-            const family = typeof options === "object" && options ? options.family : undefined;
-            const chosen = addresses.find((entry) => !family || entry.family === family) ?? addresses[0]!;
-            if (!allowed.has(chosen.address)) return callback(new Error("DNS pinning failed"), "", 0);
-            callback(null, chosen.address, chosen.family);
-          },
-        },
+        connect: { lookup: createPinnedLookup(addresses) },
       });
       try {
         const response = await this.fetcher(url, {

@@ -9,6 +9,12 @@
       "timeout_ms": 15000,
       "read_only": true
     },
+    "executor-local": {
+      "url": "http://127.0.0.1:4789/mcp",
+      "timeout_ms": 15000,
+      "read_only": true,
+      "allow_localhost": true
+    },
     "hosted-readonly": {
       "url": "https://mcp.example.net/mcp",
       "headers": {

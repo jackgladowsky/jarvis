@@ -26,7 +26,7 @@ Install the referenced environment variable through the host's protected service
 A server defines exactly one transport:
 
 - An approved MCP launcher (`node`, `npx`, `pnpm`, `bun`, `deno`, `python`, `uv`, or `uvx`) plus bounded non-eval `args` and referenced `env` for stdio. Shell/eval flags and raw credentials are rejected.
-- Public `http`/`https` `url` plus referenced `headers` for HTTP. Every request and redirect is sent through DNS-pinned transport that rejects private, loopback, link-local, metadata, reserved, and rebound addresses.
+- Public `http`/`https` `url` plus referenced `headers` for HTTP. Every request and redirect is sent through DNS-pinned transport that rejects private, loopback, link-local, metadata, reserved, and rebound addresses. A local HTTP MCP endpoint must explicitly set `allow_localhost: true`; this is accepted only for `http://localhost`, `http://127.0.0.0/8`, or `http://[::1]` endpoints and does not permit any other private address or redirect target.
 
 Manager-created definitions also specify a bounded `timeout_ms` (1–120 seconds). Set `read_only: true` explicitly to permit scheduled/background use; an omitted legacy value remains unknown and receives no automation authority. `read_only` is an authority declaration and prompt guard, not a protocol-level sandbox; only connect write-capable servers after explicitly deciding to grant that authority.
 
