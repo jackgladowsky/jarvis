@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2
+
+- Render primary-only Codex subscription usage in /status.
+
 ## 0.7.1
 
 - Fix HTTP MCP DNS pinning and support explicit loopback-only local MCP endpoints.
