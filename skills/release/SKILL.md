@@ -22,14 +22,14 @@ Quick heuristics for JARVIS:
 
 If in doubt, ask the owner. When unsure, `patch` is the safe default — it's always easy to add another.
 
-**Don't release on every commit.** Batch a few related changes together, then cut one release. The deploy pipeline (safe-deploy.sh) works fine without a version bump — the git SHA is always in the logs and the startup notification. Save semver bumps for when there's a meaningful chunk of work (a feature + its fixes, a batch of related changes, etc.).
+**Every merged/deployed change must increment the version.** Prepare one SemVer bump and changelog entry for every PR targeting `main`; the required `Version gate` compares it with the PR base. The deploy pipeline activates only the already-merged `main` SHA and never bypasses this PR policy.
 
 Pre-release labels (`-rc.1`, `-beta.2`) and build metadata (`+sha.abc`) are allowed by the semver regex in `scripts/bump-version.mjs` and `src/lib/version.ts`; use `--set=` for those (the bump subcommand can't construct them).
 
 ## Workflow
 
 1. **Decide the bump type** from the diff scope (see table above).
-2. **Make sure the working tree is clean** (`git status --short`) — the version bump should be its own commit.
+2. **Make sure the working tree is clean** (`git status --short`) before preparing the release changes.
 3. **Run the orchestrator**:
    ```bash
    node skills/release/scripts/release.mjs patch --message="fix: foo no longer crashes on empty input"
@@ -58,8 +58,9 @@ Pre-release labels (`-rc.1`, `-beta.2`) and build metadata (`+sha.abc`) are allo
    git add package.json CHANGELOG.md
    git commit -m "chore(release): v<version>"
    ```
-7. **Push + open PR** via the `github-pr` skill, **after owner approval**. PR body should mention the version and link the CHANGELOG entry.
-8. **Tagging + publishing** is separate. After the PR merges, the owner decides whether to tag (`git tag v<version>`) and push the tag.
+7. Main JARVIS may push the release branch and open/watch its PR via the `github-pr` skill. The PR body should mention the version and link the CHANGELOG entry. Fix a red `Version gate` before enabling auto-merge.
+8. Enable auto-merge only after all required checks pass. After GitHub merges it, update local `main` and deploy that exact merged SHA; safe deploy never pushes `main`.
+9. Tagging is separate. After the PR merges, the owner decides whether to tag (`git tag v<version>`) and push the tag.
 
 ## Notes
 

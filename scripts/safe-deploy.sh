@@ -23,8 +23,6 @@ RESTART_LOG="$DEPLOY_DIR/restart.log"
 CACHE_CONTRACT_VERSION="2"
 PREVIEW_PARENT=""
 PREVIEW_WORKTREE=""
-PUSH_PARENT=""
-PUSH_WORKTREE=""
 STAGED_DIST=""
 DIST_BACKUP=""
 NODE_MODULES_BACKUP=""
@@ -114,8 +112,8 @@ if [[ "$MODE" == "self-main" ]]; then
   echo "Fetching origin/main..."
   git fetch origin main
   REMOTE_REV="$(git rev-parse --verify 'refs/remotes/origin/main^{commit}')"
-  git merge-base --is-ancestor "$REMOTE_REV" "$NEW_REV" \
-    || fail "Refusing self deploy: origin/main is not an ancestor of local main."
+  [[ "$REMOTE_REV" == "$NEW_REV" ]] \
+    || fail "Refusing self deploy: local main must match origin/main. Merge through a pull request before deploying."
 else
   if [[ "$TARGET_REF" == origin/* ]]; then
     echo "Fetching..."
@@ -240,11 +238,7 @@ cleanup() {
   if [[ -n "$PREVIEW_WORKTREE" && -e "$PREVIEW_WORKTREE" ]]; then
     git -C "$REPO_ROOT" worktree remove --force "$PREVIEW_WORKTREE" >/dev/null 2>&1 || true
   fi
-  if [[ -n "$PUSH_WORKTREE" && -e "$PUSH_WORKTREE" ]]; then
-    git -C "$REPO_ROOT" worktree remove --force "$PUSH_WORKTREE" >/dev/null 2>&1 || true
-  fi
   [[ -n "$PREVIEW_PARENT" ]] && rm -rf "$PREVIEW_PARENT"
-  [[ -n "$PUSH_PARENT" ]] && rm -rf "$PUSH_PARENT"
   [[ -n "$STATE_BACKUP_DIR" ]] && rm -rf "$STATE_BACKUP_DIR"
   [[ -n "$NODE_MODULES_BACKUP" ]] && rm -rf "$NODE_MODULES_BACKUP"
   [[ -n "$STAGED_DIST" ]] && rm -rf "$STAGED_DIST"
@@ -337,40 +331,17 @@ ensure_live_dependencies() {
   printf '%s\n' "$PACKAGE_FINGERPRINT" > "$marker"
 }
 
-push_verified_self_main() {
-  # The live checkout intentionally has production-only dependencies after an
-  # activation. Run the repository's pre-push hook from a fresh isolated
-  # worktree with the exact commit's development dependencies instead of
-  # bypassing it with --no-verify or temporarily mutating the live checkout.
-  PUSH_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-deploy-push.XXXXXX")"
-  PUSH_WORKTREE="$PUSH_PARENT/release"
-  echo "Preparing isolated pre-push worktree for $NEW_SHORT..."
-  git worktree add --detach "$PUSH_WORKTREE" "$NEW_REV"
-  (
-    cd "$PUSH_WORKTREE"
-    export JARVIS_SOURCE_ROOT="$PUSH_WORKTREE"
-    echo "Installing pre-push validation dependencies (frozen lockfile)..."
-    pnpm install --frozen-lockfile
-    echo "Publishing exact verified SHA $NEW_SHORT to origin/main..."
-    # Never use --no-verify: this executes the repository hook with the exact
-    # revision and its development dependencies. The non-force push preserves
-    # the server-side race check against origin/main.
-    git push origin "$NEW_REV:refs/heads/main"
-  )
-  git -C "$REPO_ROOT" worktree remove --force "$PUSH_WORKTREE"
-  rm -rf "$PUSH_PARENT"
-  PUSH_WORKTREE=""
-  PUSH_PARENT=""
-}
-
 if [[ "$MODE" == "self-main" ]]; then
   require_clean_tree
   require_self_main_state
-  push_verified_self_main
-  CONFIRMED_REMOTE="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
-  [[ "$CONFIRMED_REMOTE" == "$NEW_REV" ]] || fail "Remote main did not resolve to the verified SHA after push."
-  # Only activate production dependencies after the validated push succeeds.
-  # This keeps a failed pre-push check from mutating live runtime artifacts.
+  # Refuse a stale local main if another PR merged while this release was
+  # verified. Safe deploy activates only the current merged remote SHA.
+  git fetch origin main
+  CONFIRMED_REMOTE="$(git rev-parse --verify 'refs/remotes/origin/main^{commit}')"
+  [[ "$CONFIRMED_REMOTE" == "$NEW_REV" ]] \
+    || fail "Refusing self deploy: origin/main advanced during verification. Update local main and retry."
+  # Main must already have been merged remotely through the PR workflow. Safe
+  # deploy verifies and activates that exact checked-out SHA; it never pushes.
   ACTIVATING=1
   ensure_live_dependencies
   require_self_main_state

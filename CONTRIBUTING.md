@@ -33,7 +33,10 @@ Include:
 
 - What changed and why.
 - Any setup or migration notes.
+- A valid SemVer `package.json` version strictly greater than the PR base version when targeting `main`, plus its changelog entry.
 - Exact checks run and their results.
+
+`main` is PR-only. Main JARVIS may push a reviewed branch, open/watch its PR, fix the version gate, and enable auto-merge only after required checks pass; deploy happens only after the merged local `main` matches `origin/main`.
 
 ## Security/privacy
 

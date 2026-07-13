@@ -104,4 +104,4 @@ console.log("next steps:");
 console.log("  git diff --stat");
 console.log(`  git add package.json CHANGELOG.md`);
 console.log(`  git commit -m "chore(release): v${newVersion}"`);
-console.log("  # then push + open PR per the github-pr skill (after owner approval)");
+console.log("  # then follow the PR-only flow in the github-pr skill; safe deploy never pushes main");
