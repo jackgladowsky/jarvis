@@ -19,7 +19,8 @@
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getModel, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
-import { config } from "../config.js";
+import { parseDocument } from "yaml";
+import { config, parseConfig } from "../config.js";
 import { atomicWriteFileSync, atomicWriteJsonSync } from "../lib/durable-file.js";
 import { log } from "../lib/logger.js";
 import { paths } from "../paths.js";
@@ -226,12 +227,31 @@ function loadRuntimeModel(): RuntimeModelConfig | null {
 }
 
 function saveRuntimeModel(provider: string, modelId: string): void {
-  try {
-    mkdirSync(paths.data, { recursive: true });
-    atomicWriteJsonSync(RUNTIME_MODEL_PATH, { provider, modelId });
-  } catch (err) {
-    log.warn("failed to persist runtime model", { err: String(err) });
+  mkdirSync(paths.data, { recursive: true });
+  atomicWriteJsonSync(RUNTIME_MODEL_PATH, { provider, modelId });
+}
+
+/**
+ * Persist the configured default selected by `/model` without reformatting or
+ * dropping unrelated YAML/comments. `config` is intentionally frozen, so this
+ * updates the source of truth for the next process rather than mutating it.
+ */
+function saveConfiguredModel(provider: string, modelId: string): void {
+  const source = readFileSync(paths.configYaml, "utf-8");
+  const document = parseDocument(source);
+  if (document.errors.length > 0) {
+    throw new Error(`Unable to parse config at ${paths.configYaml}: ${document.errors[0]?.message ?? "invalid YAML"}`);
   }
+
+  // Validate both the on-disk document and the edited result. This prevents a
+  // switch from overwriting a config that was changed into an invalid state by
+  // another process after startup.
+  parseConfig(document.toJS(), paths.configYaml);
+  document.setIn(["agent", "provider"], provider);
+  document.setIn(["agent", "model"], modelId);
+  parseConfig(document.toJS(), paths.configYaml);
+
+  atomicWriteFileSync(paths.configYaml, document.toString());
 }
 
 // Resolve a Model object for the given provider and model-id.
@@ -333,17 +353,27 @@ export function getSupportedProviders(): string[] {
  * All code that imported the `model` binding will see the new value
  * immediately because ES module `export let` creates a live binding.
  *
- * @param persist - when true (default), saves the choice to disk so it
- *   survives a restart.
+ * @param persist - when true (default), saves the choice to the configured
+ *   default and runtime state so it survives a restart. Temporary switches
+ *   leave both persisted values unchanged.
  */
 export function switchModel(provider: string, modelId: string, persist = true): Model<any> {
   if (!PROVIDER_KEY[provider]) {
     throw new Error(`unknown provider: "${provider}". Supported: ${Object.keys(PROVIDER_KEY).join(", ")}`);
   }
   const next = resolveModel(provider, modelId);
+
+  // Persist before changing the live binding: a failed durable write must not
+  // report a runtime switch that disappears on restart. Each destination is
+  // atomically replaced by durable-file, preserving the existing runtime
+  // override alongside the configured default.
+  if (persist) {
+    saveConfiguredModel(provider, modelId);
+    saveRuntimeModel(provider, modelId);
+  }
+
   model = next;
   log.info("switched model", { provider, modelId });
-  if (persist) saveRuntimeModel(provider, modelId);
   // Kick off a context window refresh from OpenRouter if applicable.
   // The model binding is live, so once the cache resolves the updated
   // contextWindow and maxTokens are available immediately on the same object.
