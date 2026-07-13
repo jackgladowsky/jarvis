@@ -20,7 +20,7 @@ DEPLOY_DIR="$DATA_BASE/data/deploy"
 MARKER="$DEPLOY_DIR/pending.json"
 ACTIVE_FILE="$DEPLOY_DIR/active.json"
 RESTART_LOG="$DEPLOY_DIR/restart.log"
-CACHE_CONTRACT_VERSION="1"
+CACHE_CONTRACT_VERSION="2"
 PREVIEW_PARENT=""
 PREVIEW_WORKTREE=""
 STAGED_DIST=""
@@ -154,13 +154,48 @@ process.stdout.write(hash.digest('hex'));
 NODE
 }
 
+dependencies_digest() {
+  node - "$1" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const root = path.resolve(process.argv[2]);
+const entries = [];
+function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    const relative = path.relative(root, full).split(path.sep).join('/');
+    if (entry.isDirectory()) walk(full);
+    else if (entry.isFile()) entries.push([relative, 'file', fs.readFileSync(full)]);
+    else if (entry.isSymbolicLink()) {
+      // pnpm's layout uses relative links. Reject links that escape the cache,
+      // so a valid manifest cannot make preflight depend on arbitrary host files.
+      const target = fs.realpathSync(full);
+      if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+        throw new Error(`dependency symlink escapes cache: ${full}`);
+      }
+      entries.push([relative, 'symlink', fs.readlinkSync(full)]);
+    } else throw new Error(`unsupported dependency entry: ${full}`);
+  }
+}
+walk(root);
+entries.sort(([a], [b]) => a.localeCompare(b));
+const hash = crypto.createHash('sha256');
+for (const [relative, type, content] of entries) {
+  hash.update(type); hash.update('\0'); hash.update(relative); hash.update('\0'); hash.update(content); hash.update('\0');
+}
+process.stdout.write(hash.digest('hex'));
+NODE
+}
+
 cache_is_valid() {
-  [[ -d "$CACHE_DIR/dist" && -f "$CACHE_DIR/dist/index.js" && -f "$CACHE_DIR/manifest.json" ]] || return 1
-  local digest
+  [[ -d "$CACHE_DIR/dist" && -f "$CACHE_DIR/dist/index.js" && -d "$CACHE_DIR/node_modules" && -f "$CACHE_DIR/manifest.json" ]] || return 1
+  local digest dependencies
   digest="$(dist_digest "$CACHE_DIR/dist")" || return 1
-  python3 - "$CACHE_DIR/manifest.json" "$CACHE_CONTRACT_VERSION" "$NEW_REV" "$NODE_MAJOR" "$PNPM_VERSION" "$PACKAGE_FINGERPRINT" "$digest" <<'PY'
+  dependencies="$(dependencies_digest "$CACHE_DIR/node_modules")" || return 1
+  python3 - "$CACHE_DIR/manifest.json" "$CACHE_CONTRACT_VERSION" "$NEW_REV" "$NODE_MAJOR" "$PNPM_VERSION" "$PACKAGE_FINGERPRINT" "$digest" "$dependencies" <<'PY'
 import json, sys
-path, contract, sha, node_major, pnpm, fingerprint, digest = sys.argv[1:]
+path, contract, sha, node_major, pnpm, fingerprint, digest, dependencies = sys.argv[1:]
 try:
     with open(path, encoding="utf-8") as f:
         value = json.load(f)
@@ -169,6 +204,7 @@ except (OSError, ValueError):
 expected = {
     "contract_version": int(contract), "sha": sha, "node_major": int(node_major),
     "pnpm_version": pnpm, "package_lock_fingerprint": fingerprint, "dist_digest": digest,
+    "dependencies_digest": dependencies,
 }
 raise SystemExit(0 if value == expected else 1)
 PY
@@ -234,18 +270,25 @@ else
   mapfile -d '' TEST_FILES < <(find dist -name '*.test.js' -print0)
   [[ "${#TEST_FILES[@]}" -gt 0 ]] || fail "Compiled release contains no tests."
   node --test "${TEST_FILES[@]}"
+  # The cache is also used before live node_modules is activated, so retain the
+  # release's production dependency layout next to dist. Prune only after tests
+  # because TypeScript and the test runner are development dependencies.
+  echo "Pruning release dependencies to production only..."
+  pnpm prune --prod
   DIGEST="$(dist_digest "$PREVIEW_WORKTREE/dist")"
+  DEPENDENCIES_DIGEST="$(dependencies_digest "$PREVIEW_WORKTREE/node_modules")"
   CACHE_TEMP="$CACHE_ROOT/.${NEW_REV}.tmp.$$"
   rm -rf "$CACHE_TEMP"
   mkdir -p "$CACHE_TEMP"
   cp -a "$PREVIEW_WORKTREE/dist" "$CACHE_TEMP/dist"
-  python3 - "$CACHE_TEMP/manifest.json" "$CACHE_CONTRACT_VERSION" "$NEW_REV" "$NODE_MAJOR" "$PNPM_VERSION" "$PACKAGE_FINGERPRINT" "$DIGEST" <<'PY'
+  cp -a "$PREVIEW_WORKTREE/node_modules" "$CACHE_TEMP/node_modules"
+  python3 - "$CACHE_TEMP/manifest.json" "$CACHE_CONTRACT_VERSION" "$NEW_REV" "$NODE_MAJOR" "$PNPM_VERSION" "$PACKAGE_FINGERPRINT" "$DIGEST" "$DEPENDENCIES_DIGEST" <<'PY'
 import json, os, sys
-path, contract, sha, node_major, pnpm, fingerprint, digest = sys.argv[1:]
+path, contract, sha, node_major, pnpm, fingerprint, digest, dependencies = sys.argv[1:]
 with open(path, "w", encoding="utf-8") as f:
     json.dump({"contract_version": int(contract), "sha": sha, "node_major": int(node_major),
                "pnpm_version": pnpm, "package_lock_fingerprint": fingerprint,
-               "dist_digest": digest}, f, indent=2, sort_keys=True)
+               "dist_digest": digest, "dependencies_digest": dependencies}, f, indent=2, sort_keys=True)
     f.write("\n"); f.flush(); os.fsync(f.fileno())
 directory_fd = os.open(os.path.dirname(path), os.O_RDONLY)
 try:
@@ -283,9 +326,8 @@ ensure_live_dependencies() {
   rm -rf "$NODE_MODULES_BACKUP"
   if [[ -d "$REPO_ROOT/node_modules" ]]; then mv "$REPO_ROOT/node_modules" "$NODE_MODULES_BACKUP"; fi
   DEPENDENCIES_ACTIVATING=1
-  echo "Activating frozen dependencies from the warmed pnpm store..."
-  pnpm install --frozen-lockfile --offline || pnpm install --frozen-lockfile
-  mkdir -p "$REPO_ROOT/node_modules"
+  echo "Activating verified production dependencies from the release cache..."
+  cp -a "$CACHE_DIR/node_modules" "$REPO_ROOT/node_modules"
   printf '%s\n' "$PACKAGE_FINGERPRINT" > "$marker"
 }
 

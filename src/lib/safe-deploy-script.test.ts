@@ -86,7 +86,7 @@ test(
       );
       await writeFile(
         join(binDir, "pnpm"),
-        `#!/usr/bin/env bash\nset -e\necho "$*" >> "$FAKE_PNPM_LOG"\nif [[ "\${1:-}" == "--version" ]]; then echo 10.26.2; exit 0; fi\nif [[ "\${1:-}" == "install" ]]; then mkdir -p node_modules; exit 0; fi\nif [[ "\${1:-}" == "run" && "\${2:-}" == "build" ]]; then\n  mkdir -p dist\n  printf '%s\\n' "module.exports = 'verified-release';" > dist/index.js\n  printf '%s\\n' "const fs=require('node:fs'); const value=fs.readFileSync(process.argv[2], 'utf8'); if(value.includes('invalid')) process.exit(1); console.log('config valid');" > dist/config-check.js\n  printf '%s\\n' "const test = require('node:test'); test('release smoke', () => {});" > dist/smoke.test.js\n  exit 0\nfi\nexit 2\n`,
+        `#!/usr/bin/env bash\nset -e\necho "$*" >> "$FAKE_PNPM_LOG"\nif [[ "\${1:-}" == "--version" ]]; then echo 10.26.2; exit 0; fi\nif [[ "\${1:-}" == "install" ]]; then mkdir -p node_modules/yaml; printf '%s\\n' "module.exports = {};" > node_modules/yaml/index.js; exit 0; fi\nif [[ "\${1:-}" == "prune" && "\${2:-}" == "--prod" ]]; then exit 0; fi\nif [[ "\${1:-}" == "run" && "\${2:-}" == "build" ]]; then\n  mkdir -p dist\n  printf '%s\\n' "module.exports = 'verified-release';" > dist/index.js\n  printf '%s\\n' "const fs=require('node:fs'); require('yaml'); const value=fs.readFileSync(process.argv[2], 'utf8'); if(value.includes('invalid')) process.exit(1); console.log('config valid');" > dist/config-check.js\n  printf '%s\\n' "const test = require('node:test'); test('release smoke', () => {});" > dist/smoke.test.js\n  exit 0\nfi\nexit 2\n`,
       );
       await writeFile(
         join(binDir, "sudo"),
@@ -116,6 +116,8 @@ test(
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
         JARVIS_DATA_DIR: dataDir,
         JARVIS_DEPLOY_RESTART_DELAY_SECONDS: "0",
+        JARVIS_BACKGROUND_BOOTSTRAPPED: "",
+        JARVIS_BACKGROUND_WORKTREE: "",
         FAKE_PNPM_LOG: pnpmLog,
       };
       const first = run("bash", [join(checkout, "scripts/safe-deploy.sh"), "--self-main"], checkout, deployEnv);
@@ -123,6 +125,11 @@ test(
       assert.equal(run("git", ["--git-dir", remote, "rev-parse", "refs/heads/main"], root), sha);
       assert.match(await readFile(join(checkout, "dist/index.js"), "utf-8"), /verified-release/);
       assert.equal(JSON.parse(await readFile(join(dataDir, "data/deploy/pending.json"), "utf-8")).new_rev, sha);
+      assert.match(
+        await readFile(join(dataDir, `cache/deploy/${sha}/node_modules/yaml/index.js`), "utf-8"),
+        /module\.exports/,
+      );
+      assert.equal((await readFile(pnpmLog, "utf-8")).split("\n").filter((line) => line === "prune --prod").length, 1);
 
       const second = run("bash", [join(checkout, "scripts/safe-deploy.sh"), "--self-main"], checkout, deployEnv);
       assert.match(second, /Using verified deploy cache/);
