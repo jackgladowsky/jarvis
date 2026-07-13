@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- Fix HTTP MCP DNS pinning and support explicit loopback-only local MCP endpoints.
+
 ## 0.7.0
 
 - Add configurable approval-free mode for normal privileged actions while retaining browser hard blocks.
