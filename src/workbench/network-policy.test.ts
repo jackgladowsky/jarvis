@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isPublicNetworkAddress, WorkbenchNetworkPolicy, type WorkbenchResolver } from "./network-policy.js";
+import {
+  createPinnedLookup,
+  isPublicNetworkAddress,
+  WorkbenchNetworkPolicy,
+  type WorkbenchResolver,
+} from "./network-policy.js";
 
 test("address classifier blocks private, metadata, reserved, multicast, and mapped IPv6", () => {
   for (const address of [
@@ -37,6 +42,40 @@ test("private hostname and DNS rebinding are blocked with injected resolver", as
   now = 11;
   response = "127.0.0.1";
   await assert.rejects(() => rebindingPolicy.assertUrlAllowed("https://rebind.example/resource"), /rebinding/);
+});
+
+test("pinned lookup returns an address array when Node requests all results", async () => {
+  const lookup = createPinnedLookup([
+    { address: "8.8.8.8", family: 4 },
+    { address: "2606:4700:4700::1111", family: 6 },
+  ]);
+  const resolved = await new Promise<unknown>((resolve, reject) => {
+    lookup("public.example", { all: true }, (err, addresses) => (err ? reject(err) : resolve(addresses)));
+  });
+  assert.deepEqual(resolved, [
+    { address: "8.8.8.8", family: 4 },
+    { address: "2606:4700:4700::1111", family: 6 },
+  ]);
+});
+
+test("loopback opt-in is limited to explicit localhost endpoints and preserves redirect checks", async () => {
+  const resolver: WorkbenchResolver = async (hostname) => [
+    { address: hostname === "metadata.example" ? "169.254.169.254" : "127.0.0.1", family: 4 },
+  ];
+  const policy = new WorkbenchNetworkPolicy(
+    resolver,
+    1_000,
+    Date.now,
+    (async () =>
+      new Response(null, { status: 302, headers: { location: "http://metadata.example/latest" } })) as typeof fetch,
+  );
+  await policy.assertUrlAllowed("http://localhost:4789/mcp", false, { allowLoopback: true });
+  await assert.rejects(() => policy.assertUrlAllowed("http://localhost:4789/mcp"), /blocked/);
+  await assert.rejects(() => policy.assertUrlAllowed("http://10.0.0.1/mcp", false, { allowLoopback: true }), /blocked/);
+  await assert.rejects(
+    () => policy.pinnedFetch("http://localhost:4789/mcp", {}, 1, undefined, { allowLoopback: true }),
+    /non-public/,
+  );
 });
 
 test("pinned redirects strip cross-origin authority and apply Fetch method semantics", async () => {

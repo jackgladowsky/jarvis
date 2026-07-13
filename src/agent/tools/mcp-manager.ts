@@ -22,6 +22,11 @@ const serverConfigSchema = Type.Object(
     read_only: Type.Optional(
       Type.Boolean({ description: "Declare whether this integration should be used read-only" }),
     ),
+    allow_localhost: Type.Optional(
+      Type.Boolean({
+        description: "Explicitly allow only an http:// localhost or literal-loopback HTTP MCP endpoint",
+      }),
+    ),
   },
   { additionalProperties: false },
 );

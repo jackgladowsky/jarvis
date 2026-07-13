@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import { isLoopbackHostname } from "../workbench/network-policy.js";
 import { atomicWriteJson, withFileLock } from "../lib/durable-file.js";
 import {
   listMcpTools,
@@ -88,6 +89,7 @@ const managerServerSchema = z
       .optional(),
     timeout_ms: z.number().int().min(1_000).max(120_000).default(15_000),
     read_only: z.boolean().optional(),
+    allow_localhost: z.boolean().optional(),
   })
   .strict()
   .superRefine((server, context) => {
@@ -99,6 +101,19 @@ const managerServerSchema = z
     }
     if (!server.url && server.headers) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "headers require an HTTP URL" });
+    }
+    if (server.allow_localhost) {
+      if (
+        !server.url ||
+        new URL(server.url).protocol !== "http:" ||
+        !isLoopbackHostname(new URL(server.url).hostname)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["allow_localhost"],
+          message: "is only valid for an http:// localhost or literal loopback HTTP endpoint",
+        });
+      }
     }
   });
 
@@ -122,6 +137,7 @@ export interface McpManagerResult {
     timeoutMs: number;
     environmentKeys: string[];
     headerKeys: string[];
+    allowLocalhost: boolean;
   }>;
   tools?: Array<{ name: string; description?: string; inputSchema: unknown }>;
 }
@@ -151,6 +167,7 @@ function publicServer(name: string, server: McpServerConfig) {
     timeoutMs: server.timeout_ms ?? 15_000,
     environmentKeys: Object.keys(server.env ?? {}).sort(),
     headerKeys: Object.keys(server.headers ?? {}).sort(),
+    allowLocalhost: server.allow_localhost === true,
   };
 }
 
