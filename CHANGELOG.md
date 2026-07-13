@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0
+
+- Add a secure one-time browser secret submission flow for allowlisted owner keys.
+
 ## 0.7.2
 
 - Render primary-only Codex subscription usage in /status.
