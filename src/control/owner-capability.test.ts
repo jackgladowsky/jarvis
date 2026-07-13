@@ -18,19 +18,54 @@ test("owner capability is chat-bound, exact-plan, expiring, and one-time", async
       requested = record.id;
     },
   };
-  const first = await requireOwnerCapability({ authority, tool: "config apply", plan: { revision: "a" } });
+  const first = await requireOwnerCapability({
+    authority,
+    tool: "config apply",
+    plan: { revision: "a" },
+    approvalRequired: true,
+  });
   assert.equal(first.pending?.id, requested);
   await assert.rejects(decideWorkbenchApproval(requested, { chatId: 99, userId: 22 }, "approved"), /different chat/);
   await decideWorkbenchApproval(requested, authority, "approved");
   await assert.rejects(
-    requireOwnerCapability({ authority, capabilityId: requested, tool: "config apply", plan: { revision: "b" } }),
+    requireOwnerCapability({
+      authority,
+      capabilityId: requested,
+      tool: "config apply",
+      plan: { revision: "b" },
+      approvalRequired: true,
+    }),
     /exact plan/,
   );
-  await requireOwnerCapability({ authority, capabilityId: requested, tool: "config apply", plan: { revision: "a" } });
+  await requireOwnerCapability({
+    authority,
+    capabilityId: requested,
+    tool: "config apply",
+    plan: { revision: "a" },
+    approvalRequired: true,
+  });
   await assert.rejects(
-    requireOwnerCapability({ authority, capabilityId: requested, tool: "config apply", plan: { revision: "a" } }),
+    requireOwnerCapability({
+      authority,
+      capabilityId: requested,
+      tool: "config apply",
+      plan: { revision: "a" },
+      approvalRequired: true,
+    }),
     /already used/,
   );
+});
+
+test("approval-free policy bypasses normal owner capability prompts", async () => {
+  let prompted = false;
+  const result = await requireOwnerCapability({
+    authority: { chatId: 11, userId: 22, requestApproval: async () => void (prompted = true) },
+    tool: "config apply",
+    plan: { revision: "a" },
+    approvalRequired: false,
+  });
+  assert.deepEqual(result, {});
+  assert.equal(prompted, false);
 });
 
 test.after(async () => rm(data, { recursive: true, force: true }));

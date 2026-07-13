@@ -33,7 +33,7 @@ test("validateWorkbenchUrl blocks local and private targets", () => {
 test("assessWorkbenchRequest flags hard-approval categories", () => {
   const risky = assessWorkbenchRequest("Open DoorDash, place the order, then book me an Uber and send the ETA.");
   assert.equal(risky.approvalRequired, true);
-  assert.match(risky.reason ?? "", /Hard approval required/);
+  assert.match(risky.reason ?? "", /Owner confirmation required/);
   assert.ok(risky.matchedTerms.includes("order"));
   assert.ok(risky.matchedTerms.includes("booking"));
   assert.ok(risky.matchedTerms.includes("send/post"));

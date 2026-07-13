@@ -54,17 +54,20 @@ export interface BrowserWorkbenchAuthority {
   requestApproval: (record: WorkbenchApprovalRecord) => Promise<void>;
 }
 
-export function createBrowserWorkbenchTool(authority?: BrowserWorkbenchAuthority): AgentTool<typeof schema> {
+export function createBrowserWorkbenchTool(
+  authority?: BrowserWorkbenchAuthority,
+  approvalRequired = config.tools.owner_approval.required,
+): AgentTool<typeof schema> {
   return {
     name: "browser_workbench",
     label: "browser_workbench",
     description:
-      "Open public web pages or use run_steps for guarded click/type/fill/submit browser actions. Reading and benign clicks/fills are automatic. Submit or external side-effect actions require an owner-issued one-time Telegram approval capability. The tool creates that approval request when needed; never invent capabilityId. Credentials/login/2FA/CAPTCHA and purchases remain blocked.",
+      "Open public web pages or use run_steps for guarded click/type/fill/submit browser actions. Normal privileged actions follow the owner-approval config policy; credentials/login/2FA/CAPTCHA and purchases remain blocked.",
     parameters: schema,
     async execute(_id, args: BrowserArgs, signal) {
       const t0 = Date.now();
       if (args.action === "kernel_auth_start" || args.action === "kernel_auth_status") {
-        return executeKernelAuth(args, authority, t0);
+        return executeKernelAuth(args, authority, approvalRequired, t0);
       }
       const steps = normalizedSteps(args);
       const auditArgs = {
@@ -80,8 +83,8 @@ export function createBrowserWorkbenchTool(authority?: BrowserWorkbenchAuthority
         if (!preflight.allowed) throw new Error(preflight.reason ?? "Workbench plan is blocked.");
 
         const requiresCapability = workbenchPlanRequiresCapability(steps, args.request);
-        let capabilityGranted = false;
-        if (requiresCapability) {
+        let capabilityGranted = !approvalRequired;
+        if (requiresCapability && approvalRequired) {
           if (!authority) throw new Error("This browser action requires approval from an active Telegram owner chat.");
           if (!args.capabilityId) {
             const pending = await createWorkbenchApproval({
@@ -212,7 +215,12 @@ function formatAuthStatus(status: {
     .join("\n");
 }
 
-async function executeKernelAuth(args: BrowserArgs, authority: BrowserWorkbenchAuthority | undefined, t0: number) {
+async function executeKernelAuth(
+  args: BrowserArgs,
+  authority: BrowserWorkbenchAuthority | undefined,
+  approvalRequired: boolean,
+  t0: number,
+) {
   const auditArgs = {
     action: args.action,
     domain: args.domain,
@@ -235,26 +243,35 @@ async function executeKernelAuth(args: BrowserArgs, authority: BrowserWorkbenchA
       return { content: [{ type: "text" as const, text: formatAuthStatus(status) }], details: { status } };
     }
     const plan = authPlan(args);
-    if (!authority) throw new Error("Kernel auth start requires approval from an active Telegram owner chat.");
-    if (!args.capabilityId) {
-      const pending = await createWorkbenchApproval({
-        chatId: authority.chatId,
-        userId: authority.userId,
-        steps: plan,
-      });
-      await authority.requestApproval(pending);
-      await auditToolCall({ tool: "browser_workbench", args: auditArgs, outcome: "ok", duration_ms: Date.now() - t0 });
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `PENDING_OWNER_APPROVAL ${pending.id}\nApprove the exact hosted-auth setup before JARVIS creates it.`,
-          },
-        ],
-        details: { status: "pending_approval", approvalId: pending.id, expiresAt: pending.expiresAt },
-      };
+    if (approvalRequired) {
+      if (!authority) throw new Error("Kernel auth start requires approval from an active Telegram owner chat.");
+      if (!args.capabilityId) {
+        const pending = await createWorkbenchApproval({
+          chatId: authority.chatId,
+          userId: authority.userId,
+          steps: plan,
+        });
+        await authority.requestApproval(pending);
+        await auditToolCall({
+          tool: "browser_workbench",
+          args: auditArgs,
+          outcome: "ok",
+          duration_ms: Date.now() - t0,
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `PENDING_OWNER_APPROVAL ${pending.id}\nApprove the exact hosted-auth setup before JARVIS creates it.`,
+            },
+          ],
+          details: { status: "pending_approval", approvalId: pending.id, expiresAt: pending.expiresAt },
+        };
+      }
+      await consumeWorkbenchApproval(args.capabilityId, authority, plan);
+    } else if (args.capabilityId) {
+      throw new Error("A capability cannot be attached when owner confirmations are disabled.");
     }
-    await consumeWorkbenchApproval(args.capabilityId, authority, plan);
     const result = await startKernelAuth(settings, {
       domain: requiredString(args.domain, "domain is required for kernel_auth_start"),
       profileName: requiredString(args.profileName, "profileName is required for kernel_auth_start"),

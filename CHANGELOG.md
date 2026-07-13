@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0
+
+- Add configurable approval-free mode for normal privileged actions while retaining browser hard blocks.
+
 ## 0.6.6
 
 - fix: route lifecycle notifications as agent prompts

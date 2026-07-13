@@ -39,6 +39,9 @@ chmod 700 "$BACKUP_DIR"
 
 # Keep cache out. Everything else under ~/.jarvis is intentionally included:
 # config, prompts, notes, sessions, audit log, .env, and OAuth creds.
+# tar exit 1 = "file changed as we read it", expected for an active data dir.
+# We still want that archive; only fail on real errors (exit >= 2).
+tar_rc=0
 tar \
   --create \
   --gzip \
@@ -46,7 +49,13 @@ tar \
   --directory "$(dirname "$DATA_DIR")" \
   --exclude "$(basename "$DATA_DIR")/cache" \
   --exclude "$(basename "$DATA_DIR")/cache/*" \
-  "$(basename "$DATA_DIR")"
+  --warning=no-file-changed \
+  "$(basename "$DATA_DIR")" || tar_rc=$?
+if [[ "$tar_rc" -ge 2 ]]; then
+  rm -f "$TMP"
+  echo "ERROR: tar failed with exit code $tar_rc" >&2
+  exit "$tar_rc"
+fi
 
 mv "$TMP" "$OUT"
 sha256sum "$OUT" > "$SHA"

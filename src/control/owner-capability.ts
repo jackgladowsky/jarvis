@@ -11,12 +11,20 @@ function canonical(tool: string, plan: unknown): WorkbenchStep[] {
   ];
 }
 
+async function ownerApprovalRequired(override: boolean | undefined): Promise<boolean> {
+  if (override !== undefined) return override;
+  return (await import("../config.js")).config.tools.owner_approval.required;
+}
+
 export async function requireOwnerCapability(input: {
   authority?: BrowserWorkbenchAuthority;
   capabilityId?: string;
   tool: string;
   plan: unknown;
+  /** Test seam; production callers use the startup-frozen config policy. */
+  approvalRequired?: boolean;
 }): Promise<{ pending?: { id: string; expiresAt: string } }> {
+  if (!(await ownerApprovalRequired(input.approvalRequired))) return {};
   if (!input.authority) throw new Error(`${input.tool} requires an active authenticated Telegram owner chat.`);
   const steps = canonical(input.tool, input.plan);
   if (!input.capabilityId) {

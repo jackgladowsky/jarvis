@@ -108,7 +108,7 @@ export function assessWorkbenchRequest(text: string): ApprovalDecision {
     approvalRequired: matchedTerms.length > 0,
     matchedTerms,
     reason: matchedTerms.length
-      ? `Hard approval required before: ${Array.from(new Set(matchedTerms)).join(", ")}.`
+      ? `Owner confirmation required when enabled before: ${Array.from(new Set(matchedTerms)).join(", ")}.`
       : undefined,
   };
 }

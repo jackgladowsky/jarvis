@@ -1,7 +1,7 @@
 # JARVIS configuration. Edit freely, restart the service to apply.
 # Secrets live in .env, not here. Copy this to ~/.jarvis/config.yaml.
 
-schema_version: 2
+schema_version: 3
 
 agent:
   provider: codex                             # "codex" / "anthropic" / "openrouter"
@@ -24,6 +24,8 @@ tools:
   bash:
     default_timeout_seconds: 60
     max_timeout_seconds: 600
+  owner_approval:
+    required: false                       # set true to restore Telegram confirmations for normal privileged actions
   browser:
     backend: local                         # "local" (default) or "kernel"
     kernel:

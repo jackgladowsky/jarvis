@@ -50,12 +50,24 @@ test("config parser accepts per-scheduled-task model overrides", async () => {
   assert.equal(parseConfig(config, "task-model").scheduler.tasks[0]?.model, "google/gemini-2.5-flash");
 });
 
-test("legacy config migrates to the local browser backend and Kernel references reject literals", async () => {
+test("legacy config migrates to the local browser backend and approval-free owner policy", async () => {
   const raw = await readFile(new URL("../config.yaml.example", import.meta.url), "utf-8");
   const legacy = parseYaml(raw) as any;
   legacy.schema_version = 1;
   delete legacy.tools.browser;
-  assert.equal(parseConfig(legacy).tools.browser.backend, "local");
+  delete legacy.tools.owner_approval;
+  const migrated = parseConfig(legacy);
+  assert.equal(migrated.tools.browser.backend, "local");
+  assert.equal(migrated.tools.owner_approval.required, false);
+
+  const v2 = parseYaml(raw) as any;
+  v2.schema_version = 2;
+  delete v2.tools.owner_approval;
+  assert.equal(parseConfig(v2).tools.owner_approval.required, false);
+
+  const confirmationsOn = parseYaml(raw) as any;
+  confirmationsOn.tools.owner_approval.required = true;
+  assert.equal(parseConfig(confirmationsOn).tools.owner_approval.required, true);
 
   const unsafe = parseYaml(raw) as any;
   unsafe.tools.browser.kernel.api_key_env = "actual-secret";
