@@ -3,6 +3,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { notifyMainOrFallback } from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
+import {
+  enqueueBackgroundLifecycleNotifications,
+  queueBackgroundStatusNotification,
+  queueReviewerNeedsFix,
+} from "./lifecycle-notifications.js";
 import { paths } from "../paths.js";
 import { advanceGoalAfterBackgroundTask } from "../goals/manager.js";
 import { runBackgroundPrompt } from "../agent/runtime.js";
@@ -17,12 +22,7 @@ import {
 } from "./manager.js";
 import { appendAutomaticFixerCycle, backgroundModelOverrideForRole, backgroundWorkerInstructions } from "./logic.js";
 import type { BackgroundRole, BackgroundStage, BackgroundTask, BackgroundTaskStatus } from "./types.js";
-import {
-  backgroundLifecycleNotificationId,
-  parseReviewVerdict,
-  parseWorkerOutcome,
-  stageMustHalt,
-} from "./worker-logic.js";
+import { parseReviewVerdict, parseWorkerOutcome, stageMustHalt } from "./worker-logic.js";
 
 async function notify(chatId: number, title: string, body: string, id?: string): Promise<void> {
   await notifyMainOrFallback({
@@ -77,13 +77,6 @@ async function launchOrObserve(taskId: string): Promise<BackgroundTask> {
     if (current.pid) return current;
     throw err;
   }
-}
-
-async function acknowledgeTerminalNotification(taskId: string, notificationId: string): Promise<void> {
-  const current = await readBackgroundTask(taskId);
-  if (current.terminal_notification_id !== notificationId || current.terminal_notification_enqueued_at) return;
-  current.terminal_notification_enqueued_at = new Date().toISOString();
-  await writeBackgroundTask(current);
 }
 
 function stageForRole(task: BackgroundTask, role: BackgroundRole): BackgroundStage {
@@ -198,10 +191,9 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     latest.pid = undefined;
     latest.summary = output;
     latest.error = outcome === "invalid" ? reason : undefined;
-    latest.terminal_notification_id = backgroundLifecycleNotificationId(latest, "attention");
-    latest.terminal_notification_enqueued_at = undefined;
     latestStage.status = "queued";
     latestStage.summary = output;
+    queueBackgroundStatusNotification(latest);
     await writeBackgroundTask(latest);
     await appendBackgroundMail(task.id, {
       from: "worker",
@@ -213,17 +205,12 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
         err: err instanceof Error ? err.message : err,
       }),
     );
-    const enqueued = await bestEffortNotify(
-      latest.chat_id,
-      `${latest.id} is waiting for input`,
-      `Background task ${latest.id} stopped before advancing.\n\n${reason.slice(0, 2500)}`,
-      latest.terminal_notification_id,
+    await enqueueBackgroundLifecycleNotifications(latest.id).catch((err) =>
+      log.warn("background waiting notification enqueue failed", {
+        taskId: latest.id,
+        err: err instanceof Error ? err.message : err,
+      }),
     );
-    if (enqueued) {
-      await acknowledgeTerminalNotification(latest.id, latest.terminal_notification_id).catch((err) =>
-        log.warn("background attention notification acknowledgement failed", err),
-      );
-    }
     return;
   }
 
@@ -251,12 +238,19 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
       latest.current_role = fixerRole;
       latest.status = "queued";
       latest.pid = undefined;
+      queueReviewerNeedsFix(latest);
       await writeBackgroundTask(latest);
       const launched = await launchOrObserve(latest.id);
+      await enqueueBackgroundLifecycleNotifications(latest.id).catch((err) =>
+        log.warn("background reviewer rejection notification enqueue failed", {
+          taskId: latest.id,
+          err: err instanceof Error ? err.message : err,
+        }),
+      );
       await bestEffortNotify(
         latest.chat_id,
-        `${latest.id}: review needs fixes; automatic fixer ${launched.pid ? "started" : "queued"}`,
-        `Background task ${latest.id}: review needs fixes; its one automatic fixer + final review cycle is ${launched.pid ? "starting" : "queued for worker capacity"}.`,
+        `${latest.id}: automatic fixer ${launched.pid ? "started" : "queued"}`,
+        `Background task ${latest.id}: its automatic fixer is ${launched.pid ? "starting" : "queued for worker capacity"}.`,
       );
       return;
     }
@@ -265,22 +259,15 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
     latest.pid = undefined;
     latest.finished_at = new Date().toISOString();
     latest.status = verdict === "ready" ? "ready_for_pr" : "needs_fix";
-    latest.terminal_notification_id = backgroundLifecycleNotificationId(latest, `terminal-${latest.status}`);
-    latest.terminal_notification_enqueued_at = undefined;
+    queueBackgroundStatusNotification(latest);
     await writeBackgroundTask(latest);
     await bestEffortGoalAdvance(latest.id);
-    const prefix = verdict === "ready" ? "ready for PR" : "needs fixes";
-    const enqueued = await bestEffortNotify(
-      latest.chat_id,
-      `${latest.id} ${prefix}`,
-      output.slice(0, 2500),
-      latest.terminal_notification_id,
+    await enqueueBackgroundLifecycleNotifications(latest.id).catch((err) =>
+      log.warn("background review terminal notification enqueue failed", {
+        taskId: latest.id,
+        err: err instanceof Error ? err.message : err,
+      }),
     );
-    if (enqueued) {
-      await acknowledgeTerminalNotification(latest.id, latest.terminal_notification_id).catch((err) =>
-        log.warn("background terminal notification acknowledgement failed", err),
-      );
-    }
     return;
   }
 
@@ -303,21 +290,15 @@ async function runStage(taskId: string, role: BackgroundRole): Promise<void> {
   latest.pid = undefined;
   latest.finished_at = new Date().toISOString();
   latest.status = "done";
-  latest.terminal_notification_id = backgroundLifecycleNotificationId(latest, `terminal-${latest.status}`);
-  latest.terminal_notification_enqueued_at = undefined;
+  queueBackgroundStatusNotification(latest);
   await writeBackgroundTask(latest);
   await bestEffortGoalAdvance(latest.id);
-  const enqueued = await bestEffortNotify(
-    latest.chat_id,
-    `${latest.id} done`,
-    output.slice(0, 2500),
-    latest.terminal_notification_id,
+  await enqueueBackgroundLifecycleNotifications(latest.id).catch((err) =>
+    log.warn("background completion notification enqueue failed", {
+      taskId: latest.id,
+      err: err instanceof Error ? err.message : err,
+    }),
   );
-  if (enqueued) {
-    await acknowledgeTerminalNotification(latest.id, latest.terminal_notification_id).catch((err) =>
-      log.warn("background terminal notification acknowledgement failed", err),
-    );
-  }
 }
 
 async function main(): Promise<void> {
@@ -347,24 +328,18 @@ async function main(): Promise<void> {
     latest.pid = undefined;
     latest.error = err instanceof Error ? err.message : String(err);
     latest.finished_at = new Date().toISOString();
-    latest.terminal_notification_id = backgroundLifecycleNotificationId(latest, "terminal-failed");
-    latest.terminal_notification_enqueued_at = undefined;
+    queueBackgroundStatusNotification(latest);
     await writeBackgroundTask(latest);
     await advanceGoalAfterBackgroundTask(latest.id).catch((goalErr) =>
       log.warn("goal advancement after background failure failed", goalErr),
     );
     await appendBackgroundMail(taskId, { from: "worker", type: "error", body: latest.error });
-    const enqueued = await bestEffortNotify(
-      latest.chat_id,
-      `${latest.id} failed`,
-      `Background task ${latest.id} failed: ${latest.error}`,
-      latest.terminal_notification_id,
+    await enqueueBackgroundLifecycleNotifications(latest.id).catch((notifyErr) =>
+      log.warn("background failure notification enqueue failed", {
+        taskId: latest.id,
+        err: notifyErr instanceof Error ? notifyErr.message : notifyErr,
+      }),
     );
-    if (enqueued) {
-      await acknowledgeTerminalNotification(latest.id, latest.terminal_notification_id).catch((notifyErr) =>
-        log.warn("background failure notification acknowledgement failed", notifyErr),
-      );
-    }
     throw err;
   }
 }

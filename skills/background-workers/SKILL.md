@@ -51,6 +51,12 @@ Common pipelines:
 
 Reviewers do not edit files. They mark work `ready_for_pr` or `needs_fix`.
 
+## Lifecycle notifications
+
+Main JARVIS automatically receives concise, durable Telegram notifications for meaningful task transitions: reviewer rejection/`needs_fix`, `waiting_on_main` questions, `ready_for_pr`, failures, and completion. Each event is generation-deduped in the task's lifecycle outbox and delivered through the internal notification pump; pending events survive a service restart without blocking Telegram polling.
+
+Notifications include the next action (for example `/answer <id>`, `/fixbg <id>`, or review the worktree). `/task <id>` is for inspecting detail, not required to trigger delivery. The first reviewer rejection is surfaced even when JARVIS starts its one automatic fixer/re-review cycle.
+
 ## Commands
 
 Telegram commands:

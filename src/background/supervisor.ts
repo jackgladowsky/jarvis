@@ -17,7 +17,10 @@ import { paths } from "../paths.js";
 import { launchLinkedGoalTask, readGoal, reconcileGoals } from "../goals/manager.js";
 import { notifyMainOrFallback } from "../lib/internal-notifications.js";
 import { readProcessStartTime } from "../lib/process-identity.js";
-import { backgroundLifecycleNotificationId } from "./worker-logic.js";
+import {
+  enqueueBackgroundLifecycleNotifications,
+  queueBackgroundStatusNotification,
+} from "./lifecycle-notifications.js";
 
 const SUPERVISOR_INTERVAL_MS = 30_000;
 const TERMINAL_TASK_STATUSES = new Set(["needs_fix", "ready_for_pr", "failed", "cancelled", "done"]);
@@ -65,8 +68,7 @@ async function markUnrecoverable(task: BackgroundTask, message: string): Promise
   task.current_role = undefined;
   task.finished_at = new Date().toISOString();
   task.error = message;
-  task.terminal_notification_id = backgroundLifecycleNotificationId(task, "terminal-failed");
-  task.terminal_notification_enqueued_at = undefined;
+  queueBackgroundStatusNotification(task);
   const running = task.pipeline.find((stage) => stage.status === "running");
   if (running) {
     running.status = "failed";
@@ -75,6 +77,12 @@ async function markUnrecoverable(task: BackgroundTask, message: string): Promise
   }
   await writeBackgroundTask(task);
   await appendBackgroundMail(task.id, { from: "main", type: "error", body: message }).catch(() => undefined);
+  await enqueueBackgroundLifecycleNotifications(task.id).catch((err) =>
+    log.warn("unrecoverable background task notification enqueue failed", {
+      id: task.id,
+      err: err instanceof Error ? err.message : err,
+    }),
+  );
 }
 
 async function quarantineInterruptedTask(task: BackgroundTask): Promise<void> {
@@ -83,8 +91,7 @@ async function quarantineInterruptedTask(task: BackgroundTask): Promise<void> {
   task.status = "waiting_on_main";
   task.pid = undefined;
   task.error = message;
-  task.terminal_notification_id = `background-interrupted-${task.id}-${(task.revision ?? 0) + 1}`;
-  task.terminal_notification_enqueued_at = undefined;
+  queueBackgroundStatusNotification(task);
   const running = task.pipeline.find((stage) => stage.status === "running");
   if (running) {
     running.status = "failed";
@@ -94,15 +101,8 @@ async function quarantineInterruptedTask(task: BackgroundTask): Promise<void> {
   }
   await writeBackgroundTask(task);
   await appendBackgroundMail(task.id, { from: "worker", type: "question", body: message }).catch(() => undefined);
-  await notifyMainOrFallback({
-    id: task.terminal_notification_id,
-    source: "background",
-    chat_id: task.chat_id,
-    title: `${task.id} needs recovery review`,
-    body: message,
-    fallback_text: `Background task ${task.id} stopped unexpectedly. ${message}`,
-  }).catch((err) =>
-    log.warn("interrupted background task notification failed", {
+  await enqueueBackgroundLifecycleNotifications(task.id).catch((err) =>
+    log.warn("interrupted background task notification enqueue failed", {
       id: task.id,
       err: err instanceof Error ? err.message : err,
     }),
@@ -156,6 +156,8 @@ async function reconcileTask(taskId: string): Promise<void> {
     }).catch(() => undefined);
   }
   task = await reconcileTaskOutbox(task);
+  await enqueueBackgroundLifecycleNotifications(task.id);
+  task = await readBackgroundTask(task.id);
   if (task.launch_deferred) return;
   if (TERMINAL_TASK_STATUSES.has(task.status)) {
     if (task.pid !== undefined) {

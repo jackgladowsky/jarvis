@@ -64,6 +64,18 @@ export interface BackgroundTask {
   terminal_notification_id?: string;
   /** Controller acknowledged that the deterministic notification is durably queued/archived. */
   terminal_notification_enqueued_at?: string;
+  /**
+   * Durable lifecycle outbox. Unlike the legacy terminal slot, this can retain
+   * a reviewer rejection while the automatic fixer advances the task.
+   */
+  lifecycle_notifications?: Array<{
+    id: string;
+    event: string;
+    title: string;
+    body: string;
+    fallback_text: string;
+    enqueued_at?: string;
+  }>;
   /** Monotonic compare-and-swap revision for cross-process state updates. */
   revision?: number;
 }
