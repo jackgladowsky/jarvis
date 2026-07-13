@@ -29,7 +29,7 @@ const ModelSelectionSchema = z
   })
   .strict();
 
-export const CURRENT_CONFIG_SCHEMA_VERSION = 3 as const;
+export const CURRENT_CONFIG_SCHEMA_VERSION = 4 as const;
 
 // Schema mirrors config.yaml.example exactly. Any drift between the example
 // and this schema is a bug — the example is documentation, this is enforcement.
@@ -158,6 +158,13 @@ export const ConfigSchema = z
         ),
       })
       .strict(),
+    secret_drop: z
+      .object({
+        enabled: z.boolean(),
+        port: z.number().int().min(1024).max(65535),
+        public_base_url: z.string().url(),
+      })
+      .strict(),
     logging: z
       .object({
         audit_log_enabled: z.boolean(),
@@ -205,7 +212,7 @@ export function migrateConfig(value: unknown): unknown {
     kernel: { api_key_env: "$KERNEL_API_KEY", profile_name: "jarvis", save_changes: false },
   };
   const defaultOwnerApproval = { required: false };
-  if (version === undefined || version === 1 || version === 2) {
+  if (version === undefined || version === 1 || version === 2 || version === 3) {
     // v0/v1 predate browser backend selection; v0-v2 predate the explicit
     // owner-approval policy. Preserve local browsing and Jack's approval-free default.
     const tools =
@@ -221,6 +228,7 @@ export function migrateConfig(value: unknown): unknown {
               owner_approval: (tools as Record<string, unknown>).owner_approval ?? defaultOwnerApproval,
             }
           : tools,
+      secret_drop: input.secret_drop ?? { enabled: false, port: 8787, public_base_url: "https://secret-drop.invalid" },
     };
   }
   return value;

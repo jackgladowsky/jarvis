@@ -10,6 +10,7 @@ import { sttBenchCommands } from "./sttbench.js";
 import { helpCommands } from "./help.js";
 import { backgroundCommands } from "./background.js";
 import { goalCommands } from "./goal.js";
+import { secretDropCommands } from "./secret-drop.js";
 
 registerCommands([
   ...sessionCommands,
@@ -19,6 +20,7 @@ registerCommands([
   ...helpCommands,
   ...backgroundCommands,
   ...goalCommands,
+  ...secretDropCommands,
 ]);
 
 export {
@@ -29,4 +31,5 @@ export {
   helpCommands,
   backgroundCommands,
   goalCommands,
+  secretDropCommands,
 };

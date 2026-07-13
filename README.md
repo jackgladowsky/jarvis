@@ -131,6 +131,8 @@ Important config sections:
 
 Configuration is primarily managed conversationally: ask JARVIS to inspect or change a setting. It uses the validated `config_control` capability to plan an atomic change, preserve rollback history, and explain whether a guarded restart is required. Secrets in `.env` are deliberately excluded. Manual edits remain supported. `schema_version` is migrated from the original unversioned format, future versions fail closed, and deployments validate the actual live config before activation.
 
+Owner secrets can be entered without passing a value through Telegram using the opt-in one-time browser flow; see [owner secret drop](docs/secret-drop.md).
+
 MCP integrations are also managed conversationally and are re-read without a restart. See [Conversational MCP integrations](docs/mcp-integrations.md) for the credential-reference and authority model.
 
 ## Telegram commands
@@ -142,6 +144,7 @@ MCP integrations are also managed conversationally and are re-read without a res
 /verbose [on|off]     show more detailed progress/tool updates for future turns
 /usage                show local context and token/cost usage estimates
 /version              show the running JARVIS version
+/secretdrop KERNEL_API_KEY [5-10]  create one-time secret submission link
 
 /bg <prompt>          start a background worker task
 /tasks                list recent background tasks
