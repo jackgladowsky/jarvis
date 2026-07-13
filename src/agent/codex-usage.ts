@@ -12,7 +12,7 @@ export interface CodexUsageWindow {
 }
 
 export type CodexSubscriptionUsage =
-  | { available: true; primary: CodexUsageWindow; secondary: CodexUsageWindow }
+  | { available: true; primary: CodexUsageWindow; secondary?: CodexUsageWindow }
   | { available: false; reason: "auth" | "unavailable" };
 
 export interface CodexUsageOptions {
@@ -58,9 +58,12 @@ export function parseCodexSubscriptionUsage(value: unknown, now = Date.now()): C
 
   const limits = rateLimit as Record<string, unknown>;
   const primary = parseWindow(limits.primary_window, now);
+  if (!primary) return { available: false, reason: "unavailable" };
+
+  // Some plans expose only the primary quota window. A missing, null, or
+  // unparseable secondary window must not hide otherwise valid usage.
   const secondary = parseWindow(limits.secondary_window, now);
-  if (!primary || !secondary) return { available: false, reason: "unavailable" };
-  return { available: true, primary, secondary };
+  return secondary ? { available: true, primary, secondary } : { available: true, primary };
 }
 
 function headersFor(auth: CodexUsageAuth): Record<string, string> {
@@ -150,9 +153,9 @@ export function renderCodexSubscriptionUsage(usage: CodexSubscriptionUsage): str
     const detail = usage.reason === "auth" ? "authentication unavailable" : "temporarily unavailable";
     return `📈 Codex subscription\n• ${detail}`;
   }
-  return ["📈 Codex subscription", renderWindow("5-hour", usage.primary), renderWindow("Weekly", usage.secondary)].join(
-    "\n",
-  );
+  const lines = ["📈 Codex subscription", renderWindow("5-hour", usage.primary)];
+  if (usage.secondary) lines.push(renderWindow("Weekly", usage.secondary));
+  return lines.join("\n");
 }
 
 export async function renderCodexSubscriptionStatus(options?: CodexUsageOptions): Promise<string> {
