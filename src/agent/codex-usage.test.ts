@@ -36,21 +36,57 @@ const validPayload = {
   },
 };
 
-test("parses and renders both Codex quota windows compactly", async () => {
-  const { parseCodexSubscriptionUsage, renderCodexSubscriptionUsage } = await usageModule();
-  const usage = parseCodexSubscriptionUsage(validPayload);
-  assert.deepEqual(usage, {
+test("parses normal two-window Codex quota responses", async () => {
+  const { parseCodexSubscriptionUsage } = await usageModule();
+  assert.deepEqual(parseCodexSubscriptionUsage(validPayload), {
     available: true,
     primary: { usedPercent: 55.5, resetAfterSeconds: 2547 },
     secondary: { usedPercent: 51, resetAfterSeconds: 489405 },
   });
-  assert.equal(
-    renderCodexSubscriptionUsage(usage),
-    "📈 Codex subscription\n• 5-hour: 55.5% used · 44.5% left · resets in 43m\n• Weekly: 51% used · 49% left · resets in 5d 15h",
+});
+
+test("parses a primary-only Codex quota response", async () => {
+  const { parseCodexSubscriptionUsage } = await usageModule();
+  assert.deepEqual(
+    parseCodexSubscriptionUsage({
+      rate_limit: { primary_window: { used_percent: 55.5, reset_after_seconds: 2547 }, secondary_window: null },
+    }),
+    {
+      available: true,
+      primary: { usedPercent: 55.5, resetAfterSeconds: 2547 },
+    },
   );
 });
 
-test("tolerates reset epochs and rejects malformed quota payloads", async () => {
+test("treats malformed or missing primary Codex quota windows as unavailable", async () => {
+  const { parseCodexSubscriptionUsage } = await usageModule();
+  assert.deepEqual(parseCodexSubscriptionUsage({ rate_limit: { secondary_window: null } }), {
+    available: false,
+    reason: "unavailable",
+  });
+  assert.deepEqual(parseCodexSubscriptionUsage({ rate_limit: { primary_window: {} } }), {
+    available: false,
+    reason: "unavailable",
+  });
+});
+
+test("renders primary-only and two-window Codex quota responses", async () => {
+  const { parseCodexSubscriptionUsage, renderCodexSubscriptionUsage } = await usageModule();
+  assert.equal(
+    renderCodexSubscriptionUsage(parseCodexSubscriptionUsage(validPayload)),
+    "📈 Codex subscription\n• 5-hour: 55.5% used · 44.5% left · resets in 43m\n• Weekly: 51% used · 49% left · resets in 5d 15h",
+  );
+  assert.equal(
+    renderCodexSubscriptionUsage(
+      parseCodexSubscriptionUsage({
+        rate_limit: { primary_window: { used_percent: 55.5, reset_after_seconds: 2547 }, secondary_window: null },
+      }),
+    ),
+    "📈 Codex subscription\n• 5-hour: 55.5% used · 44.5% left · resets in 43m",
+  );
+});
+
+test("tolerates reset epochs", async () => {
   const { parseCodexSubscriptionUsage, renderCodexSubscriptionUsage } = await usageModule();
   const fromEpoch = parseCodexSubscriptionUsage(
     {
@@ -65,10 +101,6 @@ test("tolerates reset epochs and rejects malformed quota payloads", async () => 
     available: true,
     primary: { usedPercent: 0, resetAfterSeconds: 60 },
     secondary: { usedPercent: 100, resetAfterSeconds: 3600 },
-  });
-  assert.deepEqual(parseCodexSubscriptionUsage({ rate_limit: { primary_window: {} } }), {
-    available: false,
-    reason: "unavailable",
   });
   assert.equal(
     renderCodexSubscriptionUsage({ available: false, reason: "auth" }),
