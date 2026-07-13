@@ -1,37 +1,38 @@
 # JARVIS configuration. Edit freely, restart the service to apply.
 # Secrets live in .env, not here. Copy this to ~/.jarvis/config.yaml.
 
-schema_version: 3
+schema_version: 4
 
 agent:
-  provider: codex                             # "codex" / "anthropic" / "openrouter"
-  model: gpt-5.1                              # codex examples: gpt-5.1 / gpt-5.1-codex-max / gpt-5.1-codex-mini
-                                              # anthropic examples: claude-sonnet-4-6
-                                              # openrouter examples: openai/gpt-4o / anthropic/claude-sonnet-4
+  provider: codex # "codex" / "anthropic" / "openrouter"
+  model:
+    gpt-5.1 # codex examples: gpt-5.1 / gpt-5.1-codex-max / gpt-5.1-codex-mini
+    # anthropic examples: claude-sonnet-4-6
+    # openrouter examples: openai/gpt-4o / anthropic/claude-sonnet-4
 
 session:
-  inactivity_threshold_minutes: 240           # 4 hours
+  inactivity_threshold_minutes: 240 # 4 hours
   max_duration_hours: 24
-  summarize_on_rotation: true                 # append a TOC entry to recent.md on rotation
+  summarize_on_rotation: true # append a TOC entry to recent.md on rotation
   announce_new_session: false
 
 compaction:
   enabled: true
-  reserve_tokens: 16384                       # compact when context_tokens > (window - reserve_tokens)
-  keep_recent_tokens: 20000                   # always preserve this much of the tail uncompacted
+  reserve_tokens: 16384 # compact when context_tokens > (window - reserve_tokens)
+  keep_recent_tokens: 20000 # always preserve this much of the tail uncompacted
 
 tools:
   bash:
     default_timeout_seconds: 60
     max_timeout_seconds: 600
   owner_approval:
-    required: false                       # set true to restore Telegram confirmations for normal privileged actions
+    required: false # set true to restore Telegram confirmations for normal privileged actions
   browser:
-    backend: local                         # "local" (default) or "kernel"
+    backend: local # "local" (default) or "kernel"
     kernel:
-      api_key_env: $KERNEL_API_KEY         # env-var reference only; never put the key here
-      profile_name: jarvis                 # safe Kernel profile identifier
-      save_changes: false                  # opt in only when remote profile changes should persist
+      api_key_env: $KERNEL_API_KEY # env-var reference only; never put the key here
+      profile_name: jarvis # safe Kernel profile identifier
+      save_changes: false # opt in only when remote profile changes should persist
 
 # Background roles inherit the active model unless explicitly routed here.
 # This keeps Anthropic/OpenRouter-only installations working without hidden
@@ -41,29 +42,37 @@ background:
   role_models: {}
 
 telegram:
-  show_typing: true                           # 4s re-fire while the agent is working
-  long_tool_call_seconds: 5                   # reserved for future progress UX
-  parse_mode: HTML                            # "none" / "HTML" / "MarkdownV2"
-                                              # HTML enables fenced code blocks, **bold**, *italic*,
-                                              # `inline code`. MarkdownV2 escaping is a footgun.
+  show_typing: true # 4s re-fire while the agent is working
+  long_tool_call_seconds: 5 # reserved for future progress UX
+  parse_mode:
+    HTML # "none" / "HTML" / "MarkdownV2"
+    # HTML enables fenced code blocks, **bold**, *italic*,
+    # `inline code`. MarkdownV2 escaping is a footgun.
 
 stt:
-  provider: disabled                          # "disabled" or "local-whisper-cpp"
+  provider: disabled # "disabled" or "local-whisper-cpp"
   local_whisper_cpp:
     whisper_binary_path: /usr/local/bin/whisper-cli
     model_path: /home/your-user/.jarvis/models/ggml-base.en.bin
-    ffmpeg_path: /usr/bin/ffmpeg              # set null only if sending WAV files directly
+    ffmpeg_path: /usr/bin/ffmpeg # set null only if sending WAV files directly
     max_audio_mb: 25
     timeout_seconds: 120
 
 scheduler:
   enabled: false
   timezone: UTC
-  telegram_chat_id: 0                         # Telegram chat id for scheduled job notifications
-  tasks: []                                   # static/bootstrap overrides; tasks may include optional provider/model per job
+  telegram_chat_id: 0 # Telegram chat id for scheduled job notifications
+  tasks: [] # static/bootstrap overrides; tasks may include optional provider/model per job
+
+# Disabled by default. Bind is always 127.0.0.1; expose this exact HTTPS origin
+# separately with Tailscale Funnel. JARVIS does not enable Funnel for you.
+secret_drop:
+  enabled: false
+  port: 8787
+  public_base_url: https://secret-drop.invalid
 
 logging:
   audit_log_enabled: true
-  audit_log_max_value_bytes: 2048             # truncate logged values larger than this
-  audit_log_redact_patterns: true             # redact API-key-shaped strings
-  level: info                                 # "debug" / "info" / "warn" / "error"
+  audit_log_max_value_bytes: 2048 # truncate logged values larger than this
+  audit_log_redact_patterns: true # redact API-key-shaped strings
+  level: info # "debug" / "info" / "warn" / "error"

@@ -14,6 +14,7 @@ import { notifyPendingDeployComplete } from "./lib/deploy-notify.js";
 import { log } from "./lib/logger.js";
 import { collectVersionInfo, formatVersionInfo } from "./lib/version.js";
 import { startScheduler } from "./scheduler.js";
+import { startSecretDropService } from "./secret-drop/service.js";
 import { runTelegram } from "./transport/telegram.js";
 
 const ACTIVE_RUN_SHUTDOWN_WAIT_MS = 8_000;
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
   let shuttingDown = false;
 
   const stopScheduler = await startScheduler();
+  const stopSecretDrop = await startSecretDropService();
   const stopBackgroundSupervisor = await startBackgroundWorkerSupervisor();
   const stopPrCiWatcher = await startPrCiWatcher();
 
@@ -36,6 +38,7 @@ async function main(): Promise<void> {
     log.info("shutdown requested", { sig });
     shutdownController.abort(new Error(`shutdown: ${sig}`));
     stopScheduler();
+    void stopSecretDrop();
     stopBackgroundSupervisor();
     stopPrCiWatcher();
     const aborted = abortAllActiveRuns(`Shutdown requested (${sig}).`);
@@ -63,6 +66,7 @@ async function main(): Promise<void> {
   } finally {
     shutdownController.abort(new Error("telegram stopped"));
     stopScheduler();
+    void stopSecretDrop();
     stopBackgroundSupervisor();
     stopPrCiWatcher();
     abortAllActiveRuns("Process exiting.");
