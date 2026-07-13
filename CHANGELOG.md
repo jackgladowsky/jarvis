@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.5
+
+- Add optional Kernel browser backend with human-completed hosted auth
+
 ## 0.6.4
 
 - fix: isolate lifecycle notification test worktrees
