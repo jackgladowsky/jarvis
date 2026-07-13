@@ -16,7 +16,7 @@
 // to disk so correct context windows are available immediately on restart
 // with no 200K fallback window.
 
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { getModel, type Model, registerBuiltInApiProviders } from "@mariozechner/pi-ai";
 import { parseDocument } from "yaml";
@@ -209,21 +209,28 @@ function resolveCustomCodexModel(modelId: string): Model<any> | undefined {
 
 // Persisted runtime choice (set by /model) so the selection survives restarts.
 const RUNTIME_MODEL_PATH = paths.runtimeModel;
+const MODEL_TRANSACTION_PATH = join(paths.data, "runtime-model-transaction.json");
 
 interface RuntimeModelConfig {
   provider: string;
   modelId: string;
 }
 
-function loadRuntimeModel(): RuntimeModelConfig | null {
+function readRuntimeModel(file = RUNTIME_MODEL_PATH): RuntimeModelConfig | null {
   try {
-    if (existsSync(RUNTIME_MODEL_PATH)) {
-      return JSON.parse(readFileSync(RUNTIME_MODEL_PATH, "utf-8"));
+    if (existsSync(file)) {
+      const parsed = JSON.parse(readFileSync(file, "utf-8")) as Partial<RuntimeModelConfig>;
+      if (typeof parsed.provider === "string" && typeof parsed.modelId === "string")
+        return parsed as RuntimeModelConfig;
     }
   } catch {
     /* corrupt / missing — fall through */
   }
   return null;
+}
+
+function loadRuntimeModel(): RuntimeModelConfig | null {
+  return readRuntimeModel();
 }
 
 function saveRuntimeModel(provider: string, modelId: string): void {
@@ -252,6 +259,39 @@ function saveConfiguredModel(provider: string, modelId: string): void {
   parseConfig(document.toJS(), paths.configYaml);
 
   atomicWriteFileSync(paths.configYaml, document.toString());
+}
+
+/**
+ * Keep config.yaml and the legacy runtime override convergent across a crash
+ * between their individually-atomic replacements. A journal is written first
+ * and is replayed synchronously during bootstrap before the runtime override
+ * is read; it is removed only once both destinations are durable.
+ */
+function persistModelSelection(provider: string, modelId: string): void {
+  mkdirSync(paths.data, { recursive: true });
+  atomicWriteJsonSync(MODEL_TRANSACTION_PATH, { provider, modelId });
+  // If either write throws, the journal remains so next bootstrap completes
+  // this exact selection instead of allowing a stale override to win.
+  saveConfiguredModel(provider, modelId);
+  saveRuntimeModel(provider, modelId);
+  rmSync(MODEL_TRANSACTION_PATH, { force: true });
+}
+
+function recoverPendingModelSelection(): void {
+  const pending = readRuntimeModel(MODEL_TRANSACTION_PATH);
+  if (!pending) return;
+
+  try {
+    resolveModel(pending.provider, pending.modelId);
+    saveConfiguredModel(pending.provider, pending.modelId);
+    saveRuntimeModel(pending.provider, pending.modelId);
+    rmSync(MODEL_TRANSACTION_PATH, { force: true });
+    log.info("recovered interrupted model persistence", pending);
+  } catch (err) {
+    // Preserve the journal for a later successful boot. The current startup
+    // can still use its last complete config/runtime pair.
+    log.warn("failed to recover interrupted model persistence", { err: String(err) });
+  }
 }
 
 // Resolve a Model object for the given provider and model-id.
@@ -312,6 +352,10 @@ if (diskCache) {
   orModelCache = diskCache;
 }
 
+// Finish an interrupted two-file persistence before the runtime override is
+// consulted; otherwise an old override could win over the newly written config.
+recoverPendingModelSelection();
+
 // Prefer the runtime-persisted choice (set via /model), fall back to config.yaml.
 const runtime = loadRuntimeModel();
 
@@ -364,13 +408,9 @@ export function switchModel(provider: string, modelId: string, persist = true): 
   const next = resolveModel(provider, modelId);
 
   // Persist before changing the live binding: a failed durable write must not
-  // report a runtime switch that disappears on restart. Each destination is
-  // atomically replaced by durable-file, preserving the existing runtime
-  // override alongside the configured default.
-  if (persist) {
-    saveConfiguredModel(provider, modelId);
-    saveRuntimeModel(provider, modelId);
-  }
+  // report a runtime switch that disappears on restart. The transaction journal
+  // makes the config and runtime override converge after an interruption.
+  if (persist) persistModelSelection(provider, modelId);
 
   model = next;
   log.info("switched model", { provider, modelId });

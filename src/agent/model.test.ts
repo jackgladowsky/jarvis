@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
+
+const execFile = promisify(execFileCallback);
 
 async function prepare() {
   const dataDir = await mkdtemp(join(tmpdir(), "jarvis-model-"));
@@ -55,4 +60,44 @@ test("temporary model switch does not alter configured or runtime persistence", 
   assert.equal(await readFile(configPath, "utf-8"), configBefore);
   assert.equal(await readFile(runtimePath, "utf-8"), runtimeBefore);
   assert.equal(agent.describeModel(), "openai-codex/gpt-5.6-luna");
+});
+
+test("startup completes an interrupted model persistence before reading the runtime override", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "jarvis-model-recovery-"));
+  try {
+    const config = await readFile("config.yaml.example", "utf-8");
+    await writeFile(join(dataDir, "config.yaml"), config, "utf-8");
+    // Simulate a crash after config was replaced but before the old runtime
+    // override could be replaced.
+    await writeFile(join(dataDir, "runtime-model.json"), '{"provider":"codex","modelId":"gpt-5.6-luna"}\n', "utf-8");
+    await writeFile(
+      join(dataDir, "runtime-model-transaction.json"),
+      '{"provider":"codex","modelId":"gpt-5.6-terra"}\n',
+      "utf-8",
+    );
+
+    const moduleUrl = pathToFileURL(join(process.cwd(), "dist", "agent", "model.js")).href;
+    const { stdout } = await execFile(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `const agent = await import(${JSON.stringify(moduleUrl)}); console.log(agent.describeModel());`,
+      ],
+      { env: { ...process.env, JARVIS_DATA_DIR: dataDir } },
+    );
+
+    assert.match(stdout, /openai-codex\/gpt-5\.6-terra/);
+    const persisted = parseYaml(await readFile(join(dataDir, "config.yaml"), "utf-8")) as {
+      agent: { provider: string; model: string };
+    };
+    assert.deepEqual(persisted.agent, { provider: "codex", model: "gpt-5.6-terra" });
+    assert.deepEqual(JSON.parse(await readFile(join(dataDir, "runtime-model.json"), "utf-8")), {
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+    });
+    await assert.rejects(readFile(join(dataDir, "runtime-model-transaction.json"), "utf-8"), { code: "ENOENT" });
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
