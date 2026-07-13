@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.6.6
+
+- fix: route lifecycle notifications as agent prompts
+
 ## 0.6.5
 
-- Add optional Kernel browser backend with human-completed hosted auth
+- fix: route lifecycle notifications as agent prompts
 
 ## 0.6.4
 

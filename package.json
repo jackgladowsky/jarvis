@@ -1,6 +1,6 @@
 {
   "name": "jarvis",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "private": false,
   "type": "module",
   "description": "Self-hosted Telegram AI assistant with host-local state, scheduler, and background workers.",
