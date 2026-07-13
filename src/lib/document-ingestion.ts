@@ -147,7 +147,7 @@ async function extractPdf(bytes: Buffer, maxChars: number, maxPages: number): Pr
       timer.unref();
       worker.once("error", (error) => {
         clearTimeout(timer);
-        reject(new Error(`could not extract PDF text: ${error.message}`));
+        reject(new Error(`could not extract PDF text: ${error instanceof Error ? error.message : String(error)}`));
       });
       worker.once("message", (message: { ok: boolean; result?: ExtractedDocument; error?: string }) => {
         clearTimeout(timer);
