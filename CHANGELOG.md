@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3
+
+- Surface durable background task lifecycle notifications and reviewer failures
+
 ## Unreleased
 
 ## 0.6.2

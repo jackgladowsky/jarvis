@@ -337,17 +337,25 @@ async function createBackgroundTask(
     task.error = `task preparation failed: ${err instanceof Error ? err.message : String(err)}`;
     task.terminal_notification_id = backgroundLifecycleNotificationId(task, "terminal-failed");
     task.terminal_notification_enqueued_at = undefined;
+    // Load lazily to keep task creation independent from the outbox drainer's
+    // manager dependency. The event is persisted with this failed transition.
+    const { queueBackgroundStatusNotification } = await import("./lifecycle-notifications.js");
+    queueBackgroundStatusNotification(task);
     task.preparing = undefined;
     task.preparing_pid = undefined;
     task.preparing_pid_start_time = undefined;
     task.preparing_started_at = undefined;
     task.launch_deferred = undefined;
-    await writeBackgroundTask(task).catch((writeErr) =>
-      log.error("failed to persist background preparation failure", {
+    try {
+      await writeBackgroundTask(task);
+      const { enqueueBackgroundLifecycleNotifications } = await import("./lifecycle-notifications.js");
+      await enqueueBackgroundLifecycleNotifications(task.id);
+    } catch (writeErr) {
+      log.error("failed to persist or enqueue background preparation failure", {
         id,
         err: writeErr instanceof Error ? writeErr.message : String(writeErr),
-      }),
-    );
+      });
+    }
     throw err;
   }
 
