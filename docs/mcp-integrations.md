@@ -6,7 +6,7 @@ MCP integrations are managed primarily through normal conversation. Examples:
 - “Test the calendar integration and show me its tools.”
 - “Remove the old GitHub integration.”
 
-JARVIS routes these requests through the typed, active-owner-chat-only `mcp_manage` control tool. Mutations, health/discovery executions, stdio calls, and write-capable HTTP calls require an exact-plan, expiring, one-time Telegram approval. The tool validates and atomically updates `~/.jarvis/mcp-servers.json`; the existing `mcp_call` tool invokes configured tools. Prompt assembly reads the file for every turn, so successful updates require no service restart.
+JARVIS routes these requests through the typed, active-owner-chat-only `mcp_manage` control tool. Mutations, health/discovery executions, stdio calls, and write-capable HTTP calls follow `tools.owner_approval.required`: the current host default (`false`) proceeds immediately, while `true` requires an exact-plan, expiring, one-time Telegram approval. The tool validates and atomically updates `~/.jarvis/mcp-servers.json`; the existing `mcp_call` tool invokes configured tools. Prompt assembly reads the file for every turn, so successful updates require no service restart.
 
 ## Credential boundary
 

@@ -49,13 +49,13 @@ Exact owner setup:
 
 1. Create a least-privilege Kernel key and add `KERNEL_API_KEY=...` to `.env`; never paste it into chat or YAML.
 2. Set the config above, validate it, then use JARVIS's normal guarded restart path.
-3. Ask JARVIS to call `browser_workbench` with `action: "kernel_auth_start"`, a public `domain`, and safe `profileName`. Approve the exact plan in Telegram.
+3. Ask JARVIS to call `browser_workbench` with `action: "kernel_auth_start"`, a public `domain`, and safe `profileName`. If `tools.owner_approval.required` is true, approve the exact plan in Telegram.
 4. Open the returned Kernel-hosted URL yourself and complete all credentials, 2FA, CAPTCHA, and account choices there. JARVIS never types, reads, submits, or stores those values.
 5. Ask for `kernel_auth_status` using the returned connection ID, then use ordinary browser actions. Set `backend: local` to disable hosted browsing.
 
 Only safe auth metadata (connection ID, domain, profile name, timestamps/status) is persisted under the workbench data directory. Hosted URLs, handoff/live-view URLs, API keys, cookies, credentials, and raw Kernel responses are not persisted or included in audit fields. JARVIS explicitly disables Kernel credential saving, session recording, health checks, and automatic reauthentication for both new and reused auth connections. Kernel session deletion is explicit so an opted-in `save_changes: true` profile can persist; profile/connection deletion is never automatic.
 
-The same preflight, exact-plan Telegram approval, DOM checks, and public-network policy apply to the Kernel CDP context. Normal browser login/credential/2FA/CAPTCHA steps remain blocked; the narrowly-scoped hosted-auth handoff is the only exception, and it always requires owner approval.
+The same preflight, DOM checks, and public-network policy apply to the Kernel CDP context; exact-plan Telegram approval applies when `tools.owner_approval.required` is true. Normal browser login/credential/2FA/CAPTCHA steps remain blocked; the narrowly-scoped hosted-auth handoff is the only exception, and it follows the same confirmation setting.
 
 ## Agent tool shape
 
@@ -78,9 +78,9 @@ Run a benign plan:
 }
 ```
 
-When approval is required, the tool returns `PENDING_OWNER_APPROVAL` and sends Telegram buttons. After approval, it retries the same plan with the returned `capabilityId`.
+When confirmations are enabled and approval is required, the tool returns `PENDING_OWNER_APPROVAL` and sends Telegram buttons. After approval, it retries the same plan with the returned `capabilityId`.
 
-Before click/submit, JARVIS inspects the resolved DOM element's role, visible text, accessible label, input/button type, link, and enclosing form action/method. This prevents a benign-looking selector from bypassing side-effect or sensitive-target checks. Submit defaults to denied without a capability.
+Before click/submit, JARVIS inspects the resolved DOM element's role, visible text, accessible label, input/button type, link, and enclosing form action/method. This prevents a benign-looking selector from bypassing side-effect or sensitive-target checks. When confirmations are enabled, submit defaults to denied without a capability.
 
 ## Smoke test
 

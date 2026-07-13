@@ -92,7 +92,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Persistent JSONL sessions with rotation, archival, and summaries.
 - Markdown memory notes under `~/.jarvis/data/notes/`, plus optional adaptive voice guidance in `~/.jarvis/prompts/SOUL.md`.
 - Natural-language lexical recall across notes and past user/assistant conversations, with bounded cited results and no external indexing service.
-- Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, approval-gated browser workbench, and conversational MCP integration management.
+- Built-in tools: read, write, edit, bash, Exa-backed web search/fetch, configurable-confirmation browser workbench, and conversational MCP integration management.
 - Telegram image/document input, optional local whisper.cpp voice/audio transcription, and conversational delivery of generated files back to the active chat.
 - Automatic reply, quote, and forwarded-message context with strict untrusted-content boundaries and threaded first responses.
 - Local-only Playwright browser workbench for page inspection plus guarded benign interaction, with persistent profile, screenshots, and JSON artifacts.
@@ -162,7 +162,7 @@ Delivery is restricted to bounded regular files in approved repository, outbound
 
 ## Browser workbench
 
-The browser workbench defaults to local Chromium. It opens public `http(s)` pages in a persistent profile, captures title/visible text, and writes screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. An optional Kernel.sh hosted-browser backend is configured only with an env-var reference and falls back to local Chromium if session acquisition fails before a plan starts. Every navigation, redirect, and subresource is DNS-checked against private/reserved ranges. Benign reading, clicking, and non-secret text entry are automatic; submit, Kernel hosted-auth setup, and other side effects require a short-lived, exact-plan, one-time capability issued by the allowlisted owner through Telegram buttons. The model cannot mint approval. Resolved DOM semantics are checked before activation, while normal credentials/login/2FA/CAPTCHA and purchases/payments remain hard-blocked. Kernel hosted auth only returns a user-completed hosted URL; JARVIS neither enters nor persists credentials. See [browser workbench docs](docs/workbench.md) for exact setup.
+The browser workbench defaults to local Chromium. It opens public `http(s)` pages in a persistent profile, captures title/visible text, and writes screenshots/JSON artifacts under `~/.jarvis/data/workbench/`. An optional Kernel.sh hosted-browser backend is configured only with an env-var reference and falls back to local Chromium if session acquisition fails before a plan starts. Every navigation, redirect, and subresource is DNS-checked against private/reserved ranges. Benign reading, clicking, and non-secret text entry are automatic. Normal privileged actions follow `tools.owner_approval.required` (this host defaults to `false`; set it to `true` to restore short-lived, exact-plan Telegram confirmations). Resolved DOM semantics are checked before activation, while credentials/login/2FA/CAPTCHA and purchases/payments remain hard-blocked regardless of that setting. Kernel hosted auth only returns a user-completed hosted URL; JARVIS neither enters nor persists credentials. See [browser workbench docs](docs/workbench.md) for exact setup.
 
 Smoke test:
 

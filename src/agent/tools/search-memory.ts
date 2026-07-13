@@ -15,7 +15,8 @@ const schema = Type.Object({
   scope: Type.Optional(
     Type.Union([Type.Literal("owner"), Type.Literal("current_chat")], {
       default: "owner",
-      description: "current_chat is bound to this authenticated Telegram chat. owner requires one-time owner approval.",
+      description:
+        "current_chat is bound to this authenticated Telegram chat. owner scope follows the owner-approval config policy.",
     }),
   ),
   capability_id: Type.Optional(Type.String()),
