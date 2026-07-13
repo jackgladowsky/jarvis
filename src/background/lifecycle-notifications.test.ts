@@ -7,7 +7,9 @@ import type { BackgroundTask } from "./types.js";
 
 async function prepare() {
   const dataDir = await mkdtemp(join(tmpdir(), "jarvis-background-lifecycle-"));
+  const worktreesDir = join(dataDir, "worktrees");
   process.env.JARVIS_DATA_DIR = dataDir;
+  process.env.JARVIS_BACKGROUND_WORKTREES_DIR = worktreesDir;
   process.env.TELEGRAM_BOT_TOKEN = "telegram-token";
   process.env.TELEGRAM_ALLOWED_USER_IDS = "123";
   process.env.EXA_API_KEY = "exa-key";
@@ -64,7 +66,7 @@ async function prepare() {
   const manager = await import("./manager.js");
   const lifecycle = await import("./lifecycle-notifications.js");
   const notifications = await import("../lib/internal-notifications.js");
-  return { dataDir, lifecycle, manager, notifications };
+  return { dataDir, worktreesDir, lifecycle, manager, notifications };
 }
 
 function reviewerRejectedTask(): BackgroundTask {
@@ -91,7 +93,7 @@ function reviewerRejectedTask(): BackgroundTask {
 }
 
 test("reviewer needs_fix is durably surfaced without a /tasks request", async () => {
-  const { dataDir, lifecycle, manager, notifications } = await prepare();
+  const { dataDir, worktreesDir, lifecycle, manager, notifications } = await prepare();
   try {
     const cases: Array<[BackgroundTask["status"], RegExp]> = [
       ["waiting_on_main", /\/answer fern-sparrow/],
@@ -142,6 +144,10 @@ test("reviewer needs_fix is durably surfaced without a /tasks request", async ()
       (candidate: BackgroundTask) => candidate.name === "preparation failure" && candidate.status === "failed",
     );
     assert.ok(failed?.lifecycle_notifications?.some((notification) => notification.event === "terminal-failed"));
+    // The failure reaches git with a fresh, test-local worktree path instead
+    // of colliding with a task directory from a prior test or live worker.
+    assert.ok(failed?.worktree.startsWith(`${worktreesDir}/`));
+    assert.doesNotMatch(failed?.error ?? "", /worktree already exists/);
     const failedNotification = (await notifications.listPendingInternalNotifications()).find(
       (notification: { source: string; title: string; body: string }) =>
         notification.source === "background" && notification.title === `${failed!.id} failed`,

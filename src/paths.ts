@@ -75,7 +75,9 @@ export const paths = {
   backgroundSessions: join(DATA_BASE, "data", "background", "sessions"),
   backgroundNotes: join(DATA_BASE, "data", "background", "notes"),
   backgroundMail: join(DATA_BASE, "data", "background", "mail"),
-  backgroundWorktrees: join(homedir(), "jarvis-worktrees"),
+  // Keep the host default separate from durable task state, while allowing
+  // isolated tests and local sandboxes to avoid the shared worktree root.
+  backgroundWorktrees: process.env.JARVIS_BACKGROUND_WORKTREES_DIR ?? join(homedir(), "jarvis-worktrees"),
 
   // Autonomous goals — bounded controllers that launch/review background tasks.
   goals: join(DATA_BASE, "data", "goals"),
