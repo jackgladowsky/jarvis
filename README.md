@@ -231,7 +231,7 @@ The test command creates an isolated temporary JARVIS data directory and placeho
 
 `pnpm run check` runs format check, lint, typecheck, and coverage.
 
-Main JARVIS publishes changes through pull requests only: after review it may push a feature branch, open/watch the PR, fix a failing version gate, and enable auto-merge once required checks are green. After the PR is merged and local `main` matches `origin/main`, `pnpm deploy:self` verifies or reuses that exact-SHA artifact and atomically activates it; it never pushes `main`. Background workers cannot invoke this publishing or deploy path.
+Main JARVIS publishes changes through pull requests only: after review it may push a feature branch and open the PR, then starts a durable read-only CI watch using the PR number and exact pushed head SHA. The watcher survives restarts, reconciles new heads, and sends one internal result event; it cannot push, merge, or deploy. Main JARVIS may fix a failing version gate and enable auto-merge once required checks are green. After the PR is merged and local `main` matches `origin/main`, `pnpm deploy:self` verifies or reuses that exact-SHA artifact and atomically activates it; it never pushes `main`. Background workers cannot invoke this publishing or deploy path.
 
 CI runs on pushes to `main` and pull requests targeting `main` using Node 20 and 22. Every merged/deployed change must increment `package.json`: every pull request targeting `main` must set it to a valid SemVer version strictly greater than the PR's base `main` version. The required `Version gate` CI check reports both versions when it fails. Use the release workflow (`pnpm run release`) to prepare the version and changelog together.
 

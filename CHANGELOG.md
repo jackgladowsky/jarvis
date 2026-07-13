@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.2
+
+- add durable, read-only PR CI watching with restart recovery and deduplicated main-session results
+
 ## 0.6.1
 
 - require pull requests to `main` to strictly increase the package version before merge

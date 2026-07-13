@@ -87,6 +87,9 @@ export const paths = {
   // delayed restart; startup consumes it and sends a back-online notice.
   deployPending: join(DATA_BASE, "data", "deploy", "pending.json"),
 
+  // One durable, read-only CI watch for the PR main JARVIS just opened.
+  prCiWatch: join(DATA_BASE, "data", "pr-ci-watch.json"),
+
   // Internal notification queue. Background workers, scheduler, and deploy
   // code write events here; the main Telegram process turns them into normal
   // main-session prompts when it is alive.
