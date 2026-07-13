@@ -98,7 +98,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Local-only Playwright browser workbench for page inspection plus guarded benign interaction, with persistent profile, screenshots, and JSON artifacts.
 - Conversational reminders and recurring automations with strict timezone-aware parsing, durable cancellation/history, and cron support through a validated scheduler control tool.
 - Detached background workers using isolated git worktrees and role pipelines.
-- Guarded self-deploy that verifies, pushes, caches, and atomically activates the exact reviewed local `main` commit.
+- PR-only `main` workflow with a required SemVer version gate, then guarded deploy of the merged commit without direct pushes to `main`.
 - Safe remote-update helper that builds before restart and preserves host-local data.
 - Append-only redacted audit log for tool calls.
 - Repo-local procedural skills in `SKILLS.md` and `skills/*/SKILL.md`.
@@ -214,7 +214,7 @@ stt:
 
 ## Autonomous goals
 
-`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or the owner pauses/stops it. Goal children can prepare reviewed changes in their worktrees, but they can never push, merge, deploy, restart services, or edit the main checkout; only main JARVIS can publish and activate them. Destructive operations still require explicit owner approval. All goal transitions append JSONL events for auditability.
+`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or the owner pauses/stops it. Goal children can prepare reviewed changes in their worktrees, but they can never push, merge, deploy, restart services, or edit the main checkout. Main JARVIS may run the PR lifecycle after review: push a branch, open/watch a PR, fix its version gate, and auto-merge only once required checks are green; it then deploys merged `main`. Destructive operations still require explicit owner approval. All goal transitions append JSONL events for auditability.
 
 ## Development
 
@@ -231,9 +231,9 @@ The test command creates an isolated temporary JARVIS data directory and placeho
 
 `pnpm run check` runs format check, lint, typecheck, and coverage.
 
-After main JARVIS has reviewed and integrated a local change on clean `main`, `pnpm deploy:self` verifies or reuses the exact-SHA artifact, normally pushes that SHA to `origin/main`, atomically activates it, and schedules the service restart. Background workers cannot invoke this publishing path.
+Main JARVIS publishes changes through pull requests only: after review it may push a feature branch, open/watch the PR, fix a failing version gate, and enable auto-merge once required checks are green. After the PR is merged and local `main` matches `origin/main`, `pnpm deploy:self` verifies or reuses that exact-SHA artifact and atomically activates it; it never pushes `main`. Background workers cannot invoke this publishing or deploy path.
 
-CI runs on pushes to `main` and pull requests using Node 20 and 22.
+CI runs on pushes to `main` and pull requests targeting `main` using Node 20 and 22. Every merged/deployed change must increment `package.json`: every pull request targeting `main` must set it to a valid SemVer version strictly greater than the PR's base `main` version. The required `Version gate` CI check reports both versions when it fails. Use the release workflow (`pnpm run release`) to prepare the version and changelog together.
 
 Versioning follows semver: patch for fixes, minor for additive features, major for breaking data/config changes.
 

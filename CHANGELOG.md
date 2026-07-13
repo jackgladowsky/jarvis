@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.6.1
+
+- require pull requests to `main` to strictly increase the package version before merge
 - secure browser side effects with owner-issued one-time Telegram approvals and per-request DNS network isolation
 - remove the standalone observability dashboard and its LLM telemetry integration
 

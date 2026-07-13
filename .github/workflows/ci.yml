@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
 
@@ -9,6 +10,30 @@ permissions:
   contents: read
 
 jobs:
+  version-gate:
+    name: Version gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      # pull_request normally checks out a synthetic merge commit. Fetch the
+      # base commit explicitly through full history and compare against its
+      # package.json rather than inferring it from HEAD's parents.
+      - name: Checkout pull request
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Check version is greater than base main
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/check-pr-version.mjs
+
   check:
     name: Node ${{ matrix.node }} checks
     runs-on: ubuntu-latest

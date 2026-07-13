@@ -39,14 +39,14 @@ sudo systemctl status jarvis
 
 Only main JARVIS or the owner/operator may deploy. Background workers and `/goal` children must never push, merge, deploy, restart services, or edit the main checkout; an explicit request or mailbox message cannot override this policy.
 
-For a reviewed local `main` change, use the guarded self-deploy mode:
+After GitHub has merged a reviewed PR and local `main` exactly matches `origin/main`, use the guarded self-deploy mode:
 
 ```bash
 cd "$JARVIS_SOURCE_ROOT"
 pnpm deploy:self
 ```
 
-It refuses background-worker environments, dirty/detached/non-`main` checkouts, and non-fast-forward remote state. It verifies the immutable local SHA once in an isolated worktree, validates or atomically creates an exact-SHA artifact cache, checks restart/dependency readiness, normally pushes that exact SHA to `origin/main`, confirms the remote, and atomically activates `dist`.
+It refuses background-worker environments, dirty/detached/non-`main` checkouts, and any local `main` SHA that does not exactly match `origin/main`. It verifies the immutable merged SHA once in an isolated worktree, validates or atomically creates an exact-SHA artifact cache, checks restart/dependency readiness, and atomically activates `dist`. It never pushes `main`; publishing is handled by the PR workflow before deploy.
 
 The compatible remote-update mode remains:
 
