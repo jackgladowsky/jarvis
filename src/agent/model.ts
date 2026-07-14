@@ -202,7 +202,10 @@ function resolveCustomCodexModel(modelId: string): Model<any> | undefined {
     thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
     input: ["text", "image"],
     cost: custom.cost,
-    contextWindow: 1_050_000,
+    // The ChatGPT-authenticated Codex backend currently caps GPT-5.6
+    // sessions at 272K raw tokens (258.4K after Codex's 95% effective-window
+    // policy), despite the public API's 1.05M-token model specification.
+    contextWindow: 272_000,
     maxTokens: 128_000,
   } as Model<any>;
 }

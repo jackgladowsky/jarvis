@@ -62,6 +62,14 @@ test("temporary model switch does not alter configured or runtime persistence", 
   assert.equal(agent.describeModel(), "openai-codex/gpt-5.6-luna");
 });
 
+test("GPT-5.6 Codex variants use the backend context cap", async () => {
+  const { agent } = await loaded;
+
+  for (const modelId of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    assert.equal(agent.resolveModel("codex", modelId).contextWindow, 272_000, modelId);
+  }
+});
+
 test("startup completes an interrupted model persistence before reading the runtime override", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "jarvis-model-recovery-"));
   try {

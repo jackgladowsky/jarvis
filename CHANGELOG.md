@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1
+
+- fix: use Codex backend context caps for GPT-5.6 models
+
 ## 0.8.0
 
 - Add a secure one-time browser secret submission flow for allowlisted owner keys.
