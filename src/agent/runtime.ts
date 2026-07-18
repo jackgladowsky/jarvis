@@ -43,6 +43,7 @@ import {
 import { model, resolveModel } from "./model.js";
 import { getReasoningLevel } from "./reasoning.js";
 import { activeAgentRuns, AgentRunAbortError, isAgentRunAbortError, type ActiveAgentRun } from "./run-registry.js";
+import { isContextWindowError } from "./scheduled-guardrails.js";
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { getSystemPrompt } from "./system-prompt.js";
@@ -1382,6 +1383,7 @@ export async function runScheduledPrompt(
       }),
     );
     if (taskPlan.decision !== "fits") {
+      await archiveScheduledSession(taskId, `scheduled context preflight failed: ${taskPlan.reason}`);
       throw new AgentExecutionError(
         `Scheduled turn cannot fit ${taskPlan.model}: ${taskPlan.reason}`,
         true,
@@ -1454,13 +1456,20 @@ export async function runScheduledPrompt(
         data: { label: "scheduled-primary" },
       }),
     );
+    let promptException: unknown;
     try {
       ensureNotAborted(run);
       await withLifecycleContext(lifecycle, () => agent.prompt(taskPrompt));
       ensureNotAborted(run);
+    } catch (error) {
+      promptException = error;
     } finally {
       unsubscribe();
       detachAgent();
+    }
+
+    if (promptException && (run.signal.aborted || isAgentRunAbortError(promptException))) {
+      throw new AgentRunAbortError(run.abortReason);
     }
 
     const newMessages = agent.state.messages.slice(before);
@@ -1481,6 +1490,13 @@ export async function runScheduledPrompt(
       );
       throw error;
     }
+    if (promptException) {
+      if (isContextWindowError(promptException)) {
+        await archiveScheduledSession(taskId, `scheduled prompt context error: ${String(promptException)}`);
+      }
+      throw promptException;
+    }
+
     errorText = detectAgentFailure(agent, newMessages, errorText) ?? "";
     await withLifecycleContext(lifecycle, () =>
       auditLifecycle("model.attempt", {
@@ -1491,6 +1507,9 @@ export async function runScheduledPrompt(
       }),
     );
     if (errorText) {
+      if (isContextWindowError(errorText)) {
+        await archiveScheduledSession(taskId, `scheduled agent context error: ${errorText}`);
+      }
       throw new AgentExecutionError(
         formatAgentError("error", errorText),
         !toolStarted,

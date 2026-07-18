@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- Bound nightly memory-review inspection and reset scheduled sessions after context-window failures.
+
 ## 0.9.0
 
 - Add context-aware request and tool-result budgeting.
