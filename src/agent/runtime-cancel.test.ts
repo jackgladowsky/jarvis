@@ -76,6 +76,14 @@ const fakeModel = {
   maxTokens: 4096,
 } as Model<any>;
 
+test("provider stream options enforce the exact planned output reserve", async () => {
+  const { capProviderOutput } = await prepareRuntime();
+  assert.deepEqual(capProviderOutput({ maxTokens: 128_000, reasoning: "high" }, 2_000), {
+    maxTokens: 2_000,
+    reasoning: "high",
+  });
+});
+
 const zeroUsage = {
   input: 0,
   output: 0,

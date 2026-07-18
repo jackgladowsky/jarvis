@@ -242,7 +242,7 @@ Versioning follows semver: patch for fixes, minor for additive features, major f
 
 ## Security model
 
-JARVIS is designed for a trusted single-owner host. It has shell access, can edit files, and can operate system tools exposed to the Unix user running it. Do not deploy it on a machine where arbitrary command execution by the assistant is unacceptable.
+JARVIS is designed for a trusted single-owner host. It has shell access, can edit files, and can operate system tools exposed to the Unix user running it. Do not deploy it on a machine where arbitrary command execution by the assistant is unacceptable. Context hardening does not change that authority model: complete requests are budgeted against the exact model, file reads and all tool results are bounded with continuation metadata, canonical session JSONL is append-only across compaction, and `data/lifecycle-audit.jsonl` correlates secret-safe run/action/delivery events.
 
 Protect these host-local files carefully:
 
@@ -257,6 +257,7 @@ Repo updates and setup scripts should never overwrite existing host-local files 
 
 - See `docs/open-source-hardening.md` for the remaining productionization backlog.
 - See `docs/goal-command.md` for the bounded `/goal` command/autonomous improvement loop design.
+- See `docs/untrusted-code-lab.md` for the recommended opt-in disposable container/VM workflow for untrusted web code.
 
 ## License
 

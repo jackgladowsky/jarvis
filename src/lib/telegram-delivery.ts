@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 const DEFAULT_ATTEMPTS = 4;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_RETRY_DELAY_MS = 30_000;
@@ -65,10 +67,46 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export interface TelegramChunkLifecycleRecord {
+  chunkId: string;
+  index: number;
+  total: number;
+  outcome: "start" | "ok" | "error";
+  durationMs?: number;
+  error?: unknown;
+}
+
+/** Pair a Telegram chunk's start with one terminal event under a stable ID. */
+export async function withTelegramChunkLifecycle<T>(
+  operation: () => Promise<T>,
+  options: {
+    index: number;
+    total: number;
+    onEvent: (record: TelegramChunkLifecycleRecord) => void | Promise<void>;
+    chunkId?: string;
+  },
+): Promise<T> {
+  const chunkId = options.chunkId ?? randomUUID();
+  const started = Date.now();
+  const base = { chunkId, index: options.index, total: options.total };
+  await options.onEvent({ ...base, outcome: "start" });
+  try {
+    const result = await operation();
+    await options.onEvent({ ...base, outcome: "ok", durationMs: Date.now() - started });
+    return result;
+  } catch (error) {
+    await options.onEvent({ ...base, outcome: "error", durationMs: Date.now() - started, error });
+    throw error;
+  }
+}
+
 /** Retry only Telegram throttling, server, timeout, and network failures. */
 export async function withTelegramRetry<T>(
   operation: () => Promise<T>,
-  options: { attempts?: number } = {},
+  options: {
+    attempts?: number;
+    onRetry?: (details: { attempt: number; delayMs: number; error: unknown }) => void | Promise<void>;
+  } = {},
 ): Promise<T> {
   const attempts = Math.max(1, options.attempts ?? DEFAULT_ATTEMPTS);
   let lastError: unknown;
@@ -78,7 +116,9 @@ export async function withTelegramRetry<T>(
     } catch (error) {
       lastError = error;
       if (attempt >= attempts || !isRetryableTelegramError(error)) throw error;
-      await wait(retryDelayMs(error, attempt));
+      const delayMs = retryDelayMs(error, attempt);
+      await options.onRetry?.({ attempt, delayMs, error });
+      await wait(delayMs);
     }
   }
   throw lastError;
