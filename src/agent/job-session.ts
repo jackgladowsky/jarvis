@@ -1,36 +1,55 @@
-// Persistent agent sessions for scheduled jobs and background workers.
-//
-// These are not user chat sessions: they are long-lived per-task transcripts.
-// After compaction we rewrite the JSONL to the latest summary plus kept tail
-// so recurring jobs do not grow without bound on disk.
+// Persistent append-only sessions for scheduled jobs and background workers.
+// Compaction checkpoints are derived views with canonical message references;
+// source messages are never rewritten or deleted by current versions.
 
+import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { atomicWriteFile, withFileLock } from "../lib/durable-file.js";
 import { appendJsonLinesDurable, readJsonLinesRecovering } from "../lib/json-lines.js";
 
 export interface JobLoadedSession {
   previousSummary?: string;
   tail: AgentMessage[];
+  tailSourceIndexes: number[];
+  sourceMessageCount: number;
 }
 
 export interface JobCompactionEntry {
   summary: string;
   tokensBefore: number;
+  keepFromMessage: number;
+  sourceThroughMessage: number;
 }
 
-interface StoredCompactionEntry extends JobCompactionEntry {
+interface StoredCompactionEntry {
   type: "compaction";
   timestamp: number;
+  summary: string;
+  tokensBefore: number;
+  version?: 2;
+  checkpointId?: string;
+  keepFromMessage?: number;
+  sourceThroughMessage?: number;
 }
 
 export function isJobCompactionEntry(parsed: unknown): parsed is StoredCompactionEntry {
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    (parsed as { type?: string }).type !== "compaction" ||
+    typeof (parsed as { summary?: unknown }).summary !== "string"
+  ) {
+    return false;
+  }
+  const entry = parsed as Partial<StoredCompactionEntry>;
+  if (entry.version !== 2) return true;
   return (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    (parsed as { type?: string }).type === "compaction" &&
-    typeof (parsed as { summary?: unknown }).summary === "string"
+    typeof entry.checkpointId === "string" &&
+    Number.isSafeInteger(entry.keepFromMessage) &&
+    Number.isSafeInteger(entry.sourceThroughMessage) &&
+    (entry.keepFromMessage ?? -1) >= 0 &&
+    (entry.sourceThroughMessage ?? -1) >= (entry.keepFromMessage ?? 0)
   );
 }
 
@@ -42,7 +61,6 @@ export function dropDanglingToolCalls(messages: AgentMessage[]): AgentMessage[] 
       .filter((item) => item.type === "toolCall" && typeof item.id === "string")
       .map((item) => item.id as string);
     if (callIds.length === 0) continue;
-
     const pending = new Set(callIds);
     for (let resultIndex = index + 1; resultIndex < messages.length; resultIndex += 1) {
       const result = messages[resultIndex];
@@ -54,56 +72,65 @@ export function dropDanglingToolCalls(messages: AgentMessage[]): AgentMessage[] 
   return messages.slice();
 }
 
-export function loadJobSessionLines(lines: string[]): JobLoadedSession {
+export function loadJobSessionRecords(records: unknown[]): JobLoadedSession {
+  const messages: Array<{ message: AgentMessage; sourceIndex: number; recordIndex: number }> = [];
+  let sourceMessageCount = 0;
   let previousSummary: string | undefined;
-  let tail: AgentMessage[] = [];
-
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const parsed = JSON.parse(line) as unknown;
+  let legacyBarrier = -1;
+  let keepFromMessage: number | undefined;
+  for (const [recordIndex, parsed] of records.entries()) {
     if (isJobCompactionEntry(parsed)) {
       previousSummary = parsed.summary;
-      tail = [];
+      if (parsed.version === 2 && typeof parsed.keepFromMessage === "number") {
+        keepFromMessage = parsed.keepFromMessage;
+      } else {
+        legacyBarrier = recordIndex;
+        keepFromMessage = undefined;
+      }
+    } else if (
+      parsed &&
+      typeof parsed === "object" &&
+      ["user", "assistant", "toolResult"].includes(String((parsed as { role?: unknown }).role))
+    ) {
+      messages.push({ message: parsed as AgentMessage, sourceIndex: sourceMessageCount++, recordIndex });
     } else {
-      tail.push(parsed as AgentMessage);
+      throw new SyntaxError(`invalid job session JSONL record at line ${recordIndex + 1}`);
     }
   }
+  const selected = messages.filter((entry) =>
+    keepFromMessage !== undefined ? entry.sourceIndex >= keepFromMessage : entry.recordIndex > legacyBarrier,
+  );
+  const tail = dropDanglingToolCalls(selected.map((entry) => entry.message));
+  return {
+    previousSummary,
+    tail,
+    tailSourceIndexes: selected.slice(0, tail.length).map((entry) => entry.sourceIndex),
+    sourceMessageCount,
+  };
+}
 
-  return { previousSummary, tail: dropDanglingToolCalls(tail) };
+export function loadJobSessionLines(lines: string[]): JobLoadedSession {
+  return loadJobSessionRecords(lines.filter((line) => line.trim()).map((line) => JSON.parse(line) as unknown));
 }
 
 export async function loadJobSession(file: string): Promise<JobLoadedSession> {
-  const records = await readJsonLinesRecovering<unknown>(file);
-  return loadJobSessionLines(records.map((record) => JSON.stringify(record)));
+  return loadJobSessionRecords(await readJsonLinesRecovering<unknown>(file));
 }
 
 export async function appendJobMessages(file: string, messages: AgentMessage[]): Promise<void> {
   if (messages.length === 0) return;
   await mkdir(dirname(file), { recursive: true });
-  const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-  await appendJsonLinesDurable(file, lines);
-}
-
-function makeCompactionLine(entry: JobCompactionEntry): StoredCompactionEntry {
-  return {
-    type: "compaction",
-    timestamp: Date.now(),
-    summary: entry.summary,
-    tokensBefore: entry.tokensBefore,
-  };
+  await appendJsonLinesDurable(file, messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
 }
 
 export async function appendJobCompactionEntry(file: string, entry: JobCompactionEntry): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
-  await appendJsonLinesDurable(file, JSON.stringify(makeCompactionLine(entry)) + "\n");
-}
-
-export async function rewriteJobSessionWithCompaction(
-  file: string,
-  entry: JobCompactionEntry,
-  keptTail: AgentMessage[],
-): Promise<void> {
-  await mkdir(dirname(file), { recursive: true });
-  const lines = [JSON.stringify(makeCompactionLine(entry)), ...keptTail.map((message) => JSON.stringify(message))];
-  await withFileLock(file, () => atomicWriteFile(file, lines.join("\n") + "\n"));
+  const stored: StoredCompactionEntry = {
+    type: "compaction",
+    version: 2,
+    checkpointId: randomUUID(),
+    timestamp: Date.now(),
+    ...entry,
+  };
+  await appendJsonLinesDurable(file, `${JSON.stringify(stored)}\n`);
 }

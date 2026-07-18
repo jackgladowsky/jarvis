@@ -10,6 +10,9 @@ This PR-sized slice makes the repo installable and reviewable as an MIT project,
 - Generalized first-run templates and public README onboarding.
 - Added `scripts/install.sh`, an interactive curl-friendly installer.
 - Generalized hard-coded default background-worker repo path to `$HOME/jarvis`.
+- Added exact-model context preflight, bounded streamed reads, and a context-aware backstop for every tool result.
+- Made compaction checkpoints append-only with canonical source references and legacy transcript compatibility.
+- Added a correlated, bounded, secret-safe lifecycle trace for runs, model attempts, tools, persistence, recovery, and Telegram delivery.
 
 ## Still worth doing
 
@@ -26,3 +29,4 @@ This PR-sized slice makes the repo installable and reviewable as an MIT project,
 - Do not migrate host-local data into the repo.
 - Do not make setup overwrite existing `~/.jarvis` files.
 - Do not add autonomous self-improvement loops without explicit bounded controls.
+- Do not restrict normal trusted host operations with a broad sandbox. Untrusted web code should use the future opt-in disposable lab described in `docs/untrusted-code-lab.md`.

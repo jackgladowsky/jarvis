@@ -106,7 +106,7 @@ EOF
 )"
 
 LOGROTATE_CONTENT="$(cat <<EOF
-$DATA_BASE/data/audit.log {
+$DATA_BASE/data/audit.log $DATA_BASE/data/lifecycle-audit.jsonl {
     daily
     rotate 30
     compress

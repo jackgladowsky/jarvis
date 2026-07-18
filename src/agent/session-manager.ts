@@ -24,7 +24,7 @@ import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
-import { atomicWriteFile, atomicWriteJson, withFileLock } from "../lib/durable-file.js";
+import { atomicWriteJson, withFileLock } from "../lib/durable-file.js";
 import { appendJsonLinesDurable, readJsonLinesRecovering } from "../lib/json-lines.js";
 import { paths } from "../paths.js";
 
@@ -69,20 +69,40 @@ function assertSessionId(id: string): void {
 // (already-rotated session). Walks forward applying compaction entries.
 async function loadFile(filePath: string): Promise<LoadedSession> {
   const records = await readJsonLinesRecovering<unknown>(filePath);
+  const messages: Array<{ message: AgentMessage; sourceIndex: number; lineIndex: number }> = [];
+  let messageIndex = 0;
   let previousSummary: string | undefined;
-  let tail: AgentMessage[] = [];
-  for (const [index, parsed] of records.entries()) {
+  let legacyBarrierLine = -1;
+  let keepFromMessage: number | undefined;
+  for (const [lineIndex, parsed] of records.entries()) {
     if (isCompactionEntry(parsed)) {
       previousSummary = parsed.summary;
-      tail = []; // everything before this is now folded into the summary
+      if (parsed.version === 2 && typeof parsed.keepFromMessage === "number") {
+        keepFromMessage = parsed.keepFromMessage;
+      } else {
+        // Legacy checkpoints came from destructive rewrites. Preserve their
+        // old forward-loader semantics; history deleted by an old version
+        // cannot be reconstructed, but all new checkpoints are append-only.
+        legacyBarrierLine = lineIndex;
+        keepFromMessage = undefined;
+      }
     } else if (isAgentMessage(parsed)) {
-      tail.push(parsed as AgentMessage);
+      messages.push({ message: parsed as AgentMessage, sourceIndex: messageIndex++, lineIndex });
     } else {
-      throw new SyntaxError(`invalid session JSONL record at line ${index + 1}`);
+      throw new SyntaxError(`invalid session JSONL record at line ${lineIndex + 1}`);
     }
   }
 
-  return { previousSummary, tail: dropDanglingToolCalls(tail) };
+  const selected = messages.filter((entry) =>
+    keepFromMessage !== undefined ? entry.sourceIndex >= keepFromMessage : entry.lineIndex > legacyBarrierLine,
+  );
+  const safeTail = dropDanglingToolCalls(selected.map((entry) => entry.message));
+  return {
+    previousSummary,
+    tail: safeTail,
+    tailSourceIndexes: selected.slice(0, safeTail.length).map((entry) => entry.sourceIndex),
+    sourceMessageCount: messageIndex,
+  };
 }
 
 async function readActive(): Promise<ActiveSessions> {
@@ -347,6 +367,11 @@ export interface CompactionEntry {
   timestamp: number;
   summary: string;
   tokensBefore: number;
+  /** v2 checkpoints are append-only and reference canonical message ordinals. */
+  version?: 2;
+  checkpointId?: string;
+  keepFromMessage?: number;
+  sourceThroughMessage?: number;
 }
 
 // What `load` returns. The runtime composes `effective = [synthetic-summary
@@ -354,17 +379,31 @@ export interface CompactionEntry {
 export interface LoadedSession {
   /** Most recent compaction's summary text, if any compactions exist. */
   previousSummary?: string;
-  /** Messages appended AFTER the most recent compaction entry. */
+  /** Derived recent view; canonical source messages remain append-only on disk. */
   tail: AgentMessage[];
+  /** Stable zero-based canonical message ordinals corresponding to `tail`. */
+  tailSourceIndexes: number[];
+  sourceMessageCount: number;
 }
 
 function isCompactionEntry(parsed: unknown): parsed is CompactionEntry {
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    (parsed as { type?: string }).type !== "compaction" ||
+    typeof (parsed as { summary?: unknown }).summary !== "string" ||
+    typeof (parsed as { tokensBefore?: unknown }).tokensBefore !== "number"
+  ) {
+    return false;
+  }
+  const entry = parsed as Partial<CompactionEntry>;
+  if (entry.version !== 2) return true;
   return (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    (parsed as { type?: string }).type === "compaction" &&
-    typeof (parsed as { summary?: unknown }).summary === "string" &&
-    typeof (parsed as { tokensBefore?: unknown }).tokensBefore === "number"
+    typeof entry.checkpointId === "string" &&
+    Number.isSafeInteger(entry.keepFromMessage) &&
+    Number.isSafeInteger(entry.sourceThroughMessage) &&
+    (entry.keepFromMessage ?? -1) >= 0 &&
+    (entry.sourceThroughMessage ?? -1) >= (entry.keepFromMessage ?? 0)
   );
 }
 
@@ -427,24 +466,26 @@ export async function appendMessages(sessionId: string, messages: AgentMessage[]
   await appendJsonLinesDurable(sessionFile(sessionId), lines);
 }
 
-// Atomically replace a chat transcript with its newest compaction checkpoint
-// followed by the recent messages that were deliberately kept. Appending the
-// checkpoint at EOF would make the forward loader reset `tail` after those
-// messages and silently discard them on the next load.
-export async function rewriteSessionWithCompaction(
+// Append a derived checkpoint to the canonical transcript. Source messages
+// are never rewritten or deleted; the loader materializes the effective view
+// from these references. Legacy compaction rows remain readable.
+export async function appendSessionCompaction(
   sessionId: string,
-  entry: { summary: string; tokensBefore: number },
-  keptTail: AgentMessage[],
+  entry: {
+    summary: string;
+    tokensBefore: number;
+    keepFromMessage: number;
+    sourceThroughMessage: number;
+  },
 ): Promise<void> {
-  const file = sessionFile(sessionId);
   const compaction: CompactionEntry = {
     type: "compaction",
+    version: 2,
+    checkpointId: randomUUID(),
     timestamp: Date.now(),
-    summary: entry.summary,
-    tokensBefore: entry.tokensBefore,
+    ...entry,
   };
-  const lines = [JSON.stringify(compaction), ...keptTail.map((message) => JSON.stringify(message))];
-  await withFileLock(file, () => atomicWriteFile(file, `${lines.join("\n")}\n`));
+  await appendJsonLinesDurable(sessionFile(sessionId), `${JSON.stringify(compaction)}\n`);
 }
 
 // Stamp lastMessageAt after a successful turn so the inactivity rotation

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0
+
+- Add context-aware request and tool-result budgeting.
+- Preserve canonical append-only session history across compaction.
+- Add correlated lifecycle audit traces and bounded resumable file reads.
+
 ## 0.8.1
 
 - fix: use Codex backend context caps for GPT-5.6 models

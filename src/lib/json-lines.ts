@@ -73,7 +73,7 @@ async function quarantineTrailingLine(file: string, line: string): Promise<void>
   await atomicWriteFile(quarantine, `${line}\n`);
 }
 
-/** Append one or more already-serialized JSONL records after repairing the tail. */
+/** Append one or more already-serialized JSONL records after repairing only the final record. */
 export async function appendJsonLinesDurable(file: string, data: string): Promise<void> {
   if (!data) return;
   const incoming = parseJsonLines(data);
@@ -81,20 +81,40 @@ export async function appendJsonLinesDurable(file: string, data: string): Promis
   if (!incoming.validPrefix) return;
   await withFileLock(file, async () => {
     await mkdir(dirname(file), { recursive: true });
-    const raw = await readFile(file, "utf-8").catch((err: NodeJS.ErrnoException) => {
-      if (err.code === "ENOENT") return "";
-      throw err;
-    });
-    const parsed = parseJsonLines(raw);
-    if (parsed.malformedTrailingLine !== undefined) {
-      await quarantineTrailingLine(file, parsed.malformedTrailingLine);
-      await atomicWriteFile(file, parsed.validPrefix);
-    } else if (raw.length > 0 && !raw.endsWith("\n")) {
-      await atomicWriteFile(file, parsed.validPrefix);
-    }
-
-    const handle = await open(file, "a", 0o600);
+    const handle = await open(file, "a+", 0o600);
     try {
+      const { size } = await handle.stat();
+      if (size > 0) {
+        const last = Buffer.allocUnsafe(1);
+        await handle.read(last, 0, 1, size - 1);
+        if (last[0] !== 0x0a) {
+          // Scan backward for the start of the sole crash-vulnerable record.
+          const chunk = Buffer.allocUnsafe(64 * 1024);
+          let cursor = size;
+          let lineStart = 0;
+          while (cursor > 0) {
+            const length = Math.min(chunk.byteLength, cursor);
+            const start = cursor - length;
+            await handle.read(chunk, 0, length, start);
+            const newline = chunk.subarray(0, length).lastIndexOf(0x0a);
+            if (newline >= 0) {
+              lineStart = start + newline + 1;
+              break;
+            }
+            cursor = start;
+          }
+          const tail = Buffer.allocUnsafe(size - lineStart);
+          await handle.read(tail, 0, tail.byteLength, lineStart);
+          const line = tail.toString("utf-8");
+          try {
+            JSON.parse(line);
+            await handle.writeFile("\n");
+          } catch {
+            await quarantineTrailingLine(file, line);
+            await handle.truncate(lineStart);
+          }
+        }
+      }
       await handle.writeFile(incoming.validPrefix);
       await handle.sync();
     } finally {

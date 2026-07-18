@@ -76,26 +76,38 @@ function assistant(text: string): AgentMessage {
   } as AgentMessage;
 }
 
-test("chat compaction rewrite preserves the deliberately kept recent tail", async () => {
+test("chat compaction checkpoint preserves canonical history and derives recent tail", async () => {
   const { manager, dataDir } = await prepareSessionManager();
   const { sessionId } = await manager.resolveSession(123);
   assert.match(
     sessionId,
     /^\d{4}-\d{2}-\d{2}_\d{4}_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
-  const keptTail = [user("recent question"), assistant("recent answer")];
+  const canonical = [
+    user("old question"),
+    assistant("old answer"),
+    user("recent question"),
+    assistant("recent answer"),
+  ];
+  const keptTail = canonical.slice(2);
+  await manager.appendMessages(sessionId, canonical);
 
-  await manager.rewriteSessionWithCompaction(
-    sessionId,
-    { summary: "older conversation summary", tokensBefore: 5000 },
-    keptTail,
-  );
+  await manager.appendSessionCompaction(sessionId, {
+    summary: "older conversation summary",
+    tokensBefore: 5000,
+    keepFromMessage: 2,
+    sourceThroughMessage: 3,
+  });
 
   const loaded = await manager.load(sessionId);
   assert.equal(loaded.previousSummary, "older conversation summary");
   assert.deepEqual(loaded.tail, keptTail);
 
   const sessionFile = join(dataDir, "data", "sessions", `${sessionId}.jsonl`);
+  const canonicalRaw = await readFile(sessionFile, "utf-8");
+  assert.match(canonicalRaw, /old question/);
+  assert.match(canonicalRaw, /old answer/);
+  assert.equal(canonicalRaw.trimEnd().split("\n").length, 5);
   await appendFile(sessionFile, '{"role":"assistant","content":', "utf-8");
   const recovered = await manager.load(sessionId);
   assert.deepEqual(recovered.tail, keptTail);

@@ -12,6 +12,7 @@
 //      "let me check…" filler stay invisible.
 //   5. Stop cleanly on SIGINT/SIGTERM so systemd restarts don't strand polls.
 
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { ImageContent } from "@mariozechner/pi-ai";
@@ -48,9 +49,15 @@ import {
   type InternalNotification,
 } from "../lib/internal-notifications.js";
 import { log } from "../lib/logger.js";
+import {
+  auditLifecycle,
+  currentLifecycleContext,
+  payloadDescriptor,
+  type LifecycleContext,
+} from "../lib/lifecycle-audit.js";
 import { withLock } from "../lib/mutex.js";
 import { downloadTelegramFile } from "../lib/telegram-media.js";
-import { withTelegramRetry } from "../lib/telegram-delivery.js";
+import { withTelegramRetry, withTelegramChunkLifecycle } from "../lib/telegram-delivery.js";
 import { paths } from "../paths.js";
 import type { WorkbenchApprovalRecord } from "../workbench/approval.js";
 import { enrichTelegramPrompt, replyParametersForMessage } from "./message-context.js";
@@ -100,6 +107,34 @@ function chunks(text: string): string[] {
 // Wraps grammy's reply/edit calls so failures (rate limits, network) don't
 // take down the agent run — we just log and move on. The next debounced edit
 // or the message_end final flush will catch up.
+function deliveryCorrelation(chatId: number | undefined): Partial<LifecycleContext> {
+  return currentLifecycleContext()
+    ? {}
+    : { run_id: randomUUID(), run_kind: "notification", ...(chatId === undefined ? {} : { chat_id: chatId }) };
+}
+
+function retryAudit(
+  chatId: number | undefined,
+  deliveryKind: string,
+  correlation: Partial<LifecycleContext> = deliveryCorrelation(chatId),
+) {
+  return {
+    onRetry: async ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: unknown }) => {
+      await auditLifecycle("telegram.delivery.retry", {
+        ...correlation,
+        outcome: "retry",
+        chat_id: chatId,
+        data: {
+          delivery_kind: deliveryKind,
+          attempt,
+          delay_ms: delayMs,
+          error: payloadDescriptor(error instanceof Error ? error.message : error),
+        },
+      });
+    },
+  };
+}
+
 async function safe<T>(label: string, p: Promise<T>): Promise<T | undefined> {
   try {
     return await p;
@@ -114,13 +149,42 @@ export async function deliverTelegramArtifact(
   artifact: PreparedArtifact,
   replyParameters?: ReturnType<typeof replyParametersForMessage>,
 ): Promise<{ messageId: number }> {
-  const sent = await withTelegramRetry(() =>
-    ctx.replyWithDocument(new InputFile(artifact.stream ?? artifact.path, artifact.fileName), {
-      ...(artifact.caption ? { caption: artifact.caption } : {}),
-      ...(replyParameters ? { reply_parameters: { ...replyParameters, allow_sending_without_reply: true } } : {}),
-    }),
-  );
-  return { messageId: sent.message_id };
+  const chatId = ctx.chat?.id;
+  const correlation = deliveryCorrelation(chatId);
+  const started = Date.now();
+  await auditLifecycle("telegram.delivery", {
+    ...correlation,
+    outcome: "start",
+    chat_id: chatId,
+    data: { delivery_kind: "artifact", file_name: artifact.fileName, resource: payloadDescriptor(artifact.path) },
+  });
+  try {
+    const sent = await withTelegramRetry(
+      () =>
+        ctx.replyWithDocument(new InputFile(artifact.stream ?? artifact.path, artifact.fileName), {
+          ...(artifact.caption ? { caption: artifact.caption } : {}),
+          ...(replyParameters ? { reply_parameters: { ...replyParameters, allow_sending_without_reply: true } } : {}),
+        }),
+      retryAudit(chatId, "artifact", correlation),
+    );
+    await auditLifecycle("telegram.delivery", {
+      ...correlation,
+      outcome: "ok",
+      chat_id: chatId,
+      duration_ms: Date.now() - started,
+      data: { delivery_kind: "artifact", message_id: sent.message_id },
+    });
+    return { messageId: sent.message_id };
+  } catch (error) {
+    await auditLifecycle("telegram.delivery", {
+      ...correlation,
+      outcome: "error",
+      chat_id: chatId,
+      duration_ms: Date.now() - started,
+      data: { delivery_kind: "artifact", error: payloadDescriptor(error) },
+    });
+    throw error;
+  }
 }
 
 async function replyReliably(
@@ -129,15 +193,56 @@ async function replyReliably(
   options: Parameters<Context["reply"]>[1] = {},
   plainText = text,
 ): Promise<Awaited<ReturnType<Context["reply"]>>> {
+  const chatId = ctx.chat?.id;
+  const correlation = deliveryCorrelation(chatId);
+  const started = Date.now();
+  await auditLifecycle("telegram.delivery", {
+    ...correlation,
+    outcome: "start",
+    chat_id: chatId,
+    data: { body: payloadDescriptor(plainText), formatted: Boolean(options.parse_mode) },
+  });
   try {
-    return await withTelegramRetry(() => ctx.reply(text, options));
-  } catch (err) {
-    if (!options.parse_mode) throw err;
-    log.warn("formatted Telegram reply failed; retrying as plain text", {
-      err: err instanceof Error ? err.message : err,
+    let result: Awaited<ReturnType<Context["reply"]>>;
+    try {
+      result = await withTelegramRetry(() => ctx.reply(text, options), retryAudit(chatId, "reply", correlation));
+    } catch (err) {
+      if (!options.parse_mode) throw err;
+      await auditLifecycle("telegram.delivery.retry", {
+        ...correlation,
+        outcome: "retry",
+        chat_id: chatId,
+        data: {
+          reason: "formatted_rejected",
+          error: payloadDescriptor(err instanceof Error ? err.message : String(err)),
+        },
+      });
+      log.warn("formatted Telegram reply failed; retrying as plain text", {
+        err: err instanceof Error ? err.message : err,
+      });
+      const { parse_mode: _parseMode, ...plainOptions } = options;
+      result = await withTelegramRetry(
+        () => ctx.reply(plainText, plainOptions),
+        retryAudit(chatId, "reply_plain", correlation),
+      );
+    }
+    await auditLifecycle("telegram.delivery", {
+      ...correlation,
+      outcome: "ok",
+      chat_id: chatId,
+      duration_ms: Date.now() - started,
+      data: { message_id: result.message_id, body: payloadDescriptor(plainText) },
     });
-    const { parse_mode: _parseMode, ...plainOptions } = options;
-    return withTelegramRetry(() => ctx.reply(plainText, plainOptions));
+    return result;
+  } catch (err) {
+    await auditLifecycle("telegram.delivery", {
+      ...correlation,
+      outcome: "error",
+      chat_id: chatId,
+      duration_ms: Date.now() - started,
+      data: { error: payloadDescriptor(err instanceof Error ? err.message : String(err)) },
+    });
+    throw err;
   }
 }
 
@@ -148,16 +253,57 @@ async function sendMessageReliably(
   plainText: string,
   options: Parameters<Bot["api"]["sendMessage"]>[2] = {},
 ): Promise<void> {
+  const correlation = deliveryCorrelation(chatId);
+  const started = Date.now();
+  await auditLifecycle("telegram.delivery", {
+    ...correlation,
+    outcome: "start",
+    chat_id: chatId,
+    data: { body: payloadDescriptor(plainText), formatted: Boolean(options.parse_mode) },
+  });
   try {
-    await withTelegramRetry(() => bot.api.sendMessage(chatId, formattedText, options));
-  } catch (err) {
-    if (!options.parse_mode) throw err;
-    log.warn("formatted Telegram send failed; retrying as plain text", {
-      chatId,
-      err: err instanceof Error ? err.message : err,
+    try {
+      await withTelegramRetry(
+        () => bot.api.sendMessage(chatId, formattedText, options),
+        retryAudit(chatId, "send_message", correlation),
+      );
+    } catch (err) {
+      if (!options.parse_mode) throw err;
+      await auditLifecycle("telegram.delivery.retry", {
+        ...correlation,
+        outcome: "retry",
+        chat_id: chatId,
+        data: {
+          reason: "formatted_rejected",
+          error: payloadDescriptor(err instanceof Error ? err.message : String(err)),
+        },
+      });
+      log.warn("formatted Telegram send failed; retrying as plain text", {
+        chatId,
+        err: err instanceof Error ? err.message : err,
+      });
+      const { parse_mode: _parseMode, ...plainOptions } = options;
+      await withTelegramRetry(
+        () => bot.api.sendMessage(chatId, plainText, plainOptions),
+        retryAudit(chatId, "send_message_plain", correlation),
+      );
+    }
+    await auditLifecycle("telegram.delivery", {
+      ...correlation,
+      outcome: "ok",
+      chat_id: chatId,
+      duration_ms: Date.now() - started,
+      data: { body: payloadDescriptor(plainText) },
     });
-    const { parse_mode: _parseMode, ...plainOptions } = options;
-    await withTelegramRetry(() => bot.api.sendMessage(chatId, plainText, plainOptions));
+  } catch (err) {
+    await auditLifecycle("telegram.delivery", {
+      ...correlation,
+      outcome: "error",
+      chat_id: chatId,
+      duration_ms: Date.now() - started,
+      data: { error: payloadDescriptor(err instanceof Error ? err.message : String(err)) },
+    });
+    throw err;
   }
 }
 
@@ -624,9 +770,41 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     return [`Working… ${elapsed}s`, "", ...lines.slice(-4)].join("\n");
   };
 
+  const statusDelivery = async <T>(kind: string, operation: () => Promise<T>): Promise<T | undefined> => {
+    const correlation = deliveryCorrelation(chatId);
+    const started = Date.now();
+    await auditLifecycle("telegram.delivery", {
+      ...correlation,
+      outcome: "start",
+      chat_id: chatId,
+      data: { delivery_kind: kind },
+    });
+    try {
+      const result = await operation();
+      await auditLifecycle("telegram.delivery", {
+        ...correlation,
+        outcome: "ok",
+        chat_id: chatId,
+        duration_ms: Date.now() - started,
+        data: { delivery_kind: kind },
+      });
+      return result;
+    } catch (error) {
+      await auditLifecycle("telegram.delivery", {
+        ...correlation,
+        outcome: "error",
+        chat_id: chatId,
+        duration_ms: Date.now() - started,
+        data: { delivery_kind: kind, error: payloadDescriptor(error) },
+      });
+      log.debug("telegram status call failed", { kind, err: error instanceof Error ? error.message : error });
+      return undefined;
+    }
+  };
+
   const flushStatus = async (text: string): Promise<void> => {
     if (!statusMessage) return;
-    await safe("editMessageText (status)", ctx.api.editMessageText(chatId, statusMessage.messageId, text));
+    await statusDelivery("status_edit", () => ctx.api.editMessageText(chatId, statusMessage!.messageId, text));
     statusMessage.lastEditAt = Date.now();
   };
 
@@ -642,7 +820,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     const line = `→ ${text}`;
 
     if (!statusMessage) {
-      const sent = await safe("reply (status)", ctx.reply(renderStatus([line])));
+      const sent = await statusDelivery("status_start", () => ctx.reply(renderStatus([line])));
       if (sent) statusMessage = { messageId: sent.message_id, lines: [line], lastEditAt: Date.now() };
       return;
     }
@@ -669,7 +847,7 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     if (!statusMessage) return;
     const id = statusMessage.messageId;
     statusMessage = undefined;
-    await safe("deleteMessage (status)", ctx.api.deleteMessage(chatId, id));
+    await statusDelivery("status_delete", () => ctx.api.deleteMessage(chatId, id));
   };
 
   const showStoppedStatus = async (text: string): Promise<void> => {
@@ -679,7 +857,9 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     if (statusMessage) {
       const id = statusMessage.messageId;
       statusMessage = undefined;
-      await withTelegramRetry(() => ctx.api.editMessageText(chatId, id, text));
+      await statusDelivery("status_error_edit", () =>
+        withTelegramRetry(() => ctx.api.editMessageText(chatId, id, text), retryAudit(chatId, "status_error_edit")),
+      );
       visibleResponseDelivered = true;
       return;
     }
@@ -701,35 +881,48 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
     const parts = chunks(text);
     const [first, ...rest] = parts;
 
-    if (!sending) {
-      const formatted = format(first);
-      await replyReliably(
-        ctx,
-        formatted.text,
+    const deliverChunk = async (
+      part: string,
+      index: number,
+      options: Parameters<Context["reply"]>[1],
+    ): Promise<void> => {
+      const formatted = format(part);
+      await withTelegramChunkLifecycle(
+        () => replyReliably(ctx, formatted.text, { ...options, parse_mode: formatted.parse_mode }, part),
         {
-          parse_mode: formatted.parse_mode,
-          link_preview_options: { is_disabled: true },
-          ...(firstAgentReply && inboundReplyParameters
-            ? { reply_parameters: { ...inboundReplyParameters, allow_sending_without_reply: true } }
-            : {}),
+          index,
+          total: parts.length,
+          onEvent: async (record) => {
+            await auditLifecycle("telegram.delivery.chunk", {
+              outcome: record.outcome,
+              chat_id: chatId,
+              duration_ms: record.durationMs,
+              data: {
+                chunk_id: record.chunkId,
+                index: record.index,
+                total: record.total,
+                body: payloadDescriptor(part),
+                ...(record.error === undefined ? {} : { error: payloadDescriptor(record.error) }),
+              },
+            });
+          },
         },
-        first,
       );
+    };
+
+    if (!sending) {
+      await deliverChunk(first, 0, {
+        link_preview_options: { is_disabled: true },
+        ...(firstAgentReply && inboundReplyParameters
+          ? { reply_parameters: { ...inboundReplyParameters, allow_sending_without_reply: true } }
+          : {}),
+      });
       firstAgentReply = false;
       visibleResponseDelivered = true;
     }
 
-    for (const part of rest) {
-      const formatted = format(part);
-      await replyReliably(
-        ctx,
-        formatted.text,
-        {
-          parse_mode: formatted.parse_mode,
-          link_preview_options: { is_disabled: true },
-        },
-        part,
-      );
+    for (const [restIndex, part] of rest.entries()) {
+      await deliverChunk(part, restIndex + 1, { link_preview_options: { is_disabled: true } });
       visibleResponseDelivered = true;
     }
   };
@@ -771,7 +964,10 @@ async function processMessage(ctx: Context, handle: Handler, shutdownSignal?: Ab
           if (placeholder) {
             const id = placeholder.messageId;
             placeholder = undefined;
-            await withTelegramRetry(() => ctx.api.editMessageText(chatId, id, body));
+            await withTelegramRetry(
+              () => ctx.api.editMessageText(chatId, id, body),
+              retryAudit(chatId, "assistant_edit"),
+            );
             visibleResponseDelivered = true;
           } else if (!sending) {
             await replyReliably(ctx, body);

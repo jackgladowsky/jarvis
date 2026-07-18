@@ -17,18 +17,27 @@
 // is fine; if it ever shows up in profiling, move to a per-session Agent
 // cache later.
 
+import { randomUUID } from "node:crypto";
 import { mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type ImageContent, type Model } from "@mariozechner/pi-ai";
+import { type ImageContent, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { log } from "../lib/logger.js";
+import {
+  auditLifecycle,
+  payloadDescriptor,
+  withLifecycleContext,
+  type LifecycleContext,
+} from "../lib/lifecycle-audit.js";
 import { paths } from "../paths.js";
 import { getApiKeyForProvider } from "./auth.js";
-import { estimateContextTokens, maybeCompact, maybeCompactLoaded } from "./compaction.js";
+import { estimateContextTokens, maybeCompact, maybeCompactLoaded, type MaybeCompactResult } from "./compaction.js";
+import { planContext } from "./context-budget.js";
 import {
+  appendJobCompactionEntry,
   appendJobMessages,
   loadJobSession,
-  rewriteJobSessionWithCompaction,
+  type JobCompactionEntry,
   type JobLoadedSession,
 } from "./job-session.js";
 import { model, resolveModel } from "./model.js";
@@ -37,6 +46,7 @@ import { activeAgentRuns, AgentRunAbortError, isAgentRunAbortError, type ActiveA
 import * as sessions from "./session-manager.js";
 import { summarizeArchived } from "./summarizer.js";
 import { getSystemPrompt } from "./system-prompt.js";
+import { createToolResultBudgeter } from "./tool-result-budget.js";
 import { makeAbortableTool } from "./tools/abortable.js";
 import { createBrowserWorkbenchTool, type BrowserWorkbenchAuthority } from "./tools/browser-workbench.js";
 import { createConfigControlTool } from "./tools/config-control.js";
@@ -245,12 +255,40 @@ export function normalizeCancelledChatMessages(
 }
 
 function compactJson(value: unknown): string {
+  const seen = new WeakSet<object>();
+  const preview = (item: unknown, depth: number): unknown => {
+    if (typeof item === "string") return item.length > 96 ? `${item.slice(0, 95)}…` : item;
+    if (item === null || typeof item !== "object") return item;
+    if (seen.has(item)) return "[circular]";
+    if (depth >= 2) return "[nested]";
+    seen.add(item);
+    if (Array.isArray(item)) return item.slice(0, 4).map((entry) => preview(entry, depth + 1));
+    return Object.fromEntries(
+      Object.entries(item as Record<string, unknown>)
+        .slice(0, 8)
+        .map(([key, entry]) => [key, preview(entry, depth + 1)]),
+    );
+  };
   try {
-    const text = JSON.stringify(value);
+    const text = JSON.stringify(preview(value, 0));
     return text.length > 180 ? `${text.slice(0, 177)}…` : text;
   } catch {
-    return String(value);
+    return "[unavailable]";
   }
+}
+
+function toolRequestDescriptor(tool: string, args: unknown): Record<string, unknown> {
+  const descriptor: Record<string, unknown> = { payload: payloadDescriptor(args) };
+  if (!args || typeof args !== "object") return descriptor;
+  const value = args as Record<string, unknown>;
+  if (["read", "write", "edit", "send_artifact"].includes(tool) && typeof value.path === "string") {
+    descriptor.resource = { kind: "path", identity: value.path };
+  } else if (tool === "web_search" && typeof value.input === "string" && /^https?:\/\//i.test(value.input)) {
+    descriptor.resource = { kind: "url", identity: value.input };
+  } else if (tool === "mcp_call") {
+    descriptor.resource = { kind: "mcp", server: value.server, tool: value.tool };
+  }
+  return descriptor;
 }
 
 function formatStatus(event: AgentEvent, mode: StatusMode): string | undefined {
@@ -391,15 +429,9 @@ function injectSkillNudge(messages: AgentMessage[]): void {
 // Build a fresh Agent for a given session. Tools and model are process-level;
 // the system prompt is reassembled per run so host-local prompt edits are live
 // on the next prompt/session.
-function buildAgent(
-  messages: AgentMessage[],
-  agentModel = model,
-  sessionId?: string,
-  telegramChatId?: number,
-  tools = cancellableTools,
-): Agent {
+function assembleSystemPrompt(tools: typeof cancellableTools, telegramChatId?: number): string {
   const hasSendArtifact = tools.some((tool) => tool.name === "send_artifact");
-  const systemPrompt = telegramChatId
+  return telegramChatId
     ? [
         getSystemPrompt(),
         "## Current Transport Context",
@@ -412,21 +444,50 @@ function buildAgent(
           : []),
       ].join("\n\n")
     : getSystemPrompt();
-  return new Agent({
-    initialState: {
-      systemPrompt,
-      model: agentModel,
-      tools,
-      messages,
-      thinkingLevel: getReasoningLevel(),
-    },
+}
+
+export function capProviderOutput(
+  options: SimpleStreamOptions | undefined,
+  outputMaxTokens: number,
+): SimpleStreamOptions {
+  return { ...options, maxTokens: outputMaxTokens };
+}
+
+function buildAgent(
+  messages: AgentMessage[],
+  agentModel = model,
+  sessionId?: string,
+  telegramChatId?: number,
+  tools = cancellableTools,
+  outputMaxTokens = planContext({
+    model: agentModel,
+    systemPrompt: assembleSystemPrompt(tools, telegramChatId),
+    tools,
+    history: messages,
+  }).breakdown.outputReserve,
+): Agent {
+  const systemPrompt = assembleSystemPrompt(tools, telegramChatId);
+  const toolResultBudgeter = createToolResultBudgeter(agentModel);
+  const agent = new Agent({
+    initialState: { systemPrompt, model: agentModel, tools, messages, thinkingLevel: getReasoningLevel() },
     getApiKey: getApiKeyForProvider,
     sessionId,
+    afterToolCall: toolResultBudgeter,
     // Tool calls frequently mutate the same checkout, browser, or external
     // system. Preserve source order unless a future tool-specific policy can
     // prove a batch is safe to parallelize.
     toolExecution: "sequential",
   });
+  // Wrap the Agent's own pi-agent-core-compatible stream function. The repo
+  // can temporarily contain two pi-ai patch versions, so importing a second
+  // stream implementation directly would produce incompatible stream classes.
+  const providerStream = agent.streamFn;
+  agent.streamFn = (streamModel, context, options) =>
+    providerStream(streamModel, toolResultBudgeter.constrainProviderContext(context), {
+      ...options,
+      maxTokens: outputMaxTokens,
+    });
+  return agent;
 }
 
 // Wrap a compaction summary as a synthetic user message that the LLM can
@@ -445,12 +506,8 @@ async function appendScheduledMessages(taskId: string, messages: AgentMessage[])
   await appendJobMessages(scheduledSessionFile(taskId), messages);
 }
 
-async function rewriteScheduledSessionWithCompaction(
-  taskId: string,
-  entry: { summary: string; tokensBefore: number },
-  keptTail: AgentMessage[],
-): Promise<void> {
-  await rewriteJobSessionWithCompaction(scheduledSessionFile(taskId), entry, keptTail);
+async function appendScheduledSessionCompaction(taskId: string, entry: JobCompactionEntry): Promise<void> {
+  await appendJobCompactionEntry(scheduledSessionFile(taskId), entry);
 }
 
 async function archiveScheduledSession(taskId: string, reason: string): Promise<string | undefined> {
@@ -481,12 +538,30 @@ async function appendBackgroundMessages(taskId: string, messages: AgentMessage[]
   await appendJobMessages(backgroundSessionFile(taskId), messages);
 }
 
-async function rewriteBackgroundSessionWithCompaction(
+async function persistBackgroundMessages(
+  lifecycle: LifecycleContext,
   taskId: string,
-  entry: { summary: string; tokensBefore: number },
-  keptTail: AgentMessage[],
+  messages: AgentMessage[],
+  terminalFailure = false,
 ): Promise<void> {
-  await rewriteJobSessionWithCompaction(backgroundSessionFile(taskId), entry, keptTail);
+  const data = { messages: messages.length, ...(terminalFailure ? { terminal_failure: true } : {}) };
+  await withLifecycleContext(lifecycle, () => auditLifecycle("session.persistence", { outcome: "start", data }));
+  try {
+    await appendBackgroundMessages(taskId, messages);
+    await withLifecycleContext(lifecycle, () => auditLifecycle("session.persistence", { outcome: "ok", data }));
+  } catch (error) {
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("session.persistence", {
+        outcome: "error",
+        data: { ...data, error: payloadDescriptor(error instanceof Error ? error.message : error) },
+      }),
+    );
+    throw error;
+  }
+}
+
+async function appendBackgroundSessionCompaction(taskId: string, entry: JobCompactionEntry): Promise<void> {
+  await appendJobCompactionEntry(backgroundSessionFile(taskId), entry);
 }
 
 async function archiveBackgroundSession(taskId: string, reason: string): Promise<string | undefined> {
@@ -503,6 +578,50 @@ async function archiveBackgroundSession(taskId: string, reason: string): Promise
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw err;
   }
+}
+
+function createChatTools(capabilities: ChatRunCapabilities, chatTurn: ChatTurnJournal): typeof cancellableTools {
+  const baseChatTools = capabilities.browserAuthority
+    ? [
+        ...cancellableTools.filter((tool) => !["browser_workbench", "mcp_call"].includes(tool.name)),
+        makeAbortableTool(createBrowserWorkbenchTool(capabilities.browserAuthority)),
+        makeAbortableTool(createConfigControlTool(capabilities.browserAuthority)),
+        makeAbortableTool(diagnosticsTool),
+        makeAbortableTool(schedulerControlTool),
+        makeAbortableTool(createSearchMemoryTool(capabilities.browserAuthority)),
+        makeAbortableTool(
+          withToolAudit(createMcpManagerTool(capabilities.browserAuthority), {
+            summarizeArgs: summarizeMcpManagerAuditArgs,
+            summarizeError: summarizeMcpManagerAuditError,
+          }),
+        ),
+        makeAbortableTool(
+          withToolAudit(createMcpCallTool(capabilities.browserAuthority), {
+            summarizeArgs: summarizeMcpAuditArgs,
+            summarizeError: summarizeMcpAuditError,
+          }),
+        ),
+      ]
+    : cancellableTools;
+  return capabilities.sendArtifact
+    ? [
+        ...baseChatTools,
+        makeAbortableTool(
+          createSendArtifactTool({
+            send: capabilities.sendArtifact,
+            beforeDelivery: () => recordChatVisibleOutput(chatTurn),
+          }),
+        ),
+      ]
+    : baseChatTools;
+}
+
+function makeUserPromptMessage(text: string, images: ImageContent[]): AgentMessage {
+  return {
+    role: "user",
+    content: [{ type: "text", text }, ...images],
+    timestamp: Date.now(),
+  };
 }
 
 function makeSummaryMessage(summary: string): AgentMessage {
@@ -562,6 +681,7 @@ export async function handleMessage(
 ): Promise<void> {
   const run = activeAgentRuns.start("chat", chatId);
   let turn: ChatTurnJournal | undefined;
+  let lifecycle: LifecycleContext | undefined;
   try {
     ensureNotAborted(run);
     const session = await sessions.resolveSession(chatId);
@@ -569,6 +689,26 @@ export async function handleMessage(
     const begunTurn = await beginChatTurn(chatId, session.sessionId, text, images.length);
     const chatTurn = begunTurn.current;
     turn = chatTurn;
+    lifecycle = {
+      run_id: randomUUID(),
+      run_kind: "chat",
+      session_id: session.sessionId,
+      turn_id: chatTurn.id,
+      chat_id: chatId,
+    };
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("turn.received", {
+        outcome: "start",
+        data: {
+          prompt: payloadDescriptor(text),
+          image_count: images.length,
+          authorization: {
+            owner_authenticated: Boolean(capabilities.browserAuthority),
+            capability_names: Object.keys(capabilities),
+          },
+        },
+      }),
+    );
     log.debug("agent prompt", {
       chatId,
       sessionId: session.sessionId,
@@ -583,19 +723,84 @@ export async function handleMessage(
       void summarizeArchived(session.rotatedFrom, model);
     }
 
-    // Load the session and apply compaction if we're near the context window.
-    // `maybeCompact` may run an LLM call to produce a summary, persist a
-    // `compaction` entry to the JSONL, and return the trimmed message list.
+    const chatTools = createChatTools(capabilities, chatTurn);
+    // Load the session and apply compaction if the complete request envelope
+    // (not just transcript text) is near the exact selected model's window.
     const loaded = await sessions.load(session.sessionId);
     ensureNotAborted(run);
-    const compaction = await maybeCompact(session.sessionId, loaded, model, makeSummaryMessage, run.signal);
-    ensureNotAborted(run);
-    if (compaction.didCompact) {
-      log.info("compaction applied", {
+    const loadedEffective = loaded.previousSummary
+      ? [makeSummaryMessage(loaded.previousSummary), ...loaded.tail]
+      : loaded.tail.slice();
+    const initialPlan = planContext({
+      model,
+      systemPrompt: assembleSystemPrompt(chatTools, chatId),
+      tools: chatTools,
+      history: loadedEffective,
+      currentText: text,
+      currentImages: images,
+    });
+    let compaction: MaybeCompactResult;
+    try {
+      compaction = await maybeCompact(
+        session.sessionId,
+        loaded,
+        model,
+        makeSummaryMessage,
+        run.signal,
+        initialPlan.decision === "compact",
+      );
+    } catch (err) {
+      if (run.signal.aborted || isAgentRunAbortError(err)) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      log.error("chat compaction failed; continuing to bounded preflight", {
         chatId,
         sessionId: session.sessionId,
-        tokensBefore: compaction.tokensBefore,
+        err: reason,
       });
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("context.compaction", {
+          outcome: "error",
+          provider: model.provider,
+          model: model.id,
+          data: { error: payloadDescriptor(reason), source_preserved: true },
+        }),
+      );
+      compaction = {
+        messages: loadedEffective,
+        didCompact: false,
+        tokensBefore: estimateContextTokens(loadedEffective),
+      };
+    }
+    ensureNotAborted(run);
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("context.preflight", {
+        outcome: initialPlan.decision === "fits" ? "ok" : initialPlan.decision === "compact" ? "retry" : "error",
+        provider: model.provider,
+        model: model.id,
+        data: {
+          plan: initialPlan.breakdown,
+          decision: initialPlan.decision,
+          compaction: compaction.didCompact,
+          blocked: compaction.blockedReason,
+        },
+      }),
+    );
+    const compactionAttemptedModels = new Set<string>();
+    if (initialPlan.decision === "compact") compactionAttemptedModels.add(initialPlan.model);
+    if (compaction.didCompact) {
+      log.info("compaction applied", { chatId, sessionId: session.sessionId, tokensBefore: compaction.tokensBefore });
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("context.compaction", {
+          outcome: "ok",
+          provider: model.provider,
+          model: model.id,
+          data: {
+            tokens_before: compaction.tokensBefore,
+            source_preserved: true,
+            source_references: compaction.sourceReferences,
+          },
+        }),
+      );
     }
     if (begunTurn.interruptions.length > 0) {
       compaction.messages.unshift({
@@ -608,12 +813,23 @@ export async function handleMessage(
         ],
         timestamp: 0,
       });
+      const riskyTurnCount = begunTurn.interruptions.filter((interrupted) =>
+        interruptedTurnHasReplayRisk(interrupted),
+      ).length;
       log.warn("injecting interrupted-turn recovery note", {
         chatId,
         interruptedTurnIds: begunTurn.interruptions.map((interrupted) => interrupted.id),
-        riskyTurnCount: begunTurn.interruptions.filter((interrupted) => interruptedTurnHasReplayRisk(interrupted))
-          .length,
+        riskyTurnCount,
       });
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("run.recovery", {
+          outcome: "degraded",
+          data: {
+            interrupted_turn_ids: begunTurn.interruptions.map((interrupted) => interrupted.id),
+            risky_turn_count: riskyTurnCount,
+          },
+        }),
+      );
     }
     // Ephemeral skill nudge: inject before buildAgent so it enters the agent's
     // context this turn. Never persisted to the session JSONL — recalculated
@@ -642,40 +858,6 @@ export async function handleMessage(
       }
     }
 
-    const baseChatTools = capabilities.browserAuthority
-      ? [
-          ...cancellableTools.filter((tool) => !["browser_workbench", "mcp_call"].includes(tool.name)),
-          makeAbortableTool(createBrowserWorkbenchTool(capabilities.browserAuthority)),
-          makeAbortableTool(createConfigControlTool(capabilities.browserAuthority)),
-          makeAbortableTool(diagnosticsTool),
-          makeAbortableTool(schedulerControlTool),
-          makeAbortableTool(createSearchMemoryTool(capabilities.browserAuthority)),
-          makeAbortableTool(
-            withToolAudit(createMcpManagerTool(capabilities.browserAuthority), {
-              summarizeArgs: summarizeMcpManagerAuditArgs,
-              summarizeError: summarizeMcpManagerAuditError,
-            }),
-          ),
-          makeAbortableTool(
-            withToolAudit(createMcpCallTool(capabilities.browserAuthority), {
-              summarizeArgs: summarizeMcpAuditArgs,
-              summarizeError: summarizeMcpAuditError,
-            }),
-          ),
-        ]
-      : cancellableTools;
-    const chatTools = capabilities.sendArtifact
-      ? [
-          ...baseChatTools,
-          makeAbortableTool(
-            createSendArtifactTool({
-              send: capabilities.sendArtifact,
-              beforeDelivery: () => recordChatVisibleOutput(chatTurn),
-            }),
-          ),
-        ]
-      : baseChatTools;
-
     const attempts: Attempt[] = [primaryAttempts[0]];
     let completedMessages: AgentMessage[] | undefined;
     let terminalFailure: string | undefined;
@@ -689,7 +871,7 @@ export async function handleMessage(
     ): Promise<void> => {
       if (!callback) return;
       try {
-        await callback();
+        await withLifecycleContext(lifecycle!, callback);
       } catch (err) {
         const callbackError = err instanceof Error ? err : new Error(String(err));
         if (critical) callbackFailure ??= callbackError;
@@ -706,7 +888,105 @@ export async function handleMessage(
     for (let i = 0; i < attempts.length; i++) {
       ensureNotAborted(run);
       const attempt = attempts[i];
-      const agent = buildAgent(compaction.messages.slice(), attempt.agentModel, session.sessionId, chatId, chatTools);
+      const attemptContext: LifecycleContext = { ...lifecycle, attempt_id: `${lifecycle.run_id}:attempt:${i + 1}` };
+      let attemptPlan = planContext({
+        model: attempt.agentModel,
+        systemPrompt: assembleSystemPrompt(chatTools, chatId),
+        tools: chatTools,
+        history: compaction.messages,
+        currentText: text,
+        currentImages: images,
+      });
+      if (attemptPlan.decision === "compact" && !compactionAttemptedModels.has(attemptPlan.model)) {
+        compactionAttemptedModels.add(attemptPlan.model);
+        const attemptLoaded = await sessions.load(session.sessionId);
+        const attemptCompaction = await maybeCompact(
+          session.sessionId,
+          attemptLoaded,
+          attempt.agentModel,
+          makeSummaryMessage,
+          run.signal,
+          true,
+        );
+        compaction.messages = attemptCompaction.messages;
+        if (begunTurn.interruptions.length > 0) {
+          compaction.messages.unshift({
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: begunTurn.interruptions
+                  .map((interrupted) => renderInterruptedTurnWarning(interrupted))
+                  .join("\n\n"),
+              },
+            ],
+            timestamp: 0,
+          });
+        }
+        injectSkillNudge(compaction.messages);
+        attemptPlan = planContext({
+          model: attempt.agentModel,
+          systemPrompt: assembleSystemPrompt(chatTools, chatId),
+          tools: chatTools,
+          history: compaction.messages,
+          currentText: text,
+          currentImages: images,
+        });
+        await withLifecycleContext(attemptContext, () =>
+          auditLifecycle("context.compaction", {
+            outcome: attemptCompaction.didCompact ? "ok" : "error",
+            provider: attempt.agentModel.provider,
+            model: attempt.agentModel.id,
+            data: { blocked: attemptCompaction.blockedReason, exact_attempt: true },
+          }),
+        );
+      }
+      await withLifecycleContext(attemptContext, () =>
+        auditLifecycle("model.attempt", {
+          outcome: "start",
+          provider: attempt.agentModel.provider,
+          model: attempt.agentModel.id,
+          data: { label: attempt.label, context: attemptPlan.breakdown, decision: attemptPlan.decision },
+        }),
+      );
+      if (attemptPlan.decision !== "fits") {
+        const capacityFailure = `Context capacity exceeded for ${attemptPlan.model}: ${attemptPlan.reason ?? "request cannot fit"}. Start a new session or reduce the current input.`;
+        await withLifecycleContext(attemptContext, () =>
+          auditLifecycle("model.attempt", {
+            outcome: "error",
+            provider: attempt.agentModel.provider,
+            model: attempt.agentModel.id,
+            data: { failure_class: "context_capacity", reason: attemptPlan.reason },
+          }),
+        );
+        if (fallbackAttempt && attempt.kind !== "fallback") {
+          const fallbackPlan = planContext({
+            model: fallbackAttempt.agentModel,
+            systemPrompt: assembleSystemPrompt(chatTools, chatId),
+            tools: chatTools,
+            history: compaction.messages,
+            currentText: text,
+            currentImages: images,
+          });
+          if (fallbackPlan.decision !== "impossible") {
+            // The fallback loop performs its own one-shot exact-envelope
+            // compaction when this model has a smaller input ceiling.
+            attempts.push(fallbackAttempt);
+            continue;
+          }
+        }
+        completedMessages = [makeUserPromptMessage(text, images)];
+        terminalFailure = capacityFailure;
+        break;
+      }
+      const agent = buildAgent(
+        compaction.messages.slice(),
+        attempt.agentModel,
+        session.sessionId,
+        chatId,
+        chatTools,
+        attemptPlan.breakdown.outputReserve,
+      );
       const detachAgent = run.attachAgent(agent);
       let currentMsgIsAbandoned = false;
       let promptError: string | undefined;
@@ -718,6 +998,28 @@ export async function handleMessage(
         if (event.type === "tool_execution_start") {
           await recordChatToolStart(chatTurn, event.toolName);
           replayBoundary.toolStarted = true;
+          await withLifecycleContext(attemptContext, () =>
+            auditLifecycle("tool.execution", {
+              outcome: "start",
+              tool_call_id: event.toolCallId,
+              data: {
+                tool: event.toolName,
+                request: toolRequestDescriptor(event.toolName, event.args),
+                authorization: {
+                  owner_authenticated: Boolean(capabilities.browserAuthority),
+                  approval_policy: "configured",
+                },
+              },
+            }),
+          );
+        } else if (event.type === "tool_execution_end") {
+          await withLifecycleContext(attemptContext, () =>
+            auditLifecycle("tool.execution", {
+              outcome: run.signal.aborted ? "cancelled" : event.isError ? "error" : "ok",
+              tool_call_id: event.toolCallId,
+              data: { tool: event.toolName, result: payloadDescriptor(event.result) },
+            }),
+          );
         }
 
         const status = formatStatus(event, callbacks.statusMode ?? "off");
@@ -785,7 +1087,7 @@ export async function handleMessage(
       let thrownFailure: string | undefined;
 
       try {
-        await agent.prompt(text, images);
+        await withLifecycleContext(attemptContext, () => agent.prompt(text, images));
         ensureNotAborted(run);
       } catch (err) {
         if (run.signal.aborted || isAgentRunAbortError(err)) {
@@ -810,6 +1112,14 @@ export async function handleMessage(
       const newMessages = agent.state.messages.slice(before);
       const failure = thrownFailure ?? detectAgentFailure(agent, newMessages, promptError);
       if (!failure) {
+        await withLifecycleContext(attemptContext, () =>
+          auditLifecycle("model.attempt", {
+            outcome: "ok",
+            provider: attempt.agentModel.provider,
+            model: attempt.agentModel.id,
+            data: { messages: newMessages.length },
+          }),
+        );
         completedMessages = newMessages;
         terminalFailure = undefined;
         break;
@@ -829,6 +1139,14 @@ export async function handleMessage(
         visibleAssistantOutput: replayBoundary.visibleAssistantOutput,
         err: lastError,
       });
+      await withLifecycleContext(attemptContext, () =>
+        auditLifecycle("model.attempt", {
+          outcome: "error",
+          provider: attempt.agentModel.provider,
+          model: attempt.agentModel.id,
+          data: { failure_class: failureClass, replay_safe: replaySafe, error: payloadDescriptor(failure) },
+        }),
+      );
 
       let next: Attempt | undefined;
       if (replaySafe && failureClass === "transient" && attempt.kind === "primary") {
@@ -843,6 +1161,14 @@ export async function handleMessage(
 
       if (next) {
         attempts.push(next);
+        await withLifecycleContext(attemptContext, () =>
+          auditLifecycle(next.kind === "fallback" ? "model.fallback" : "model.retry", {
+            outcome: "retry",
+            provider: next.agentModel.provider,
+            model: next.agentModel.id,
+            data: { from: attempt.label, to: next.label },
+          }),
+        );
         await invokeCallback("onStatus", () =>
           callbacks.onStatus?.(
             next.kind === "fallback" ? "Primary failed; trying fallback model" : "Model call failed; retrying",
@@ -872,9 +1198,18 @@ export async function handleMessage(
     // failure after a completed tool or delivered answer must never rerun the
     // model and duplicate those effects.
     let persistenceFailure: Error | undefined;
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("session.persistence", {
+        outcome: "start",
+        data: { messages: completedMessages.length, transcript: "canonical-append-only" },
+      }),
+    );
     try {
       await sessions.appendMessages(session.sessionId, completedMessages);
       await sessions.markActivity(chatId);
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("session.persistence", { outcome: "ok", data: { messages: completedMessages.length } }),
+      );
     } catch (err) {
       persistenceFailure = err instanceof Error ? err : new Error(String(err));
       log.error("failed to persist completed agent turn", {
@@ -882,6 +1217,12 @@ export async function handleMessage(
         sessionId: session.sessionId,
         err: persistenceFailure.message,
       });
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("session.persistence", {
+          outcome: "error",
+          data: { error: payloadDescriptor(persistenceFailure?.message ?? "unknown persistence failure") },
+        }),
+      );
     }
 
     if (terminalFailure && !shouldSuppressForCancelledRun(run) && callbacks.onError) {
@@ -890,6 +1231,12 @@ export async function handleMessage(
 
     if (!persistenceFailure) {
       await finishChatTurn(chatTurn, terminalFailure ? "failed" : "committed", terminalFailure);
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("turn.finished", {
+          outcome: terminalFailure ? "error" : "ok",
+          data: terminalFailure ? { error: payloadDescriptor(terminalFailure) } : undefined,
+        }),
+      );
     }
 
     if (terminalFailure && !shouldSuppressForCancelledRun(run)) {
@@ -900,6 +1247,14 @@ export async function handleMessage(
     if (persistenceFailure) throw persistenceFailure;
     if (callbackFailure) throw callbackFailure;
   } catch (err) {
+    if (lifecycle) {
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("run.failure", {
+          outcome: run.signal.aborted || isAgentRunAbortError(err) ? "cancelled" : "error",
+          data: { error: payloadDescriptor(err instanceof Error ? err.message : String(err)) },
+        }),
+      );
+    }
     if (turn?.status === "running" && !turn.tool_started && !turn.visible_output) {
       const status = run.signal.aborted || isAgentRunAbortError(err) ? "cancelled" : "failed";
       await finishChatTurn(turn, status, err instanceof Error ? err.message : String(err)).catch((journalErr) =>
@@ -938,14 +1293,50 @@ export async function runScheduledPrompt(
   modelOverride: ModelOverride = {},
 ): Promise<string> {
   const run = activeAgentRuns.start("scheduled", taskId);
+  const lifecycle: LifecycleContext = {
+    run_id: randomUUID(),
+    run_kind: "scheduled",
+    session_id: `scheduled:${taskId}`,
+    task_id: taskId,
+  };
   let toolStarted = false;
   try {
     const taskModel =
       modelOverride.provider && modelOverride.model ? resolveModel(modelOverride.provider, modelOverride.model) : model;
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("turn.received", {
+        outcome: "start",
+        provider: taskModel.provider,
+        model: taskModel.id,
+        data: { prompt: payloadDescriptor(prompt), task_name: taskName },
+      }),
+    );
+    const taskPrompt = [
+      "You are running as a scheduled JARVIS task.",
+      "Your output may be sent to the owner as a Telegram notification, so be concise and focus on what is actionable.",
+      "Compare against previous runs when relevant.",
+      "",
+      `Task: ${taskName} (${taskId})`,
+      `Task note: ${taskNotePath}`,
+      "",
+      "Before finishing, update the task note markdown file with the current status, latest run summary, useful observations, and next things to watch. Keep it concise and preserve durable context across runs.",
+      "",
+      prompt,
+    ].join("\n");
     ensureNotAborted(run);
     const loaded = await loadScheduledMessages(taskId);
     ensureNotAborted(run);
     let initialMessages: AgentMessage[];
+    const loadedEffective = loaded.previousSummary
+      ? [makeSummaryMessage(loaded.previousSummary), ...loaded.tail]
+      : loaded.tail.slice();
+    const initialPlan = planContext({
+      model: taskModel,
+      systemPrompt: assembleSystemPrompt(cancellableTools),
+      tools: cancellableTools,
+      history: loadedEffective,
+      currentText: taskPrompt,
+    });
     try {
       const compaction = await maybeCompactLoaded(
         `scheduled:${taskId}`,
@@ -953,10 +1344,11 @@ export async function runScheduledPrompt(
         taskModel,
         makeSummaryMessage,
         {
-          rewriteWithCompaction: (entry, keptTail) => rewriteScheduledSessionWithCompaction(taskId, entry, keptTail),
+          appendCompaction: (entry) => appendScheduledSessionCompaction(taskId, entry),
           reload: () => loadScheduledMessages(taskId),
         },
         run.signal,
+        initialPlan.decision === "compact",
       );
       ensureNotAborted(run);
       if (compaction.didCompact) {
@@ -974,7 +1366,36 @@ export async function runScheduledPrompt(
       initialMessages = [];
     }
 
-    const agent = buildAgent(initialMessages, taskModel, `scheduled:${taskId}`);
+    const taskPlan = planContext({
+      model: taskModel,
+      systemPrompt: assembleSystemPrompt(cancellableTools),
+      tools: cancellableTools,
+      history: initialMessages,
+      currentText: taskPrompt,
+    });
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("context.preflight", {
+        outcome: taskPlan.decision === "fits" ? "ok" : "error",
+        provider: taskModel.provider,
+        model: taskModel.id,
+        data: { decision: taskPlan.decision, plan: taskPlan.breakdown },
+      }),
+    );
+    if (taskPlan.decision !== "fits") {
+      throw new AgentExecutionError(
+        `Scheduled turn cannot fit ${taskPlan.model}: ${taskPlan.reason}`,
+        true,
+        "permanent",
+      );
+    }
+    const agent = buildAgent(
+      initialMessages,
+      taskModel,
+      `scheduled:${taskId}`,
+      undefined,
+      cancellableTools,
+      taskPlan.breakdown.outputReserve,
+    );
     const detachAgent = run.attachAgent(agent);
     const before = agent.state.messages.length;
     let finalText = "";
@@ -984,6 +1405,27 @@ export async function runScheduledPrompt(
       if (shouldSuppressForCancelledRun(run)) return;
       if (event.type === "tool_execution_start") {
         toolStarted = true;
+        await withLifecycleContext(lifecycle, () =>
+          auditLifecycle("tool.execution", {
+            outcome: "start",
+            tool_call_id: event.toolCallId,
+            data: {
+              tool: event.toolName,
+              request: toolRequestDescriptor(event.toolName, event.args),
+              authorization: { run_kind: "scheduled" },
+            },
+          }),
+        );
+        return;
+      }
+      if (event.type === "tool_execution_end") {
+        await withLifecycleContext(lifecycle, () =>
+          auditLifecycle("tool.execution", {
+            outcome: run.signal.aborted ? "cancelled" : event.isError ? "error" : "ok",
+            tool_call_id: event.toolCallId,
+            data: { tool: event.toolName, result: payloadDescriptor(event.result) },
+          }),
+        );
         return;
       }
       if (event.type === "agent_end") {
@@ -1004,22 +1446,17 @@ export async function runScheduledPrompt(
       finalText = extractText(event.message.content).trim();
     });
 
-    const taskPrompt = [
-      "You are running as a scheduled JARVIS task.",
-      "Your output may be sent to the owner as a Telegram notification, so be concise and focus on what is actionable.",
-      "Compare against previous runs when relevant.",
-      "",
-      `Task: ${taskName} (${taskId})`,
-      `Task note: ${taskNotePath}`,
-      "",
-      "Before finishing, update the task note markdown file with the current status, latest run summary, useful observations, and next things to watch. Keep it concise and preserve durable context across runs.",
-      "",
-      prompt,
-    ].join("\n");
-
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("model.attempt", {
+        outcome: "start",
+        provider: taskModel.provider,
+        model: taskModel.id,
+        data: { label: "scheduled-primary" },
+      }),
+    );
     try {
       ensureNotAborted(run);
-      await agent.prompt(taskPrompt);
+      await withLifecycleContext(lifecycle, () => agent.prompt(taskPrompt));
       ensureNotAborted(run);
     } finally {
       unsubscribe();
@@ -1027,8 +1464,32 @@ export async function runScheduledPrompt(
     }
 
     const newMessages = agent.state.messages.slice(before);
-    await appendScheduledMessages(taskId, newMessages);
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("session.persistence", { outcome: "start", data: { messages: newMessages.length } }),
+    );
+    try {
+      await appendScheduledMessages(taskId, newMessages);
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("session.persistence", { outcome: "ok", data: { messages: newMessages.length } }),
+      );
+    } catch (error) {
+      await withLifecycleContext(lifecycle, () =>
+        auditLifecycle("session.persistence", {
+          outcome: "error",
+          data: { error: payloadDescriptor(error instanceof Error ? error.message : error) },
+        }),
+      );
+      throw error;
+    }
     errorText = detectAgentFailure(agent, newMessages, errorText) ?? "";
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("model.attempt", {
+        outcome: errorText ? "error" : "ok",
+        provider: taskModel.provider,
+        model: taskModel.id,
+        data: errorText ? { error: payloadDescriptor(errorText) } : { messages: newMessages.length },
+      }),
+    );
     if (errorText) {
       throw new AgentExecutionError(
         formatAgentError("error", errorText),
@@ -1038,9 +1499,17 @@ export async function runScheduledPrompt(
     }
     if (!finalText)
       throw new AgentExecutionError("scheduled agent produced no final output", !toolStarted, "permanent");
+    await withLifecycleContext(lifecycle, () => auditLifecycle("turn.finished", { outcome: "ok" }));
     return finalText;
   } catch (err) {
-    if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+    const cancelled = run.signal.aborted || isAgentRunAbortError(err);
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("turn.finished", {
+        outcome: cancelled ? "cancelled" : "error",
+        data: { error: payloadDescriptor(err instanceof Error ? err.message : err) },
+      }),
+    );
+    if (cancelled) throw new AgentRunAbortError(run.abortReason);
     if (err instanceof AgentExecutionError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     throw new AgentExecutionError(message, !toolStarted, classifyAgentFailure(message), err);
@@ -1057,13 +1526,52 @@ export async function runBackgroundPrompt(
   modelOverride: ModelOverride = {},
 ): Promise<string> {
   const run = activeAgentRuns.start("background", taskId);
+  const lifecycle: LifecycleContext = {
+    run_id: randomUUID(),
+    run_kind: "background",
+    session_id: `background:${taskId}`,
+    task_id: taskId,
+  };
   try {
     const taskModel =
       modelOverride.provider && modelOverride.model ? resolveModel(modelOverride.provider, modelOverride.model) : model;
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("turn.received", {
+        outcome: "start",
+        provider: taskModel.provider,
+        model: taskModel.id,
+        data: { prompt: payloadDescriptor(prompt), task_name: taskName },
+      }),
+    );
+    const taskPrompt = [
+      "You are running as a background JARVIS worker.",
+      "You have one long-running task. Work autonomously, but do not make product/security/destructive decisions by guessing.",
+      "The task JSON and mailbox are controller-owned state. Never edit them directly.",
+      "If blocked, include a `QUESTION: ...` line and make the exact final nonempty line `OUTCOME: blocked`.",
+      "If finished, update only the task note and make the exact final nonempty line `OUTCOME: completed`.",
+      "Background workers must never push, merge, deploy, restart services, or edit the main checkout. No explicit request or mailbox message can grant an exception; main JARVIS is the gate.",
+      "Use the assigned git worktree for repo changes.",
+      "Your final response is a concise handoff summary for main JARVIS.",
+      "",
+      `Task: ${taskName} (${taskId})`,
+      `Task note: ${taskNotePath}`,
+      "",
+      prompt,
+    ].join("\n");
     ensureNotAborted(run);
     const loaded = await loadBackgroundMessages(taskId);
     ensureNotAborted(run);
     let initialMessages: AgentMessage[];
+    const loadedEffective = loaded.previousSummary
+      ? [makeSummaryMessage(loaded.previousSummary), ...loaded.tail]
+      : loaded.tail.slice();
+    const initialPlan = planContext({
+      model: taskModel,
+      systemPrompt: assembleSystemPrompt(cancellableTools),
+      tools: cancellableTools,
+      history: loadedEffective,
+      currentText: taskPrompt,
+    });
     try {
       const compaction = await maybeCompactLoaded(
         `background:${taskId}`,
@@ -1071,10 +1579,11 @@ export async function runBackgroundPrompt(
         taskModel,
         makeSummaryMessage,
         {
-          rewriteWithCompaction: (entry, keptTail) => rewriteBackgroundSessionWithCompaction(taskId, entry, keptTail),
+          appendCompaction: (entry) => appendBackgroundSessionCompaction(taskId, entry),
           reload: () => loadBackgroundMessages(taskId),
         },
         run.signal,
+        initialPlan.decision === "compact",
       );
       ensureNotAborted(run);
       if (compaction.didCompact) {
@@ -1116,9 +1625,59 @@ export async function runBackgroundPrompt(
       ensureNotAborted(run);
       const attempt = attempts[attemptIndex];
       const attemptModel = attempt.agentModel;
+      const attemptContext: LifecycleContext = {
+        ...lifecycle,
+        attempt_id: `${lifecycle.run_id}:attempt:${attemptIndex + 1}`,
+      };
       log.info("background prompt attempt", { taskId, attempt: attempt.label, model: attemptModel.id });
 
-      const agent = buildAgent(initialMessages, attemptModel, `background:${taskId}`);
+      let attemptPlan = planContext({
+        model: attemptModel,
+        systemPrompt: assembleSystemPrompt(cancellableTools),
+        tools: cancellableTools,
+        history: initialMessages,
+        currentText: taskPrompt,
+      });
+      // A smaller fallback gets its own exact-envelope compaction attempt.
+      if (attempt.kind === "fallback" && attemptPlan.decision === "compact") {
+        const fallbackLoaded = await loadBackgroundMessages(taskId);
+        const fallbackCompaction = await maybeCompactLoaded(
+          `background:${taskId}`,
+          fallbackLoaded,
+          attemptModel,
+          makeSummaryMessage,
+          {
+            appendCompaction: (entry) => appendBackgroundSessionCompaction(taskId, entry),
+            reload: () => loadBackgroundMessages(taskId),
+          },
+          run.signal,
+          true,
+        );
+        initialMessages = fallbackCompaction.messages;
+        attemptPlan = planContext({
+          model: attemptModel,
+          systemPrompt: assembleSystemPrompt(cancellableTools),
+          tools: cancellableTools,
+          history: initialMessages,
+          currentText: taskPrompt,
+        });
+        await withLifecycleContext(attemptContext, () =>
+          auditLifecycle("context.compaction", {
+            outcome: fallbackCompaction.didCompact ? "ok" : "error",
+            provider: attemptModel.provider,
+            model: attemptModel.id,
+            data: { blocked: fallbackCompaction.blockedReason, fallback: true },
+          }),
+        );
+      }
+      const agent = buildAgent(
+        initialMessages,
+        attemptModel,
+        `background:${taskId}`,
+        undefined,
+        cancellableTools,
+        attemptPlan.breakdown.outputReserve,
+      );
       const detachAgent = run.attachAgent(agent);
       const before = agent.state.messages.length;
       let finalText = "";
@@ -1129,6 +1688,27 @@ export async function runBackgroundPrompt(
         if (shouldSuppressForCancelledRun(run)) return;
         if (event.type === "tool_execution_start") {
           toolStarted = true;
+          await withLifecycleContext(attemptContext, () =>
+            auditLifecycle("tool.execution", {
+              outcome: "start",
+              tool_call_id: event.toolCallId,
+              data: {
+                tool: event.toolName,
+                request: toolRequestDescriptor(event.toolName, event.args),
+                authorization: { run_kind: "background" },
+              },
+            }),
+          );
+          return;
+        }
+        if (event.type === "tool_execution_end") {
+          await withLifecycleContext(attemptContext, () =>
+            auditLifecycle("tool.execution", {
+              outcome: run.signal.aborted ? "cancelled" : event.isError ? "error" : "ok",
+              tool_call_id: event.toolCallId,
+              data: { tool: event.toolName, result: payloadDescriptor(event.result) },
+            }),
+          );
           return;
         }
         if (event.type === "agent_end") {
@@ -1149,26 +1729,22 @@ export async function runBackgroundPrompt(
         finalText = extractText(event.message.content).trim();
       });
 
-      const taskPrompt = [
-        "You are running as a background JARVIS worker.",
-        "You have one long-running task. Work autonomously, but do not make product/security/destructive decisions by guessing.",
-        "The task JSON and mailbox are controller-owned state. Never edit them directly.",
-        "If blocked, include a `QUESTION: ...` line and make the exact final nonempty line `OUTCOME: blocked`.",
-        "If finished, update only the task note and make the exact final nonempty line `OUTCOME: completed`.",
-        "Background workers must never push, merge, deploy, restart services, or edit the main checkout. No explicit request or mailbox message can grant an exception; main JARVIS is the gate.",
-        "Use the assigned git worktree for repo changes.",
-        "Your final response is a concise handoff summary for main JARVIS.",
-        "",
-        `Task: ${taskName} (${taskId})`,
-        `Task note: ${taskNotePath}`,
-        "",
-        prompt,
-      ].join("\n");
+      await withLifecycleContext(attemptContext, () =>
+        auditLifecycle("model.attempt", {
+          outcome: attemptPlan.decision === "fits" ? "start" : "error",
+          provider: attemptModel.provider,
+          model: attemptModel.id,
+          data: { label: attempt.label, decision: attemptPlan.decision, context: attemptPlan.breakdown },
+        }),
+      );
 
       let thrownFailure: string | undefined;
       try {
         ensureNotAborted(run);
-        await agent.prompt(taskPrompt);
+        if (attemptPlan.decision !== "fits") {
+          throw new Error(`Context capacity exceeded for ${attemptPlan.model}: ${attemptPlan.reason}`);
+        }
+        await withLifecycleContext(attemptContext, () => agent.prompt(taskPrompt));
         ensureNotAborted(run);
       } catch (err) {
         if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
@@ -1184,14 +1760,33 @@ export async function runBackgroundPrompt(
         detectAgentFailure(agent, newMessages, errorText || undefined) ??
         (!finalText ? "background agent produced no final output" : undefined);
       if (!failure) {
-        await appendBackgroundMessages(taskId, newMessages);
+        await withLifecycleContext(attemptContext, () =>
+          auditLifecycle("model.attempt", {
+            outcome: "ok",
+            provider: attemptModel.provider,
+            model: attemptModel.id,
+            data: { messages: newMessages.length },
+          }),
+        );
+        await persistBackgroundMessages(lifecycle, taskId, newMessages);
+        await withLifecycleContext(lifecycle, () => auditLifecycle("turn.finished", { outcome: "ok" }));
         return finalText;
       }
 
       lastError = new Error(failure);
       const failureClass = classifyAgentFailure(failure);
+      await withLifecycleContext(attemptContext, () =>
+        auditLifecycle("model.attempt", {
+          outcome: "error",
+          provider: attemptModel.provider,
+          model: attemptModel.id,
+          data: { failure_class: failureClass, error: payloadDescriptor(failure), tool_started: toolStarted },
+        }),
+      );
       let next: BackgroundAttempt | undefined;
-      if (!toolStarted && failureClass === "transient" && attempt.kind === "primary") {
+      if (!toolStarted && attemptPlan.decision !== "fits" && attempt.kind !== "fallback") {
+        next = fallback;
+      } else if (!toolStarted && failureClass === "transient" && attempt.kind === "primary") {
         next = primaryRetry;
       } else if (
         !toolStarted &&
@@ -1213,6 +1808,14 @@ export async function runBackgroundPrompt(
 
       if (next) {
         attempts.push(next);
+        await withLifecycleContext(attemptContext, () =>
+          auditLifecycle(next.kind === "fallback" ? "model.fallback" : "model.retry", {
+            outcome: "retry",
+            provider: next.agentModel.provider,
+            model: next.agentModel.id,
+            data: { from: attempt.label, to: next.label },
+          }),
+        );
         if (next.kind === "primary_retry") {
           await waitForRetry(PRIMARY_RETRY_BASE_DELAY_MS + Math.floor(Math.random() * 250), run.signal);
         }
@@ -1221,13 +1824,20 @@ export async function runBackgroundPrompt(
 
       // Keep the failed attempt when it crossed the tool boundary (or cannot
       // be retried) so a later worker does not forget what already happened.
-      await appendBackgroundMessages(taskId, newMessages);
+      await persistBackgroundMessages(lifecycle, taskId, newMessages, true);
       throw lastError;
     }
 
     throw lastError ?? new Error("background prompt exhausted retries");
   } catch (err) {
-    if (run.signal.aborted || isAgentRunAbortError(err)) throw new AgentRunAbortError(run.abortReason);
+    const cancelled = run.signal.aborted || isAgentRunAbortError(err);
+    await withLifecycleContext(lifecycle, () =>
+      auditLifecycle("turn.finished", {
+        outcome: cancelled ? "cancelled" : "error",
+        data: { error: payloadDescriptor(err instanceof Error ? err.message : err) },
+      }),
+    );
+    if (cancelled) throw new AgentRunAbortError(run.abortReason);
     throw err;
   } finally {
     run.finish();

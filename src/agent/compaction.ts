@@ -236,6 +236,16 @@ async function generateSummary(
   const prompt = previousSummary
     ? `<conversation>\n${conversation}\n</conversation>\n\n<previous-summary>\n${previousSummary}\n</previous-summary>\n\n${basePrompt}`
     : `<conversation>\n${conversation}\n</conversation>\n\n${basePrompt}`;
+  const maxSummaryTokens = Math.max(
+    256,
+    Math.min(Math.floor(0.8 * config.compaction.reserve_tokens), model.maxTokens || Number.POSITIVE_INFINITY),
+  );
+  const summarizerInputTokens = tokensForString(SUMMARIZATION_SYSTEM_PROMPT) + tokensForString(prompt) + 32;
+  if (model.contextWindow > 0 && summarizerInputTokens + maxSummaryTokens > model.contextWindow) {
+    throw new Error(
+      `summarization request cannot fit ${model.provider}/${model.id}: ${summarizerInputTokens} input + ${maxSummaryTokens} output > ${model.contextWindow}`,
+    );
+  }
 
   if (signal?.aborted) throw new Error("aborted");
   const apiKey = await getApiKeyForProvider(model.provider);
@@ -261,7 +271,7 @@ async function generateSummary(
       signal,
       // Cap summary output well below reserve_tokens so the next turn has
       // breathing room — pi uses 0.8 of reserve, we follow.
-      maxTokens: Math.floor(0.8 * config.compaction.reserve_tokens),
+      maxTokens: maxSummaryTokens,
     },
   );
 
@@ -286,13 +296,21 @@ export interface MaybeCompactResult {
   didCompact: boolean;
   /** Reported tokens BEFORE compaction (for logging/audit). */
   tokensBefore: number;
+  /** Stable terminal reason when compaction was required but could not make progress. */
+  blockedReason?: "cut_zero";
+  sourceReferences?: { keepFromMessage: number; sourceThroughMessage: number };
 }
 
 // Called by the runtime before each agent.prompt(). If the session is under
 // the threshold this is just a token-count + return; otherwise it runs the
 // full compaction pipeline and returns the freshly compacted message list.
 export interface CompactionStore {
-  rewriteWithCompaction: (entry: { summary: string; tokensBefore: number }, keptTail: AgentMessage[]) => Promise<void>;
+  appendCompaction: (entry: {
+    summary: string;
+    tokensBefore: number;
+    keepFromMessage: number;
+    sourceThroughMessage: number;
+  }) => Promise<void>;
   reload: () => Promise<LoadedSession>;
 }
 
@@ -303,6 +321,7 @@ export async function maybeCompactLoaded(
   makeSummaryMessage: (summary: string) => AgentMessage,
   store: CompactionStore,
   signal?: AbortSignal,
+  force = false,
 ): Promise<MaybeCompactResult> {
   // Build the effective list (what the agent would actually see this turn).
   const effective = loaded.previousSummary
@@ -311,7 +330,7 @@ export async function maybeCompactLoaded(
 
   const tokens = estimateContextTokens(effective);
 
-  if (!shouldCompact(tokens, model.contextWindow)) {
+  if (!config.compaction.enabled || (!force && !shouldCompact(tokens, model.contextWindow))) {
     return { messages: effective, didCompact: false, tokensBefore: tokens };
   }
 
@@ -327,7 +346,7 @@ export async function maybeCompactLoaded(
       sessionId,
       tokens,
     });
-    return { messages: effective, didCompact: false, tokensBefore: tokens };
+    return { messages: effective, didCompact: false, tokensBefore: tokens, blockedReason: "cut_zero" };
   }
 
   log.info("compacting session", {
@@ -342,12 +361,19 @@ export async function maybeCompactLoaded(
   if (signal?.aborted) throw new Error("aborted");
   const newSummary = await generateSummary(toSummarize, model, loaded.previousSummary, signal);
 
+  const keepFromMessage = loaded.tailSourceIndexes[cut];
+  const sourceThroughMessage = loaded.tailSourceIndexes.at(-1);
+  if (keepFromMessage === undefined || sourceThroughMessage === undefined) {
+    throw new Error("compaction source references are unavailable");
+  }
   const entry = {
     summary: newSummary,
     tokensBefore: tokens,
+    keepFromMessage,
+    sourceThroughMessage,
   };
 
-  await store.rewriteWithCompaction(entry, loaded.tail.slice(cut));
+  await store.appendCompaction(entry);
 
   // Reload — the JSONL now has the new compaction entry, and `load` will
   // surface it as the new previousSummary with the freshly trimmed tail.
@@ -356,7 +382,12 @@ export async function maybeCompactLoaded(
     ? [makeSummaryMessage(reloaded.previousSummary), ...reloaded.tail]
     : reloaded.tail.slice();
 
-  return { messages: newEffective, didCompact: true, tokensBefore: tokens };
+  return {
+    messages: newEffective,
+    didCompact: true,
+    tokensBefore: tokens,
+    sourceReferences: { keepFromMessage, sourceThroughMessage },
+  };
 }
 
 export async function maybeCompact(
@@ -365,6 +396,7 @@ export async function maybeCompact(
   model: Model<any>,
   makeSummaryMessage: (summary: string) => AgentMessage,
   signal?: AbortSignal,
+  force = false,
 ): Promise<MaybeCompactResult> {
   return maybeCompactLoaded(
     sessionId,
@@ -372,9 +404,10 @@ export async function maybeCompact(
     model,
     makeSummaryMessage,
     {
-      rewriteWithCompaction: (entry, keptTail) => sessions.rewriteSessionWithCompaction(sessionId, entry, keptTail),
+      appendCompaction: (entry) => sessions.appendSessionCompaction(sessionId, entry),
       reload: () => sessions.load(sessionId),
     },
     signal,
+    force,
   );
 }

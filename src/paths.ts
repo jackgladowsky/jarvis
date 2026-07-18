@@ -111,8 +111,10 @@ export const paths = {
   // Secret-drop metadata only; never stores submission values or capabilities.
   secretDropAudit: join(DATA_BASE, "data", "secret-drop", "audit.log"),
 
-  // Append-only audit log of every tool call. See DESIGN.md §13.
+  // Append-only audit logs. `audit` is the backwards-compatible tool log;
+  // lifecycleAudit is the correlated run/session/action event trace.
   audit: join(DATA_BASE, "data", "audit.log"),
+  lifecycleAudit: join(DATA_BASE, "data", "lifecycle-audit.jsonl"),
 
   // Regenerable cache — safe to delete.
   cache: join(DATA_BASE, "cache"),

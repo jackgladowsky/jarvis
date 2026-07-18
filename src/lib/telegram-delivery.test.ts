@@ -5,7 +5,9 @@ import {
   readResponseBodyLimited,
   TelegramHttpError,
   telegramRetryAfterMs,
+  withTelegramChunkLifecycle,
   withTelegramRetry,
+  type TelegramChunkLifecycleRecord,
 } from "./telegram-delivery.js";
 
 test("Telegram retry classification distinguishes transient from malformed requests", () => {
@@ -18,22 +20,65 @@ test("Telegram retry classification distinguishes transient from malformed reque
 
 test("withTelegramRetry repeats transient calls and preserves permanent failures", async () => {
   let attempts = 0;
+  const retries: Array<{ attempt: number; delayMs: number }> = [];
   const result = await withTelegramRetry(
     async () => {
       attempts += 1;
       if (attempts < 2) throw new TelegramHttpError(503, "unavailable");
       return "ok";
     },
-    { attempts: 2 },
+    { attempts: 2, onRetry: ({ attempt, delayMs }) => void retries.push({ attempt, delayMs }) },
   );
   assert.equal(result, "ok");
   assert.equal(attempts, 2);
+  assert.deepEqual(retries, [{ attempt: 1, delayMs: 500 }]);
 
   await assert.rejects(
     withTelegramRetry(async () => {
       throw new TelegramHttpError(400, "bad request");
     }),
     /bad request/,
+  );
+});
+
+test("Telegram chunk lifecycle pairs start and terminal outcomes under stable IDs", async () => {
+  const okEvents: TelegramChunkLifecycleRecord[] = [];
+  const result = await withTelegramChunkLifecycle(async () => "sent", {
+    index: 1,
+    total: 3,
+    chunkId: "chunk-ok",
+    onEvent: (event) => void okEvents.push(event),
+  });
+  assert.equal(result, "sent");
+  assert.deepEqual(
+    okEvents.map(({ chunkId, index, total, outcome }) => ({ chunkId, index, total, outcome })),
+    [
+      { chunkId: "chunk-ok", index: 1, total: 3, outcome: "start" },
+      { chunkId: "chunk-ok", index: 1, total: 3, outcome: "ok" },
+    ],
+  );
+
+  const errorEvents: TelegramChunkLifecycleRecord[] = [];
+  await assert.rejects(
+    withTelegramChunkLifecycle(
+      async () => {
+        throw new Error("delivery failed");
+      },
+      {
+        index: 2,
+        total: 3,
+        chunkId: "chunk-error",
+        onEvent: (event) => void errorEvents.push(event),
+      },
+    ),
+    /delivery failed/,
+  );
+  assert.deepEqual(
+    errorEvents.map(({ chunkId, index, outcome }) => ({ chunkId, index, outcome })),
+    [
+      { chunkId: "chunk-error", index: 2, outcome: "start" },
+      { chunkId: "chunk-error", index: 2, outcome: "error" },
+    ],
   );
 });
 

@@ -104,3 +104,26 @@ test("shouldCompact respects disabled/invalid windows and configured reserve", a
   assert.equal(shouldCompact(900, 1000), false);
   assert.equal(shouldCompact(1000, 0), false);
 });
+
+test("forced compaction reports cut=0 once instead of rewriting or looping", async () => {
+  const { maybeCompactLoaded } = await loadCompactionModule();
+  let writes = 0;
+  const only = user("short");
+  const result = await maybeCompactLoaded(
+    "cut-zero",
+    { tail: [only], tailSourceIndexes: [0], sourceMessageCount: 1 },
+    { provider: "test", id: "tiny", api: "test", contextWindow: 100, maxTokens: 20 } as never,
+    (summary) => user(summary),
+    {
+      appendCompaction: async () => {
+        writes += 1;
+      },
+      reload: async () => ({ tail: [only], tailSourceIndexes: [0], sourceMessageCount: 1 }),
+    },
+    undefined,
+    true,
+  );
+  assert.equal(result.didCompact, false);
+  assert.equal(result.blockedReason, "cut_zero");
+  assert.equal(writes, 0);
+});

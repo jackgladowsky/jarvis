@@ -169,7 +169,7 @@ Notes are markdown files in `~/.jarvis/data/notes/`. JARVIS reads them with `rea
 
 - The trusted Linux host is the sandbox. JARVIS can do anything inside it.
 - **No confirmation flow.** JARVIS executes what it decides to execute. If it does something destructive, that's accepted risk.
-- **Audit log is the actual safeguard.** Every tool call hits `~/.jarvis/data/audit.log` with timestamp, redacted args, outcome. Append-only. See §14 for redaction/rotation.
+- **Audit trail is the actual safeguard.** Tool compatibility rows land in `~/.jarvis/data/audit.log`; correlated run/action events land in `~/.jarvis/data/lifecycle-audit.jsonl`. Both are append-only, bounded, and redacted. See §14.
 - The important local data backups are independent of JARVIS.
 
 ---
@@ -221,7 +221,7 @@ Sketch contents (see `AGENTS.md.example` for the full template):
 
 - Source: ~/jarvis/
 - Data: ~/.jarvis/
-- Audit log: ~/.jarvis/data/audit.log
+- Audit logs: ~/.jarvis/data/audit.log and ~/.jarvis/data/lifecycle-audit.jsonl
 
 ## Services running on this box
 
@@ -280,6 +280,7 @@ export const paths = {
   notesProjects: join(DATA_BASE, "data", "notes", "projects"),
   notesProjectsArchive: join(DATA_BASE, "data", "notes", "projects", "archive"),
   audit: join(DATA_BASE, "data", "audit.log"),
+  lifecycleAudit: join(DATA_BASE, "data", "lifecycle-audit.jsonl"),
   cache: join(DATA_BASE, "cache"),
 };
 ```
@@ -393,7 +394,8 @@ export const config = Object.freeze(ConfigSchema.parse(raw));
 │   ├── jobs/                           # scheduler tasks, sessions, notes, log
 │   ├── background/                     # worker task JSON, sessions, notes, mail, logs
 │   ├── deploy/                         # safe-deploy pending/completed markers
-│   └── audit.log                       # every tool call, append-only, redacted+truncated
+│   ├── audit.log                       # compatibility tool-call audit
+│   └── lifecycle-audit.jsonl           # correlated run/action trace, secret-safe and bounded
 └── cache/                              # safe to delete, regenerable
 ```
 
@@ -422,18 +424,19 @@ The mutex prevents concurrent agent loops on the same chat, which would otherwis
 
 A `/cancel` command bypasses the per-chat queue and aborts the currently-running agent loop for that chat.
 
-### Compaction (within a session)
+### Context planning and compaction (within a session)
 
-Mirror `pi-coding-agent`'s algorithm directly — same shape, same defaults. Canonical reference: [pi-mono compaction docs](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md). Summarized:
+Every provider attempt uses one preflight planner against the **exact selected model**. The request envelope includes the assembled system prompt and transport overlay, serialized tool schemas, effective history (including opaque reasoning/tool signatures), current user text, provider-aware image estimates, framing overhead, a useful output reserve, and tool-loop headroom. The planned output reserve is also enforced as the provider `maxTokens` cap, including reasoning. Chat, scheduled, background, and fallback attempts each get one productive exact-envelope compaction opportunity; a fixed envelope that cannot fit fails clearly instead of sending a doomed request, and a `cut=0` result is terminal no-progress rather than a loop.
 
-- **Trigger:** `context_tokens > context_window - reserve_tokens`. One threshold, no soft/hard split.
-- **Algorithm:** walk backward from the newest message accumulating tokens until `keep_recent_tokens` is reached → that's the cut. LLM-summarize everything from the previous compaction boundary (or session start) up to the cut, using a structured prompt (Goal / Constraints / Progress / Decisions / Next / Critical Context). Reload context as `[system prompt] + [summary] + [messages from firstKeptEntryId onward]`.
-- **Iterative:** subsequent compactions pass the previous summary in as context, so history isn't lost across multiple passes.
-- **Persisted in the JSONL.** The summary is written as a `compaction` entry — `{type, id, timestamp, summary, firstKeptEntryId, tokensBefore}` — sitting inline with regular messages. The JSONL stays self-contained: no sidecar files. Crash recovery (open question #7) replays the JSONL and the compaction entries do their job naturally.
-- **Manual override:** not exposed as a Telegram command; compaction is automatic.
-- **Sticky:** only the system prompt. Everything else (including notes JARVIS read this session) is compactable — it can re-read.
+When history can be reduced, the cut/summarization algorithm follows `pi-coding-agent`: walk backward until `keep_recent_tokens`, move to a clean user-turn boundary, and merge the older prefix into the prior structured summary. The important persistence difference is:
 
-Defaults live in `config.yaml.compaction`: `enabled: true`, `reserve_tokens: 16384`, `keep_recent_tokens: 20000`. Match pi's defaults; tune based on actual usage.
+- **Canonical transcript is append-only.** Agent messages are never deleted by current compaction code.
+- **Compacted context is a derived checkpoint.** A v2 compaction row stores a checkpoint ID, summary, token statistics, and canonical message ordinals (`keepFromMessage`, `sourceThroughMessage`). Loading materializes `[summary] + referenced kept messages + later messages` while raw source rows remain intact.
+- **Crash behavior is monotonic.** A crash before checkpoint append leaves the old view; a crash after it leaves a complete new view. There is no replace window.
+- **Backward compatibility.** Bare historical messages and legacy compaction rows remain readable with their original forward-reset semantics. History already deleted by an old destructive rewrite cannot be recreated.
+- **Runtime backstop.** Every tool result passes through a context-aware `afterToolCall` cap before the next provider request. The cap reserves response/tool-loop room and returns explicit truncation metadata rather than allowing logs or repeated reads to consume the window. If even a useful truncated result cannot fit, the Agent keeps a tiny omission marker and performs exactly one tool-free provider continuation so the user still gets a final answer.
+
+Defaults remain in `config.yaml.compaction`: `enabled`, `reserve_tokens`, and `keep_recent_tokens`. Compaction is automatic and has no Telegram command.
 
 ### Session-end TOC update (between sessions)
 
@@ -568,15 +571,15 @@ Same for `AGENTS.md.example` and `prompts/system.md.example` — drift expected,
 - `ExecStart=<absolute node path> <repo>/dist/index.js`.
 - Logs go to journald — `journalctl -fu jarvis` to follow.
 
-### Audit log hygiene
+### Audit and lifecycle trace hygiene
 
-The audit log is the one safeguard now that confirmation is gone. It must be useful:
+`data/audit.log` remains the compatibility tool log. `data/lifecycle-audit.jsonl` is the reconstructable, append-only event trace. Events correlate UUID/event IDs with run, session, turn, attempt, chat/task, and tool-call identity and cover receipt/recovery, model selection and attempts, retry/fallback, context/compaction, tool start/end/error, persistence, Telegram delivery/retry/chunks, cancellation, and failure.
 
-- **Truncation:** any logged value (tool input, tool output) larger than `logging.audit_log_max_value_bytes` (default 2KB) is truncated to `<first 1KB>...[truncated N bytes]...<last 1KB>`.
-- **Redaction:** when `logging.audit_log_redact_patterns` is true (default), values are scanned for common secret shapes — `sk-...`, `ghp_...`, JWT-shaped strings, `[A-Z_]+=[A-Za-z0-9+/=]{20,}` — and matches are replaced with `[REDACTED]`.
-- **`read`/`write` content:** logged as path + byte count, not contents. (If you need to see what was read or written, the file itself is on disk.)
-- **Rotation:** logrotate config installed by `install-systemd.sh`. Daily rotation, keep 30 days, gzip.
-- **What's logged:** timestamp, tool name, redacted/truncated args, exit status / outcome summary, duration.
+- **Secret-safe descriptors:** prompts, arbitrary tool/MCP payloads, delivery bodies, and results are represented by size/hash/key metadata rather than copied. Sensitive keys, URL credentials, bearer/JWT/key patterns, and nested values are redacted recursively.
+- **Hard bounds:** individual values follow `logging.audit_log_max_value_bytes`; lifecycle records have an additional total cap. Oversized data is replaced by an omitted descriptor with original size and a hash of its sanitized representation.
+- **Resource identity:** file paths, tool/provider/model names, sizes, continuation cursors, outcomes, and durations remain available where safe. Read cursors bind byte/line position to device, inode, size, and mtime and reject stale continuation after a file changes. `read`/`write` bodies are never copied into audit.
+- **Failure isolation:** audit writes are serialized and durable. An audit disk failure is surfaced loudly with a degraded counter but does not turn a completed side effect into a retryable tool failure.
+- **Rotation:** the installed logrotate policy covers host audit logs daily, retaining 30 compressed days.
 
 ### Backups
 
@@ -635,7 +638,8 @@ Codex OAuth was validated for server use: credentials can live under `~/.jarvis/
 - **2026-05-06** — Audit log gets redaction + truncation + daily rotation. With confirmation gone, the log is the actual safeguard.
 - **2026-05-06** — Telegram initially defaulted to `parse_mode: none`; current default is `HTML` with a small markdown-to-HTML formatter. MarkdownV2 escaping remains a footgun.
 - **2026-05-06** — Per-chat mutex on incoming messages. Concurrent agent loops on the same chat would corrupt the session JSONL.
-- **2026-05-06** — **Compaction follows `pi-coding-agent` directly.** One threshold (`reserve_tokens`), one LLM call, summary persisted as a `compaction` entry inline in the session JSONL. No tiered/soft/hard scheme. Crash recovery falls out for free.
+- **2026-05-06** — **Compaction follows `pi-coding-agent` directly.** One threshold (`reserve_tokens`), one LLM call, summary persisted as a `compaction` entry inline in the session JSONL. Superseded in persistence details on 2026-07-17.
+- **2026-07-17** — **Canonical transcripts are append-only.** Compaction rows are derived v2 checkpoints with source-message references; preflight budgets the complete exact-model request, and every tool result has a dynamic context backstop. Correlated lifecycle audit is separate from the compatibility tool log.
 - **2026-05-06** — **Session-end summarizer scope reduced to `recent.md` only.** Multi-file routing dropped. JARVIS writes other notes (decisions, project status, durable facts, todos) inline during conversation via its tools, governed by write triggers in the system prompt. Eliminates schema/validation/dry-run/idempotence/dedup problems wholesale.
 - **2026-05-06** — **`pi-mono` is the reference for agent logic.** Where in doubt, look at how `pi-coding-agent` / `pi-agent-core` does it before designing custom machinery.
 
