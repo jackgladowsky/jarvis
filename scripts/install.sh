@@ -279,9 +279,9 @@ clone_or_update_repo() {
 }
 
 bootstrap_repo() {
-  require_cmd node "Install Node.js 22.5+ first: https://nodejs.org/"
-  if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && b>=5) ? 0 : 1)'; then
-    fail "Node.js 22.5+ is required; found $(node --version)."
+  require_cmd node "Install Node.js 22.13+ first: https://nodejs.org/"
+  if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && b>=13) ? 0 : 1)'; then
+    fail "Node.js 22.13+ is required; found $(node --version)."
   fi
   if ! command -v pnpm >/dev/null 2>&1 || [[ "$(pnpm --version)" != "10.26.2" ]]; then
     require_cmd corepack "Install pnpm 10.26.2 first: corepack enable && corepack prepare pnpm@10.26.2 --activate"

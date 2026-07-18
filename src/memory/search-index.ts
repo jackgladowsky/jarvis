@@ -312,17 +312,14 @@ function sessionDocuments(
   return documents;
 }
 
-function initializeDatabase(database: DatabaseSync): void {
-  database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
-  const version = Number((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-  if (version !== 0 && version !== INDEX_VERSION) throw new Error(`unsupported memory index version ${version}`);
+function createDatabaseSchema(database: DatabaseSync): void {
   database.exec(`
-    CREATE TABLE IF NOT EXISTS files (
+    CREATE TABLE files (
       key TEXT PRIMARY KEY,
       fingerprint TEXT NOT NULL,
       chat_id INTEGER
     ) STRICT;
-    CREATE TABLE IF NOT EXISTS documents (
+    CREATE TABLE documents (
       id TEXT PRIMARY KEY,
       file_key TEXT NOT NULL REFERENCES files(key) ON DELETE CASCADE,
       kind TEXT NOT NULL CHECK (kind IN ('note', 'session')),
@@ -337,26 +334,95 @@ function initializeDatabase(database: DatabaseSync): void {
       source_uri TEXT NOT NULL,
       speaker TEXT CHECK (speaker IN ('user', 'assistant'))
     ) STRICT;
-    CREATE INDEX IF NOT EXISTS documents_file_key ON documents(file_key);
-    CREATE INDEX IF NOT EXISTS documents_chat_id ON documents(chat_id);
-    CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+    CREATE INDEX documents_file_key ON documents(file_key);
+    CREATE INDEX documents_chat_id ON documents(chat_id);
+    CREATE VIRTUAL TABLE documents_fts USING fts5(
       text,
       content='documents',
       content_rowid='rowid',
       tokenize='porter unicode61'
     );
-    CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+    CREATE TRIGGER documents_ai AFTER INSERT ON documents BEGIN
       INSERT INTO documents_fts(rowid, text) VALUES (new.rowid, new.text);
     END;
-    CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+    CREATE TRIGGER documents_ad AFTER DELETE ON documents BEGIN
       INSERT INTO documents_fts(documents_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
     END;
-    CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+    CREATE TRIGGER documents_au AFTER UPDATE ON documents BEGIN
       INSERT INTO documents_fts(documents_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
       INSERT INTO documents_fts(rowid, text) VALUES (new.rowid, new.text);
     END;
     PRAGMA user_version = ${INDEX_VERSION};
   `);
+}
+
+function validateDatabaseSchema(database: DatabaseSync): void {
+  const required = new Map([
+    ["files", "table"],
+    ["documents", "table"],
+    ["documents_file_key", "index"],
+    ["documents_chat_id", "index"],
+    ["documents_fts", "table"],
+    ["documents_ai", "trigger"],
+    ["documents_ad", "trigger"],
+    ["documents_au", "trigger"],
+  ]);
+  const names = [...required.keys()];
+  const placeholders = names.map(() => "?").join(", ");
+  const rows = database
+    .prepare(`SELECT name, type, sql FROM sqlite_schema WHERE name IN (${placeholders})`)
+    .all(...names) as Array<{ name: string; type: string; sql: string | null }>;
+  if (rows.length !== required.size || rows.some((row) => required.get(row.name) !== row.type)) {
+    throw new Error("memory index schema invalid");
+  }
+  const definitions = new Map(rows.map((row) => [row.name, (row.sql ?? "").replace(/\s+/g, " ").toLocaleLowerCase()]));
+  const hasDefinition = (name: string, fragments: string[]): boolean => {
+    const sql = definitions.get(name) ?? "";
+    return fragments.every((fragment) => sql.includes(fragment));
+  };
+  if (
+    !hasDefinition("documents_file_key", ["on documents(file_key)"]) ||
+    !hasDefinition("documents_chat_id", ["on documents(chat_id)"]) ||
+    !hasDefinition("documents_fts", [
+      "using fts5",
+      "content='documents'",
+      "content_rowid='rowid'",
+      "tokenize='porter unicode61'",
+    ]) ||
+    !hasDefinition("documents_ai", ["after insert on documents", "values (new.rowid, new.text)"]) ||
+    !hasDefinition("documents_ad", ["after delete on documents", "values ('delete', old.rowid, old.text)"]) ||
+    !hasDefinition("documents_au", [
+      "after update on documents",
+      "values ('delete', old.rowid, old.text)",
+      "values (new.rowid, new.text)",
+    ])
+  ) {
+    throw new Error("memory index schema invalid");
+  }
+  // Preparing these statements validates every column relied on by reconcile/search.
+  database.prepare("SELECT key, fingerprint, chat_id FROM files LIMIT 0");
+  database.prepare(`
+    SELECT id, file_key, kind, citation, date, timestamp, text, chat_id,
+           source_key, source_id, source_line, source_uri, speaker
+    FROM documents LIMIT 0
+  `);
+  database.prepare("SELECT rowid, text FROM documents_fts LIMIT 0");
+  // rank=1 asks FTS5 to compare an external-content index against documents.
+  // This catches a dropped/recreated-but-empty FTS table despite unchanged file fingerprints.
+  database.exec("INSERT INTO documents_fts(documents_fts, rank) VALUES ('integrity-check', 1)");
+}
+
+function initializeDatabase(database: DatabaseSync): void {
+  database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+  const version = Number((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+  if (version === 0) {
+    const row = database
+      .prepare("SELECT COUNT(*) AS count FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")
+      .get() as { count: number };
+    if (Number(row.count) !== 0) throw new Error("memory index schema invalid");
+    createDatabaseSchema(database);
+  } else if (version !== INDEX_VERSION) throw new Error(`unsupported memory index version ${version}`);
+  validateDatabaseSchema(database);
 }
 
 async function removeDatabaseFiles(file: string): Promise<void> {
@@ -365,28 +431,35 @@ async function removeDatabaseFiles(file: string): Promise<void> {
 
 function recoverableIndexError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /not a database|malformed|corrupt|unsupported memory index version|integrity check failed/i.test(message);
+  return /not a database|malformed|corrupt|unsupported memory index version|integrity check failed|memory index schema invalid|no such (?:column|table)/i.test(
+    message,
+  );
 }
 
-async function openDatabaseWithRecovery(file: string): Promise<DatabaseSync> {
-  let database: DatabaseSync | undefined;
+function openValidatedDatabase(file: string): DatabaseSync {
+  const database = new DatabaseSync(file);
   try {
-    database = new DatabaseSync(file);
     initializeDatabase(database);
     const check = database.prepare("PRAGMA quick_check").get() as { quick_check: string };
     if (check.quick_check !== "ok") throw new Error("memory index integrity check failed");
     return database;
   } catch (error) {
-    database?.close();
+    database.close();
+    throw error;
+  }
+}
+
+async function openDatabaseWithRecovery(file: string): Promise<DatabaseSync> {
+  try {
+    return openValidatedDatabase(file);
+  } catch (error) {
     // Do not mistake permissions, a transient lock, or missing FTS5 support
     // for corruption. Those operational errors must remain visible.
     if (!recoverableIndexError(error)) throw error;
     // This index is a regenerable cache. A malformed file or incompatible
     // schema is removed together with SQLite sidecars and rebuilt locally.
     await removeDatabaseFiles(file);
-    const rebuilt = new DatabaseSync(file);
-    initializeDatabase(rebuilt);
-    return rebuilt;
+    return openValidatedDatabase(file);
   }
 }
 
@@ -533,7 +606,9 @@ export async function searchMemory(query: string, options: MemorySearchOptions =
   }
   const indexPaths = options.paths ?? defaultPaths();
   await reconcileMemoryIndex(indexPaths);
-  const database = await openDatabaseWithRecovery(indexPaths.index);
+  // Reconciliation performs any destructive cache recovery while holding the
+  // cross-process file lock. This second connection only validates/reads.
+  const database = openValidatedDatabase(indexPaths.index);
   try {
     const maxResults = Math.max(1, Math.min(MAX_RESULTS, options.maxResults ?? 6));
     const scoped = options.scope === "current_chat";

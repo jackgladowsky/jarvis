@@ -98,6 +98,50 @@ test("memory search incrementally refreshes changes, deletes stale entries, and 
   assert.equal(stale.count, 0);
 });
 
+test("memory search rebuilds valid SQLite files with an incompatible schema", async () => {
+  const { paths } = await fixture();
+  await writeFile(join(paths.notes, "recovery.md"), "structural recovery canary");
+  await mkdir(join(paths.index, ".."), { recursive: true });
+  const malformed = new DatabaseSync(paths.index);
+  malformed.exec("CREATE TABLE files (key TEXT PRIMARY KEY)");
+  malformed.close();
+
+  const results = await searchMemory("structural canary", { paths });
+  assert.equal(results[0]?.citation, "recovery.md#L1");
+});
+
+test("memory search rebuilds an externally inconsistent FTS index", async () => {
+  const { paths } = await fixture();
+  await writeFile(join(paths.notes, "fts.md"), "external content recovery canary");
+  assert.equal((await searchMemory("canary", { paths })).length, 1);
+
+  const inconsistent = new DatabaseSync(paths.index);
+  inconsistent.exec(`
+    DROP TABLE documents_fts;
+    CREATE VIRTUAL TABLE documents_fts USING fts5(
+      text,
+      content='documents',
+      content_rowid='rowid',
+      tokenize='porter unicode61'
+    );
+  `);
+  inconsistent.close();
+
+  const results = await searchMemory("external canary", { paths });
+  assert.equal(results[0]?.citation, "fts.md#L1");
+
+  const staleTrigger = new DatabaseSync(paths.index);
+  staleTrigger.exec(`
+    DROP TRIGGER documents_ai;
+    CREATE TRIGGER documents_ai AFTER INSERT ON documents BEGIN
+      SELECT 1;
+    END;
+  `);
+  staleTrigger.close();
+  await writeFile(join(paths.notes, "fts.md"), "trigger consistency recovery beacon");
+  assert.equal((await searchMemory("recovery beacon", { paths }))[0]?.citation, "fts.md#L1");
+});
+
 test("memory search skips secret-named paths and oversized notes and rebuilds a malformed cache", async () => {
   const { paths } = await fixture();
   await writeFile(join(paths.notes, "secrets.md"), "forbidden canary value");

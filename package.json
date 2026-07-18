@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Self-hosted Telegram AI assistant with host-local state, scheduler, and background workers.",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
   },
   "packageManager": "pnpm@10.26.2",
   "scripts": {

@@ -7,8 +7,8 @@ umask 077
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_BASE="${JARVIS_DATA_DIR:-$HOME/.jarvis}"
 
-if ! command -v node >/dev/null 2>&1 || ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && b>=5) ? 0 : 1)'; then
-  echo "Node 22.5+ is required." >&2
+if ! command -v node >/dev/null 2>&1 || ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && b>=13) ? 0 : 1)'; then
+  echo "Node 22.13+ is required." >&2
   exit 1
 fi
 if [[ "$(node -p "require(process.argv[1]).packageManager || ''" "$REPO_ROOT/package.json")" != "pnpm@10.26.2" ]]; then

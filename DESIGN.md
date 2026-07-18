@@ -79,7 +79,7 @@ The deciding factor: the owner accepts the risk of running an agent on a non-cri
 
 ## 3. Stack
 
-- **Language:** TypeScript (Node 22.5+; built-in SQLite FTS5 is used for local memory retrieval).
+- **Language:** TypeScript (Node 22.13+; built-in SQLite FTS5 is used for local memory retrieval).
 - **Agent framework:** `@mariozechner/pi-agent-core` for the loop. Mirror tool implementations and core agent logic (compaction, etc.) from `@mariozechner/pi-coding-agent` but don't extend it directly — its CLI/TUI/per-cwd-session model fights the Telegram use case. **Default rule:** when designing agent logic, look at how pi does it before inventing custom machinery.
 - **LLM provider:** Codex via OAuth (Codex OAuth-capable account), through `pi-ai`'s OAuth flow. Anthropic API key as a fallback.
 - **Transport:** Telegram Bot API. Library: `grammy`.

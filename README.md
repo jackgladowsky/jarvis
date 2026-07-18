@@ -9,7 +9,7 @@ If you want a private assistant you can run on your own box, start here. If you 
 Prereqs on the target Linux host:
 
 - `bash`, `git`, and `python3`
-- Node.js 22.5+ (required for the built-in SQLite FTS5 memory index); pnpm is installed through Corepack if needed
+- Node.js 22.13+ (required for the built-in SQLite FTS5 memory index); pnpm is installed through Corepack if needed
 - Telegram bot token from [@BotFather](https://t.me/BotFather)
 - Your numeric Telegram user ID for the allowlist
 - Exa API key for web search
