@@ -17,8 +17,14 @@ function escapeHtml(text: string): string {
 function formatInline(text: string): string {
   let s = escapeHtml(text);
 
-  // [label](https://example.com) → <a href="...">label</a>
-  s = s.replace(/\[([^\]\n]+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+  // Telegram only permits HTTP(S) and tg:// links. Keep host-local memory
+  // citations named, but render them as a safe local-source label instead of
+  // sending an unsupported (and ugly) memory:// URL to the Bot API.
+  s = s.replace(/\[([^\]\n]+?)\]\(memory:\/\/(?:note|session)\/[A-Za-z0-9%._~/-]+#L\d+\)/g, "$1 <i>(local source)</i>");
+
+  // [label](https://example.com) → <a href="...">label</a>. Quotes and angle
+  // brackets are excluded so generated href attributes cannot be escaped.
+  s = s.replace(/\[([^\]\n]+?)\]\((https?:\/\/[^\s)"<>]+)\)/g, '<a href="$2">$1</a>');
 
   // **bold** — non-greedy, single line.
   s = s.replace(/\*\*([^\n*]+?)\*\*/g, "<b>$1</b>");

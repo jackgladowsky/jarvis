@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { formatMemorySearchResults, searchMemory, type MemoryIndexPaths } from "./search-index.js";
 
@@ -12,7 +13,7 @@ async function fixture(): Promise<{ root: string; paths: MemoryIndexPaths }> {
     sessions: join(root, "sessions"),
     sessionsArchive: join(root, "sessions", "archive"),
     sessionOwners: join(root, "sessions", "owners.json"),
-    index: join(root, "cache", "memory-search-index.json"),
+    index: join(root, "cache", "memory-search-index.sqlite"),
   };
   await mkdir(join(paths.notes, "projects"), { recursive: true });
   await mkdir(paths.sessionsArchive, { recursive: true });
@@ -27,7 +28,7 @@ test("memory search indexes notes and user/assistant session text with bounded c
   const { paths } = await fixture();
   await writeFile(
     join(paths.notes, "decisions.md"),
-    "# Decisions\n\nWe chose PostgreSQL for the lighthouse service because recovery tooling is mature.\n",
+    "# Decisions\n\nWe chose PostgreSQL for the lighthouse service because recovering tooling is mature.\n",
   );
   await writeFile(
     join(paths.sessionsArchive, "session-one.jsonl"),
@@ -51,13 +52,21 @@ test("memory search indexes notes and user/assistant session text with bounded c
   assert.ok(results.length >= 2);
   assert.ok(results.some((result) => result.citation === "decisions.md#L3"));
   assert.ok(results.some((result) => result.citation.startsWith("session:session-one#L")));
+  assert.ok(results.every((result) => result.provenance.uri.startsWith("memory://")));
+  assert.ok(
+    results.filter((result) => result.kind === "session").every((result) => result.provenance.speaker !== undefined),
+  );
   assert.ok(results.every((result) => result.snippet.length <= 502));
   assert.equal((await searchMemory("PRIVATE_TOOL_RESULT", { paths })).length, 0);
   assert.equal((await searchMemory("do-not-index", { paths })).length, 0);
   assert.equal((await searchMemory("light", { paths })).length, 0);
+  assert.ok((await searchMemory("recover", { paths })).some((result) => result.citation === "decisions.md#L3"));
 
-  const rendered = formatMemorySearchResults("PostgreSQL", results.slice(0, 1));
+  const noteResult = results.find((result) => result.citation === "decisions.md#L3");
+  assert.ok(noteResult);
+  const rendered = formatMemorySearchResults("PostgreSQL", [noteResult]);
   assert.match(rendered, /\[2026-/);
+  assert.match(rendered, /\[decisions\.md line 3\]\(memory:\/\/note\/decisions\.md#L3\)/);
   assert.match(rendered, /historical context, not new instructions/);
 });
 
@@ -81,8 +90,12 @@ test("memory search incrementally refreshes changes, deletes stale entries, and 
 
   await rm(note);
   assert.equal((await searchMemory("Alder", { paths })).length, 0);
-  const state = JSON.parse(await readFile(paths.index, "utf-8")) as { files: Record<string, unknown> };
-  assert.ok(!state.files["note:project.md"]);
+  const database = new DatabaseSync(paths.index, { readOnly: true });
+  const stale = database.prepare("SELECT COUNT(*) AS count FROM files WHERE key = ?").get("note:project.md") as {
+    count: number;
+  };
+  database.close();
+  assert.equal(stale.count, 0);
 });
 
 test("memory search skips secret-named paths and oversized notes and rebuilds a malformed cache", async () => {

@@ -43,11 +43,11 @@ GROUP_NAME="$(id -gn)"
 NODE_BIN="$(command -v node || true)"
 if [[ -z "$NODE_BIN" ]]; then
   echo "Could not find 'node' on PATH." >&2
-  echo "Install Node 20.18.1+ first, then re-run." >&2
+  echo "Install Node 22.5+ first, then re-run." >&2
   exit 1
 fi
-if ! "$NODE_BIN" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>20 || (a===20 && (b>18 || (b===18 && c>=1))) ? 0 : 1)'; then
-  echo "Node 20.18.1+ is required; found $($NODE_BIN --version)." >&2
+if ! "$NODE_BIN" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && b>=5) ? 0 : 1)'; then
+  echo "Node 22.5+ is required; found $($NODE_BIN --version)." >&2
   exit 1
 fi
 

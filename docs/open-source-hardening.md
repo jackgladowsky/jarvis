@@ -6,7 +6,7 @@ This PR-sized slice makes the repo installable and reviewable as an MIT project,
 
 - Added MIT `LICENSE` and package license metadata.
 - Added lint, format, coverage, and aggregate check scripts.
-- Expanded CI to run format, lint, typecheck, and coverage on Node 20 and 22.
+- Expanded CI to run format, lint, typecheck, and coverage on supported Node 22 and 24 releases.
 - Generalized first-run templates and public README onboarding.
 - Added `scripts/install.sh`, an interactive curl-friendly installer.
 - Generalized hard-coded default background-worker repo path to `$HOME/jarvis`.

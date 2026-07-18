@@ -9,7 +9,7 @@ If you want a private assistant you can run on your own box, start here. If you 
 Prereqs on the target Linux host:
 
 - `bash`, `git`, and `python3`
-- Node.js 20.18.1+; pnpm is installed through Corepack if needed
+- Node.js 22.5+ (required for the built-in SQLite FTS5 memory index); pnpm is installed through Corepack if needed
 - Telegram bot token from [@BotFather](https://t.me/BotFather)
 - Your numeric Telegram user ID for the allowlist
 - Exa API key for web search
@@ -236,7 +236,7 @@ The test command creates an isolated temporary JARVIS data directory and placeho
 
 Main JARVIS publishes changes through pull requests only: after review it may push a feature branch and open the PR, then starts a durable read-only CI watch using the PR number and exact pushed head SHA. The watcher survives restarts, reconciles new heads, and sends one internal result event; it cannot push, merge, or deploy. Main JARVIS may fix a failing version gate and enable auto-merge once required checks are green. After the PR is merged and local `main` matches `origin/main`, `pnpm deploy:self` verifies or reuses that exact-SHA artifact and atomically activates it; it never pushes `main`. Background workers cannot invoke this publishing or deploy path.
 
-CI runs on pushes to `main` and pull requests targeting `main` using Node 20 and 22. Every merged/deployed change must increment `package.json`: every pull request targeting `main` must set it to a valid SemVer version strictly greater than the PR's base `main` version. The required `Version gate` CI check reports both versions when it fails. Use the release workflow (`pnpm run release`) to prepare the version and changelog together.
+CI runs on pushes to `main` and pull requests targeting `main` using Node 22 and 24. Every merged/deployed change must increment `package.json`: every pull request targeting `main` must set it to a valid SemVer version strictly greater than the PR's base `main` version. The required `Version gate` CI check reports both versions when it fails. Use the release workflow (`pnpm run release`) to prepare the version and changelog together.
 
 Versioning follows semver: patch for fixes, minor for additive features, major for breaking data/config changes.
 

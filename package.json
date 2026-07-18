@@ -1,11 +1,11 @@
 {
   "name": "jarvis",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "private": false,
   "type": "module",
   "description": "Self-hosted Telegram AI assistant with host-local state, scheduler, and background workers.",
   "engines": {
-    "node": ">=20.18.1"
+    "node": ">=22.5.0"
   },
   "packageManager": "pnpm@10.26.2",
   "scripts": {
