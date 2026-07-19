@@ -34,7 +34,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "grammy": "^1.42.0",
     "node-cron": "^4.2.1",
-    "pdfjs-dist": "^5.7.284",
+    "pdfjs-dist": "^6.1.200",
     "playwright": "^1.61.1",
     "typebox": "^1.1.38",
     "undici": "7.28.0",
