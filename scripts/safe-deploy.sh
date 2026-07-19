@@ -54,9 +54,9 @@ if ! command -v node >/dev/null 2>&1 && compgen -G "$HOME/.nvm/versions/node/*/b
     [[ -d "$node_bin_dir" ]] && PATH="$node_bin_dir:$PATH"
   done
 fi
-command -v node >/dev/null 2>&1 || fail "Node 20.18.1+ is required and node is not on PATH."
-node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>20 || (a===20 && (b>18 || (b===18 && c>=1))) ? 0 : 1)' \
-  || fail "Node 20.18.1+ is required; found $(node --version)."
+command -v node >/dev/null 2>&1 || fail "Node 22.13+ is required and node is not on PATH."
+node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && b>=13) ? 0 : 1)' \
+  || fail "Node 22.13+ is required; found $(node --version)."
 [[ "$(node -p "require('./package.json').packageManager || ''")" == "pnpm@10.26.2" ]] \
   || fail "package.json must declare packageManager pnpm@10.26.2."
 if ! command -v pnpm >/dev/null 2>&1 || [[ "$(pnpm --version)" != "10.26.2" ]]; then

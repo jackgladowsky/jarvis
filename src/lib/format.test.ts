@@ -10,6 +10,22 @@ test("markdownToTelegramHtml escapes unsafe HTML and formats common markdown", (
   assert.match(html, /<a href="https:\/\/example.com">site<\/a>/);
 });
 
+test("markdownToTelegramHtml renders memory citations as named safe Telegram fallbacks", () => {
+  const html = markdownToTelegramHtml(
+    "[decisions.md line 3](memory://note/decisions.md#L3) and [session abc line 9](memory://session/abc#L9)",
+  );
+
+  assert.equal(html, "decisions.md line 3 <i>(local source)</i> and session abc line 9 <i>(local source)</i>");
+  assert.doesNotMatch(html, /memory:\/\//);
+  assert.doesNotMatch(html, /href=/);
+});
+
+test("markdownToTelegramHtml does not turn unsafe link attributes into Telegram HTML", () => {
+  const html = markdownToTelegramHtml('[click](https://example.com/" onmouseover="x)');
+  assert.doesNotMatch(html, /<a href=/);
+  assert.match(html, /&quot;|"/);
+});
+
 test("markdownToTelegramHtml preserves fenced code without inline formatting", () => {
   const html = markdownToTelegramHtml("```ts\nconst x = '<tag>';\n```\n**done**");
 

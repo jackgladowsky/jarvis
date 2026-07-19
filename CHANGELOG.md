@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.0
+
+- Replace the JSON lexical memory cache with a bounded local SQLite FTS5 index, add labeled retrieval metrics, and render named memory citations safely in Telegram.
+
 ## 0.9.1
 
 - Bound nightly memory-review inspection and reset scheduled sessions after context-window failures.
@@ -45,8 +49,6 @@
 ## 0.6.3
 
 - Surface durable background task lifecycle notifications and reviewer failures
-
-## Unreleased
 
 ## 0.6.2
 
