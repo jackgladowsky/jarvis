@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0
+
+- Add safe per-task scheduler model routing and isolate scheduler tests from live task state.
+
 ## 0.10.0
 
 - Replace the JSON lexical memory cache with a bounded local SQLite FTS5 index, add labeled retrieval metrics, and render named memory citations safely in Telegram.
