@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { mkdir } from "node:fs/promises";
-import { atomicWriteJson } from "./lib/durable-file.js";
-import { paths } from "./paths.js";
-import {
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
+
+const dataDir = await mkdtemp(join(tmpdir(), "jarvis-scheduler-service-test-"));
+const scheduledJobs = join(dataDir, "jobs");
+
+const { atomicWriteJson } = await import("./lib/durable-file.js");
+const { paths } = await import("./paths.js");
+Object.assign(paths, {
+  scheduledJobs,
+  scheduledJobTasks: join(scheduledJobs, "tasks.json"),
+});
+const {
   cancelDynamicTask,
   createDynamicTask,
   listDynamicTasks,
@@ -14,8 +24,11 @@ import {
   setSchedulerEnabledCheckForTests,
   snoozeDynamicTask,
   updateDynamicTask,
-} from "./scheduler-service.js";
+} = await import("./scheduler-service.js");
 
+after(async () => {
+  await rm(dataDir, { recursive: true, force: true });
+});
 setSchedulerEnabledCheckForTests(() => true);
 
 const now = new Date("2026-03-06T17:00:00.000Z");
