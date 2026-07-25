@@ -59,6 +59,8 @@ Recurring tasks use `schedule` with a cron expression. One-time tasks use `run_a
 
 Use the `scheduler_control` tool for normal owner requests; do not edit `tasks.json` directly. It creates, lists, updates, snoozes, and cancels dynamic tasks with file locking and immediate in-process reconciliation. Use a stable `idempotency_key` when retrying and pass the listed `revision` as `expected_revision` when changing a task.
 
+For per-task routing, pass `provider` and `model` together (`codex` is the control/config name for the `openai-codex` provider). Omitting both on update preserves the current route; setting both to `null` clears the override so the task inherits the global agent model. Never send only one route field.
+
 Accepted one-time grammar is deliberately bounded: strict ISO with `Z`/offset, `in N minutes|hours|days`, `tomorrow at HH[:MM]`, or `[next] weekday at HH[:MM]`. Accepted recurrence grammar is validated five-field cron, `daily at`, `every weekday at`, `every <weekday> at`, `hourly`, or bounded `every N minutes|hours`. Times use the task's IANA timezone (default: scheduler timezone). Ask for clarification rather than guessing rejected or daylight-saving-ambiguous times.
 
 Examples: “remind me tomorrow at 09:00 to call Sam”, “check backups every weekday at 08:30 and only notify on issues”, “snooze the Sam reminder for two hours”, and “cancel the backup check”.
