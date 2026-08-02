@@ -11,6 +11,8 @@ import type { DynamicTask, OneTimeTask, RecurringTask } from "./scheduler-logic.
 
 const NotifySchema = z.enum(["always", "on_issue", "never"]);
 const ProviderSchema = z.enum(["codex", "anthropic", "openrouter"]);
+type TaskProvider = z.infer<typeof ProviderSchema>;
+type RouteInput = { provider?: TaskProvider | null; model?: string | null };
 const MetadataSchema = {
   timezone: z.string().min(1).optional(),
   revision: z.number().int().positive().optional(),
@@ -33,6 +35,13 @@ const BaseTaskSchema = z.object({
 function validateRoute(task: { provider?: string; model?: string }, ctx: z.RefinementCtx): void {
   if ((task.provider === undefined) !== (task.model === undefined)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "provider and model must be configured together" });
+  }
+}
+function assertValidRouteInput(input: RouteInput): void {
+  const hasProvider = input.provider !== undefined;
+  const hasModel = input.model !== undefined;
+  if (hasProvider !== hasModel || (hasProvider && (input.provider === null) !== (input.model === null))) {
+    throw new Error("provider and model must be configured together");
   }
 }
 function validateTimezone(task: { timezone?: string }, ctx: z.RefinementCtx): void {
@@ -298,7 +307,7 @@ function makeId(name: string, key?: string): string {
     .slice(0, 8);
   return `${slug(name)}-${suffix}`;
 }
-export interface CreateTaskInput {
+export interface CreateTaskInput extends RouteInput {
   id?: string;
   name: string;
   prompt: string;
@@ -310,6 +319,7 @@ export interface CreateTaskInput {
 }
 export async function createDynamicTask(input: CreateTaskInput): Promise<{ task: DynamicTask; created: boolean }> {
   assertSchedulerEnabled();
+  assertValidRouteInput(input);
   const timezone = input.timezone ?? config.scheduler.timezone;
   if (Boolean(input.when) === Boolean(input.recurrence)) throw new Error("Specify exactly one of when or recurrence");
   const fingerprint = createHash("sha256")
@@ -322,6 +332,8 @@ export async function createDynamicTask(input: CreateTaskInput): Promise<{ task:
         recurrence: input.recurrence,
         timezone,
         notify: input.notify ?? "always",
+        provider: input.provider ?? undefined,
+        model: input.model ?? undefined,
       }),
     )
     .digest("hex");
@@ -343,6 +355,8 @@ export async function createDynamicTask(input: CreateTaskInput): Promise<{ task:
       name: input.name,
       prompt: input.prompt,
       notify: input.notify ?? "always",
+      provider: input.provider ?? undefined,
+      model: input.model ?? undefined,
       timezone,
       revision: 1,
       idempotency_key: input.idempotencyKey,
@@ -358,7 +372,7 @@ export async function createDynamicTask(input: CreateTaskInput): Promise<{ task:
   return result;
 }
 
-export interface UpdateTaskInput {
+export interface UpdateTaskInput extends RouteInput {
   id: string;
   expectedRevision?: number;
   mutationKey?: string;
@@ -405,14 +419,18 @@ function assertMutable(task: DynamicTask): void {
 }
 export async function updateDynamicTask(input: UpdateTaskInput): Promise<DynamicTask> {
   assertSchedulerEnabled();
+  assertValidRouteInput(input);
   return mutateTask(input.id, input.expectedRevision, input.mutationKey, (current) => {
     assertMutable(current);
     const timezone = input.timezone ?? current.timezone ?? config.scheduler.timezone;
+    const routeChanged = input.provider !== undefined;
     const common = {
       ...current,
       name: input.name ?? current.name,
       prompt: input.prompt ?? current.prompt,
       notify: input.notify ?? current.notify,
+      provider: routeChanged ? (input.provider ?? undefined) : current.provider,
+      model: routeChanged ? (input.model ?? undefined) : current.model,
       timezone,
     };
     if ("run_at" in current) {

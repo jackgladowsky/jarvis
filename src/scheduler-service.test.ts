@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { mkdir } from "node:fs/promises";
-import { atomicWriteJson } from "./lib/durable-file.js";
-import { paths } from "./paths.js";
-import {
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
+
+const dataDir = await mkdtemp(join(tmpdir(), "jarvis-scheduler-service-test-"));
+const scheduledJobs = join(dataDir, "jobs");
+
+const { atomicWriteJson } = await import("./lib/durable-file.js");
+const { paths } = await import("./paths.js");
+Object.assign(paths, {
+  scheduledJobs,
+  scheduledJobTasks: join(scheduledJobs, "tasks.json"),
+});
+const {
   cancelDynamicTask,
   createDynamicTask,
   listDynamicTasks,
@@ -14,8 +24,11 @@ import {
   setSchedulerEnabledCheckForTests,
   snoozeDynamicTask,
   updateDynamicTask,
-} from "./scheduler-service.js";
+} = await import("./scheduler-service.js");
 
+after(async () => {
+  await rm(dataDir, { recursive: true, force: true });
+});
 setSchedulerEnabledCheckForTests(() => true);
 
 const now = new Date("2026-03-06T17:00:00.000Z");
@@ -114,6 +127,75 @@ test("dynamic operations are locked, revisioned, idempotent, and reconciled", as
   assert.equal((await readDynamicTaskFile()).tasks.length, 1);
   assert.equal(reconciles, 4);
   setSchedulerReconciler(undefined);
+});
+
+test("per-task routes are paired, idempotent, preserved, replaceable, and clearable", async () => {
+  await mkdir(paths.scheduledJobs, { recursive: true });
+  await atomicWriteJson(paths.scheduledJobTasks, { tasks: [] });
+  setSchedulerReconciler(undefined);
+
+  await assert.rejects(
+    () =>
+      createDynamicTask({
+        id: "partial-route",
+        name: "Partial route",
+        prompt: "test",
+        recurrence: "hourly",
+        provider: "codex",
+      }),
+    /provider and model must be configured together/,
+  );
+
+  const input = {
+    id: "routed-task",
+    name: "Routed task",
+    prompt: "test",
+    recurrence: "hourly",
+    provider: "codex" as const,
+    model: "gpt-5.6-sol",
+    idempotencyKey: "routed-create",
+  };
+  const created = await createDynamicTask(input);
+  assert.equal(created.task.provider, "codex");
+  assert.equal(created.task.model, "gpt-5.6-sol");
+  assert.equal((await createDynamicTask(input)).created, false);
+  await assert.rejects(
+    () => createDynamicTask({ ...input, model: "gpt-5.6-luna" }),
+    /Idempotency key was already used for a different task request/,
+  );
+
+  const preserved = await updateDynamicTask({
+    id: input.id,
+    expectedRevision: 1,
+    name: "Still routed",
+  });
+  assert.equal(preserved.provider, "codex");
+  assert.equal(preserved.model, "gpt-5.6-sol");
+
+  const replaced = await updateDynamicTask({
+    id: input.id,
+    expectedRevision: 2,
+    provider: "codex",
+    model: "gpt-5.6-luna",
+  });
+  assert.equal(replaced.provider, "codex");
+  assert.equal(replaced.model, "gpt-5.6-luna");
+  await assert.rejects(
+    () => updateDynamicTask({ id: input.id, expectedRevision: 3, model: "gpt-5.6-sol" }),
+    /provider and model must be configured together/,
+  );
+
+  const cleared = await updateDynamicTask({
+    id: input.id,
+    expectedRevision: 3,
+    provider: null,
+    model: null,
+  });
+  assert.equal(cleared.provider, undefined);
+  assert.equal(cleared.model, undefined);
+  const persisted = (await readDynamicTaskFile()).tasks[0];
+  assert.equal(persisted.provider, undefined);
+  assert.equal(persisted.model, undefined);
 });
 
 test("a failed immediate reconcile cannot turn a committed mutation into an apparent failure", async () => {

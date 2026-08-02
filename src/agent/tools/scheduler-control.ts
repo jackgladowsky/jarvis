@@ -35,6 +35,18 @@ const schema = Type.Object({
     Type.String({ description: "IANA timezone. Defaults to the configured scheduler timezone." }),
   ),
   notify: Type.Optional(Type.Union([Type.Literal("always"), Type.Literal("on_issue"), Type.Literal("never")])),
+  provider: Type.Optional(
+    Type.Union([Type.Literal("codex"), Type.Literal("anthropic"), Type.Literal("openrouter"), Type.Null()], {
+      description:
+        "Per-task provider override. Provide with model; on update, set both provider and model to null to clear the override.",
+    }),
+  ),
+  model: Type.Optional(
+    Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
+      description:
+        "Per-task model override. Provide with provider; on update, set both provider and model to null to clear the override.",
+    }),
+  ),
   expected_revision: Type.Optional(Type.Number()),
   idempotency_key: Type.Optional(Type.String({ maxLength: 200 })),
   include_terminal: Type.Optional(Type.Boolean()),
@@ -46,7 +58,7 @@ const rawSchedulerControlTool: AgentTool<typeof schema> = {
   name: "scheduler_control",
   label: "scheduler_control",
   description:
-    "Create, list, update, snooze, or cancel reminders and recurring automations from natural-language requests. Use this instead of editing tasks.json. Time parsing is intentionally strict and rejects ambiguity. For safe retries, provide a stable idempotency_key on create and mutation calls; use expected_revision from list results when changing an existing task.",
+    "Create, list, update, snooze, or cancel reminders and recurring automations from natural-language requests. Use this instead of editing tasks.json. Time parsing is intentionally strict and rejects ambiguity. Optional per-task provider and model overrides must be supplied together; omit both to inherit or preserve routing, or set both to null on update to clear an override. For safe retries, provide a stable idempotency_key on create and mutation calls; use expected_revision from list results when changing an existing task.",
   parameters: schema,
   async execute(_id, args) {
     if (args.action === "list") {
@@ -68,6 +80,8 @@ const rawSchedulerControlTool: AgentTool<typeof schema> = {
         recurrence: args.recurrence,
         timezone: args.timezone,
         notify: args.notify,
+        provider: args.provider,
+        model: args.model,
         idempotencyKey: args.idempotency_key,
       });
       return { content: [{ type: "text", text: render(result) }], details: result };
@@ -92,6 +106,8 @@ const rawSchedulerControlTool: AgentTool<typeof schema> = {
       recurrence: args.recurrence,
       timezone: args.timezone,
       notify: args.notify,
+      provider: args.provider,
+      model: args.model,
     });
     return { content: [{ type: "text", text: render({ task }) }], details: { task } };
   },
@@ -102,6 +118,9 @@ export const schedulerControlTool = withToolAudit(rawSchedulerControlTool, {
     id: args.id,
     timezone: args.timezone,
     notify: args.notify,
+    provider: args.provider,
+    has_model: typeof args.model === "string",
+    clears_route: args.provider === null && args.model === null,
     has_when: Boolean(args.when),
     has_recurrence: Boolean(args.recurrence),
     has_prompt: Boolean(args.prompt),
