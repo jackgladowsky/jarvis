@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Bootstrap a task worktree once, then run every worker stage from that
-# worktree. Bootstrap failures are written back to the durable task record so
-# they cannot sit in "queued" forever with only a detached log as evidence.
+# Bootstrap the JARVIS runtime once, then run every worker stage in its assigned
+# task worktree. Bootstrap failures are written back to the durable task record
+# so they cannot sit in "queued" forever with only a detached log as evidence.
 set -euo pipefail
 
 TASK_ID="${1:-}"
@@ -119,7 +119,10 @@ if [[ -z "$WORKTREE" || ! -d "$WORKTREE" ]]; then
   exit 1
 fi
 
-cd "$WORKTREE"
+# The worker is a built JARVIS artifact, so its runtime and dependencies belong
+# to the controller source root. The task worktree can be any repository (for
+# example Python) and must not receive Node/pnpm bootstrap side effects.
+cd "$SOURCE_ROOT"
 
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 NVM_SH="$NVM_DIR/nvm.sh"
@@ -127,7 +130,7 @@ if [[ -s "$NVM_SH" ]]; then
   export NVM_DIR
   # shellcheck source=/dev/null
   . "$NVM_SH"
-  if [[ -f .nvmrc ]]; then
+  if [[ -f "$SOURCE_ROOT/.nvmrc" ]]; then
     nvm use --silent >/dev/null 2>&1 || nvm install
   else
     nvm use --silent 22 >/dev/null 2>&1 || nvm install 22
@@ -162,7 +165,7 @@ if [[ "$(pnpm --version)" != "10.26.2" ]]; then
 fi
 
 FINGERPRINT="$(sha256sum package.json pnpm-lock.yaml | sha256sum | cut -d' ' -f1)"
-BOOTSTRAP_MARKER="$WORKTREE/node_modules/.jarvis-background-bootstrap"
+BOOTSTRAP_MARKER="$SOURCE_ROOT/node_modules/.jarvis-background-bootstrap"
 PREVIOUS_FINGERPRINT=""
 if [[ -f "$BOOTSTRAP_MARKER" ]]; then
   PREVIOUS_FINGERPRINT="$(head -n 1 "$BOOTSTRAP_MARKER")"
@@ -193,7 +196,7 @@ rm -f "$BOOTSTRAP_FAILURE"
 
 export JARVIS_BACKGROUND_BOOTSTRAPPED=1
 export JARVIS_CONTROLLER_SOURCE_ROOT="$SOURCE_ROOT"
-export JARVIS_SOURCE_ROOT="$WORKTREE"
+export JARVIS_SOURCE_ROOT="$SOURCE_ROOT"
 export JARVIS_WORKTREE="$WORKTREE"
 export JARVIS_BACKGROUND_WORKTREE="$WORKTREE"
 export JARVIS_BACKGROUND_NODE="$NODE_BIN"

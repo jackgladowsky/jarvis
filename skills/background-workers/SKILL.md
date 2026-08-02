@@ -36,6 +36,7 @@ Tell the owner the task id, worktree, branch, and pipeline.
 
 Workers use:
 
+- The built JARVIS runtime and its Node/pnpm dependencies from `JARVIS_SOURCE_ROOT`; launcher bootstrap never installs Node dependencies in a target repository.
 - Git worktrees: `$HOME/jarvis-worktrees/<task-id>`
 - Task JSON: `$JARVIS_DATA_DIR/data/background/tasks/<task-id>.json`
 - Task note: `$JARVIS_DATA_DIR/data/background/notes/<task-id>.md`
