@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1
+
+- Fix background-worker bootstrap so non-Node target repositories can run safely.
+
 ## 0.11.0
 
 - Add safe per-task scheduler model routing and isolate scheduler tests from live task state.

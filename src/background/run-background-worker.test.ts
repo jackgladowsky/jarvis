@@ -14,9 +14,7 @@ const launcher = join(repoRoot, "scripts", "run-background-worker.sh");
 function fingerprint(packageJson: string, lockfile: string): string {
   const packageHash = createHash("sha256").update(packageJson).digest("hex");
   const lockHash = createHash("sha256").update(lockfile).digest("hex");
-  return createHash("sha256")
-    .update(`${packageHash}  package.json\n${lockHash}  pnpm-lock.yaml\n`)
-    .digest("hex");
+  return createHash("sha256").update(`${packageHash}  package.json\n${lockHash}  pnpm-lock.yaml\n`).digest("hex");
 }
 
 test("launcher bootstraps JARVIS source while running a non-Node target worktree", async () => {
@@ -39,7 +37,10 @@ test("launcher bootstraps JARVIS source while running a non-Node target worktree
     const lockfile = "lockfileVersion: '9.0'\n";
     await writeFile(join(sourceRoot, "package.json"), packageJson);
     await writeFile(join(sourceRoot, "pnpm-lock.yaml"), lockfile);
-    await writeFile(join(sourceRoot, "node_modules", ".jarvis-background-bootstrap"), fingerprint(packageJson, lockfile));
+    await writeFile(
+      join(sourceRoot, "node_modules", ".jarvis-background-bootstrap"),
+      fingerprint(packageJson, lockfile),
+    );
     await writeFile(join(binDir, "pnpm"), '#!/usr/bin/env bash\n[[ "$1" == "--version" ]] && echo 10.26.2\n');
     await chmod(join(binDir, "pnpm"), 0o755);
     await writeFile(
