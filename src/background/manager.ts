@@ -203,12 +203,28 @@ export function waitForSpawnAcknowledgement(child: SpawnAcknowledgementChild): P
 
 export async function spawnBackgroundWorker(id: string): Promise<number> {
   assertBackgroundId(id);
+  const task = await readBackgroundTaskUnlocked(id);
   const sourceRoot = process.env.JARVIS_SOURCE_ROOT ?? process.cwd();
-  const workerScript = join(sourceRoot, "dist", "background", "worker.js");
+  const workerArtifact = join(sourceRoot, "dist", "background", "worker.js");
   const launcher = join(sourceRoot, "scripts", "run-background-worker.sh");
-  const args = [id, workerScript];
+
+  // The controller owns the project plane: only launch into the worktree it
+  // prepared and verified. The launcher deliberately knows nothing about a
+  // target project's manifests or toolchain.
+  const worktree = await stat(task.worktree);
+  if (!worktree.isDirectory()) throw new Error(`background worktree is not a directory: ${task.worktree}`);
+  const { stdout } = await execFileAsync("git", ["-C", task.worktree, "rev-parse", "--is-inside-work-tree"], {
+    timeout: 5_000,
+  });
+  if (stdout.trim() !== "true") throw new Error(`background worktree is not a git worktree: ${task.worktree}`);
+  await access(launcher, constants.X_OK);
+  await access(workerArtifact, constants.R_OK);
+
+  // process.execPath is the runtime that is already serving this deployed
+  // controller artifact. Do not make the launcher discover or install one.
+  const args = [id, process.execPath, workerArtifact];
   const child = spawn(launcher, args, {
-    cwd: sourceRoot,
+    cwd: task.worktree,
     detached: true,
     stdio: "ignore",
     env: {

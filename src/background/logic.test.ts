@@ -14,7 +14,13 @@ test("single worker instructions cover the full bounded workflow", () => {
   assert.match(instructions, /implementation plan/);
   assert.match(instructions, /run checks appropriate/);
   assert.match(instructions, /commit all intended changes/);
-  assert.match(instructions, /must never push, merge, deploy, restart services, or edit the main checkout/);
+  assert.match(instructions, /inspect the assigned worktree for its setup instructions and native manifests/);
+  assert.match(instructions, /local toolchain/);
+  assert.match(instructions, /record every setup command and result in the task note/);
+  assert.match(
+    instructions,
+    /must never push, merge, deploy, restart services, access or expose secrets, use global installs, or edit the main checkout/,
+  );
   assert.match(instructions, /Do not perform unrelated cleanup/);
 });
 

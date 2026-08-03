@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.1
+
+- refactor: separate background worker launcher control and project planes
+
 ## 0.12.0
 
 - Replace role-based background pipelines with one adaptive investigate-plan-implement-verify worker.

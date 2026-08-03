@@ -19,9 +19,10 @@ The worker's system prompt contains the exact main-thread task at a dedicated, c
 
 1. Investigate the problem and current behavior.
 2. Form a proportional implementation plan.
-3. Implement it in the assigned worktree, or provide substantiated findings for research-only work.
-4. Run checks appropriate to the scope and risk, inspect the final diff/behavior, and fix issues found.
-5. For code changes, commit all intended files and leave a clean worker branch for publication.
+3. Inspect the assigned worktree's setup instructions and native manifests before project work. If setup is needed, use its local repo-native toolchain (for example `uv`/venv, `pnpm`, or Cargo), never a global install, and record every setup command/result in the task note.
+4. Implement it in the assigned worktree, or provide substantiated findings for research-only work.
+5. Run checks appropriate to the scope and risk, inspect the final diff/behavior, and fix issues found.
+6. For code changes, commit all intended files and leave a clean worker branch for publication.
 
 The worker chooses verification depth on the fly. It must not broaden the request into unrelated cleanup.
 
