@@ -11,30 +11,23 @@ import { readProcessStartTime } from "../lib/process-identity.js";
 import { config } from "../config.js";
 import { appendFileDurable, atomicWriteFile, atomicWriteJson, withFileLock } from "../lib/durable-file.js";
 import { appendJsonLinesDurable, readJsonLinesRecovering } from "../lib/json-lines.js";
-import type { BackgroundMailEntry, BackgroundRole, BackgroundStage, BackgroundTask } from "./types.js";
-import { choosePipeline, friendlyIdFromUuid, nextQueuedRole } from "./logic.js";
+import type { BackgroundMailEntry, BackgroundTask } from "./types.js";
+import { friendlyIdFromUuid } from "./logic.js";
 import { backgroundLifecycleNotificationId } from "./worker-logic.js";
 
 export interface StartBackgroundTaskOptions {
   goalId?: string;
-  pipeline?: BackgroundStage[];
   /** Create durable queued state without spawning; used for transactional goal linkage. */
   deferStart?: boolean;
 }
 
-export { choosePipeline, friendlyIdFromUuid, nextQueuedRole, renderTask, renderTaskList } from "./logic.js";
+export { friendlyIdFromUuid, renderTask, renderTaskList } from "./logic.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_REPO = paths.repo;
 const workerCapacityLock = join(paths.backgroundTasks, ".worker-capacity");
 const taskCreationLock = join(paths.backgroundTasks, ".task-creation");
-const TERMINAL_STATUSES = new Set<BackgroundTask["status"]>([
-  "needs_fix",
-  "ready_for_pr",
-  "failed",
-  "cancelled",
-  "done",
-]);
+const TERMINAL_STATUSES = new Set<BackgroundTask["status"]>(["ready_for_pr", "failed", "cancelled", "done"]);
 const BACKGROUND_ID_PATTERN = /^(?:[a-z]+-[a-z]+|task-[0-9a-f]{8})$/;
 
 function now(): string {
@@ -69,10 +62,18 @@ function assertBackgroundId(id: string): void {
 function normalizeTask(task: BackgroundTask): BackgroundTask {
   assertBackgroundId(task.id);
   task.uuid = task.uuid ?? `legacy-${task.id}`;
-  task.pipeline = task.pipeline ?? [
-    { role: "implementer", status: task.status === "awaiting_review" ? "done" : "queued" },
-    { role: "reviewer", status: "queued" },
-  ];
+  const legacyStatus = task.status as string;
+  if (["researching", "implementing", "reviewing", "awaiting_review"].includes(legacyStatus)) {
+    task.status = "running";
+  } else if (legacyStatus === "needs_fix") {
+    task.status = "failed";
+    task.error = task.error ?? "Legacy multi-role task needs an explicit single-worker resume.";
+  }
+  const legacy = task as BackgroundTask & Record<string, unknown>;
+  delete legacy.pipeline;
+  delete legacy.current_role;
+  delete legacy.automatic_fix_attempted;
+  delete legacy.review_summary;
   task.revision = task.revision ?? 0;
   if (!Number.isSafeInteger(task.revision) || task.revision < 0) {
     throw new Error(`invalid background task revision for ${task.id}`);
@@ -200,12 +201,12 @@ export function waitForSpawnAcknowledgement(child: SpawnAcknowledgementChild): P
   });
 }
 
-export async function spawnBackgroundWorker(id: string, role?: BackgroundRole): Promise<number> {
+export async function spawnBackgroundWorker(id: string): Promise<number> {
   assertBackgroundId(id);
   const sourceRoot = process.env.JARVIS_SOURCE_ROOT ?? process.cwd();
   const workerScript = join(sourceRoot, "dist", "background", "worker.js");
   const launcher = join(sourceRoot, "scripts", "run-background-worker.sh");
-  const args = role ? [id, workerScript, role] : [id, workerScript];
+  const args = [id, workerScript];
   const child = spawn(launcher, args, {
     cwd: sourceRoot,
     detached: true,
@@ -217,10 +218,10 @@ export async function spawnBackgroundWorker(id: string, role?: BackgroundRole): 
   });
   try {
     const pid = await waitForSpawnAcknowledgement(child);
-    log.info("background worker spawned", { id, role, pid });
+    log.info("background worker spawned", { id, pid });
     return pid;
   } catch (err) {
-    log.error("background worker spawn failed", { id, role, err: err instanceof Error ? err.message : String(err) });
+    log.error("background worker spawn failed", { id, err: err instanceof Error ? err.message : String(err) });
     throw err;
   }
 }
@@ -246,15 +247,15 @@ async function liveWorkerTaskCount(excludeTaskId: string): Promise<number> {
 }
 
 /** Caller must hold the task lock; the capacity lock covers spawn + PID persistence. */
-async function spawnAndPersistBackgroundWorker(task: BackgroundTask, role: BackgroundRole): Promise<boolean> {
+async function spawnAndPersistBackgroundWorker(task: BackgroundTask): Promise<boolean> {
   return withFileLock(workerCapacityLock, async () => {
     const limit = config.background?.max_concurrent_workers ?? 2;
     const active = await liveWorkerTaskCount(task.id);
     if (active >= limit) {
-      log.info("background task queued at worker capacity", { id: task.id, role, active, limit });
+      log.info("background task queued at worker capacity", { id: task.id, active, limit });
       return false;
     }
-    const pid = await spawnBackgroundWorker(task.id, role);
+    const pid = await spawnBackgroundWorker(task.id);
     task.pid = pid;
     try {
       await writeBackgroundTaskUnlocked(task, task);
@@ -292,8 +293,6 @@ async function createBackgroundTask(
   const { id, uuid } = await createTaskIdentity();
   const branch = `worker/${id}`;
   const worktree = join(paths.backgroundWorktrees, id);
-  const pipeline = options.pipeline ?? choosePipeline(prompt);
-  const currentRole = nextQueuedRole({ pipeline } as BackgroundTask);
   const preparingPidStartTime = await readProcessStartTime(process.pid);
   const task: BackgroundTask = {
     id,
@@ -305,9 +304,7 @@ async function createBackgroundTask(
     worktree,
     branch,
     chat_id: chatId,
-    pipeline,
     goal_id: options.goalId,
-    current_role: currentRole,
     launch_deferred: true,
     preparing: true,
     preparing_pid: process.pid,
@@ -320,19 +317,23 @@ async function createBackgroundTask(
   await writeBackgroundTask(task);
   try {
     await mkdir(paths.backgroundNotes, { recursive: true });
+    const { stdout: baseShaOutput } = await execFileAsync("git", ["-C", repo, "rev-parse", "HEAD"], {
+      timeout: 10_000,
+    });
+    task.base_sha = baseShaOutput.trim();
+    if (!/^[0-9a-f]{40}$/i.test(task.base_sha)) throw new Error(`could not resolve base commit for ${repo}`);
     await createWorktree(task);
     await atomicWriteFile(
       join(paths.backgroundNotes, `${id}.md`),
-      `# ${task.name}\n\n**Status:** queued\n**Worktree:** ${worktree}\n**Branch:** ${branch}\n**Pipeline:** ${pipeline.map((stage) => stage.role).join(" -> ")}\n\n## Prompt\n${prompt}\n\n## Updates\n- ${now()}: task created.\n`,
+      `# ${task.name}\n\n**Status:** queued\n**Worktree:** ${worktree}\n**Branch:** ${branch}\n\n## Prompt\n${prompt}\n\n## Updates\n- ${now()}: task created.\n`,
     );
     await appendBackgroundMail(id, {
       from: "main",
       type: "status",
-      body: `Task created. Pipeline: ${pipeline.map((stage) => stage.role).join(" -> ")}. Worktree prepared.`,
+      body: "Task created. Single worker prepared in an isolated worktree.",
     });
   } catch (err) {
     task.status = "failed";
-    task.current_role = undefined;
     task.finished_at = now();
     task.error = `task preparation failed: ${err instanceof Error ? err.message : String(err)}`;
     task.terminal_notification_id = backgroundLifecycleNotificationId(task, "terminal-failed");
@@ -366,8 +367,8 @@ async function createBackgroundTask(
     task.preparing_started_at = undefined;
     task.launch_deferred = options.deferStart || undefined;
     await writeBackgroundTaskUnlocked(task);
-    if (currentRole && !options.deferStart) {
-      await spawnAndPersistBackgroundWorker(task, currentRole);
+    if (!options.deferStart) {
+      await spawnAndPersistBackgroundWorker(task);
     }
   });
   return task;
@@ -382,10 +383,7 @@ export async function launchBackgroundTask(id: string): Promise<BackgroundTask> 
       throw new Error(`${id} already has a live worker (${task.pid})`);
     }
     task.pid = undefined;
-    const role = task.current_role ?? nextQueuedRole(task);
-    if (!role) throw new Error(`${id} has no queued role to launch`);
-    task.current_role = role;
-    await spawnAndPersistBackgroundWorker(task, role);
+    await spawnAndPersistBackgroundWorker(task);
     return task;
   });
 }
@@ -414,25 +412,16 @@ export async function answerBackgroundTask(id: string, body: string): Promise<Ba
     if (task.pid && (await isOwnedWorkerPid(task.pid, task.id))) {
       throw new Error(`${id} still has a live worker (${task.pid})`);
     }
-    const role = task.current_role ?? nextQueuedRole(task);
-    if (!role) throw new Error(`${id} has no role to resume after the answer`);
-    const stage = [...task.pipeline].reverse().find((candidate) => candidate.role === role);
-    if (stage) {
-      stage.status = "queued";
-      stage.error = undefined;
-      stage.finished_at = undefined;
-    }
     await appendBackgroundMail(id, { from: "main", type: "answer", body });
     task.status = "queued";
     task.launch_deferred = undefined;
-    task.current_role = role;
     task.finished_at = undefined;
     task.error = undefined;
     task.terminal_notification_id = undefined;
     task.terminal_notification_enqueued_at = undefined;
     task.pid = undefined;
     await writeBackgroundTaskUnlocked(task, task);
-    await spawnAndPersistBackgroundWorker(task, role);
+    await spawnAndPersistBackgroundWorker(task);
     return task;
   });
 }
@@ -467,14 +456,7 @@ export async function cancelBackgroundTask(id: string): Promise<BackgroundTask> 
     task.status = "cancelled";
     task.launch_deferred = undefined;
     task.pid = undefined;
-    task.current_role = undefined;
     task.finished_at = now();
-    for (const stage of task.pipeline) {
-      if (stage.status === "queued" || stage.status === "running") {
-        stage.status = "skipped";
-        stage.finished_at = stage.finished_at ?? now();
-      }
-    }
     await appendBackgroundMail(id, { from: "main", type: "status", body: "Task cancelled by main JARVIS." });
     await writeBackgroundTaskUnlocked(task, task);
     return task;
@@ -509,11 +491,7 @@ function isPidAlive(pid: number | undefined): boolean {
 
 function isTaskRunning(task: BackgroundTask): boolean {
   if (TERMINAL_STATUSES.has(task.status) || task.status === "waiting_on_main") return false;
-  return (
-    isPidAlive(task.pid) ||
-    task.pipeline.some((stage) => stage.status === "running") ||
-    ["queued", "running", "researching", "implementing", "reviewing", "awaiting_review"].includes(task.status)
-  );
+  return isPidAlive(task.pid) || ["queued", "running"].includes(task.status);
 }
 
 async function appendTaskNote(id: string, line: string): Promise<void> {
@@ -521,7 +499,7 @@ async function appendTaskNote(id: string, line: string): Promise<void> {
   await appendFileDurable(join(paths.backgroundNotes, `${id}.md`), line);
 }
 
-export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer" = "fixer"): Promise<BackgroundTask> {
+export async function resumeBackgroundTask(id: string): Promise<BackgroundTask> {
   return withFileLock(taskPath(id), async () => {
     const task = await readBackgroundTaskUnlocked(id);
     if (task.pid && (await isOwnedWorkerPid(task.pid, task.id))) {
@@ -529,8 +507,8 @@ export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer
     }
     task.pid = undefined;
     if (isTaskRunning(task)) throw new Error(`${id} is currently running or queued`);
-    if (!["needs_fix", "failed"].includes(task.status)) {
-      throw new Error(`${id} cannot be resumed from status ${task.status}; expected needs_fix or failed`);
+    if (task.status !== "failed") {
+      throw new Error(`${id} cannot be resumed from status ${task.status}; expected failed`);
     }
     if (!task.worktree) throw new Error(`${id} has no worktree recorded`);
     const worktreeStat = await stat(task.worktree).catch((err: NodeJS.ErrnoException) => {
@@ -539,16 +517,6 @@ export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer
     });
     if (!worktreeStat.isDirectory()) throw new Error(`${id} worktree is not a directory: ${task.worktree}`);
 
-    const stages: BackgroundStage[] =
-      role === "fixer"
-        ? [
-            { role: "fixer", status: "queued" },
-            { role: "reviewer", status: "queued" },
-          ]
-        : [{ role: "reviewer", status: "queued" }];
-    task.pipeline.push(...stages);
-    if (role === "fixer") task.automatic_fix_attempted = true;
-    task.current_role = role;
     task.status = "queued";
     task.launch_deferred = undefined;
     task.finished_at = undefined;
@@ -559,14 +527,11 @@ export async function resumeBackgroundTask(id: string, role: "fixer" | "reviewer
     await appendBackgroundMail(task.id, {
       from: "main",
       type: "status",
-      body: `Resumed existing task with ${stages.map((stage) => stage.role).join(" -> ")} stage(s) on the existing worktree.`,
+      body: "Resumed the single worker on the existing worktree.",
     });
-    await appendTaskNote(
-      task.id,
-      `- ${now()}: resumed existing task; appended ${stages.map((stage) => stage.role).join(" -> ")} and spawned ${role}.\n`,
-    );
+    await appendTaskNote(task.id, `- ${now()}: resumed the single worker on the existing worktree.\n`);
     await writeBackgroundTaskUnlocked(task, task);
-    await spawnAndPersistBackgroundWorker(task, role);
+    await spawnAndPersistBackgroundWorker(task);
     return task;
   });
 }

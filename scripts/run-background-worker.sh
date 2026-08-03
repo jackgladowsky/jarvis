@@ -6,10 +6,8 @@ set -euo pipefail
 
 TASK_ID="${1:-}"
 WORKER_SCRIPT="${2:-}"
-ROLE="${3:-}"
-
-if [[ -z "$TASK_ID" || -z "$WORKER_SCRIPT" ]]; then
-  echo "usage: $0 <task-id> <worker-script> [role]" >&2
+if [[ -z "$TASK_ID" || -z "$WORKER_SCRIPT" || -n "${3:-}" ]]; then
+  echo "usage: $0 <task-id> <worker-script>" >&2
   exit 2
 fi
 
@@ -34,26 +32,25 @@ mkdir -p "$LOG_DIR"
 # Detached workers have ignored stdio; retain bootstrap diagnostics.
 exec >>"$LOG_FILE" 2>&1
 
-echo "[$(date --iso-8601=seconds)] bootstrap start task=$TASK_ID role=${ROLE:-none} source=$SOURCE_ROOT"
+echo "[$(date --iso-8601=seconds)] bootstrap start task=$TASK_ID source=$SOURCE_ROOT"
 
 mark_bootstrap_failed() {
   local exit_code="$1"
   local line="$2"
   trap - ERR
   mkdir -p "$BOOTSTRAP_FAILURE_DIR"
-  python3 - "$BOOTSTRAP_FAILURE" "$TASK_ID" "$ROLE" "$exit_code" "$line" <<'PY' || true
+  python3 - "$BOOTSTRAP_FAILURE" "$TASK_ID" "$exit_code" "$line" <<'PY' || true
 import json
 import os
 import sys
 import tempfile
 from datetime import datetime, timezone
 
-path, task_id, role, exit_code, line = sys.argv[1:]
+path, task_id, exit_code, line = sys.argv[1:]
 try:
     message = f"background worker bootstrap failed at line {line} (exit {exit_code})"
     failure = {
         "task_id": task_id,
-        "role": role,
         "error": message,
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
@@ -72,7 +69,7 @@ try:
 except Exception as error:
     print(f"could not persist bootstrap failure: {error}", file=sys.stderr)
 PY
-  echo "[$(date --iso-8601=seconds)] bootstrap failed task=$TASK_ID role=${ROLE:-none} exit=$exit_code line=$line" >&2
+  echo "[$(date --iso-8601=seconds)] bootstrap failed task=$TASK_ID exit=$exit_code line=$line" >&2
   exit "$exit_code"
 }
 
@@ -206,7 +203,4 @@ export JARVIS_BACKGROUND_PNPM="$PNPM_BIN"
 # worktree; the worker script itself remains the already-built main artifact.
 cd "$WORKTREE"
 
-if [[ -n "$ROLE" ]]; then
-  exec "$NODE_BIN" "$WORKER_SCRIPT" "$TASK_ID" "$ROLE"
-fi
 exec "$NODE_BIN" "$WORKER_SCRIPT" "$TASK_ID"

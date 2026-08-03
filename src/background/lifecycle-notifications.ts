@@ -37,20 +37,11 @@ export function queueBackgroundLifecycleNotification(
   return notification;
 }
 
-export function queueReviewerNeedsFix(task: BackgroundTask): BackgroundLifecycleNotificationRecord {
-  return queueBackgroundLifecycleNotification(
-    task,
-    "review-needs-fix",
-    `${task.id} review needs fixes`,
-    `Background task ${task.id} was rejected by review. One automatic fixer + final review cycle is queued. Next action: JARVIS will retry once; inspect /task ${task.id} for the review, or use /fixbg ${task.id} if it still needs fixes.`,
-  );
-}
-
 /** Queue the owner-facing message for a durable task status transition. */
 export function queueBackgroundStatusNotification(
   task: BackgroundTask,
 ): BackgroundLifecycleNotificationRecord | undefined {
-  const detail = (task.error ?? task.review_summary ?? task.summary ?? "").slice(0, 2_000);
+  const detail = (task.error ?? task.summary ?? "").slice(0, 2_000);
   const withDetail = (text: string): string => (detail ? `${text}\n\n${detail}` : text);
   switch (task.status) {
     case "waiting_on_main":
@@ -60,21 +51,14 @@ export function queueBackgroundStatusNotification(
         `${task.id} is waiting for input`,
         withDetail(`Background task ${task.id} needs your input. Next action: /answer ${task.id} <response>.`),
       );
-    case "needs_fix":
-      return queueBackgroundLifecycleNotification(
-        task,
-        "terminal-needs-fix",
-        `${task.id} needs fixes`,
-        withDetail(
-          `Background task ${task.id} did not pass review. Next action: inspect /task ${task.id}, then run /fixbg ${task.id}.`,
-        ),
-      );
     case "ready_for_pr":
       return queueBackgroundLifecycleNotification(
         task,
         "terminal-ready-for-pr",
         `${task.id} is ready for PR`,
-        withDetail(`Background task ${task.id} passed review. Next action: inspect the worktree and prepare the PR.`),
+        withDetail(
+          `Background task ${task.id} produced a clean committed branch. Next action: main JARVIS should verify the branch, push it, open a PR, start the durable CI watch, and squash-merge after required checks pass.`,
+        ),
       );
     case "failed":
       return queueBackgroundLifecycleNotification(
@@ -82,7 +66,7 @@ export function queueBackgroundStatusNotification(
         "terminal-failed",
         `${task.id} failed`,
         withDetail(
-          `Background task ${task.id} failed. Next action: inspect /task ${task.id}, then resume with /fixbg ${task.id} if appropriate.`,
+          `Background task ${task.id} failed. Next action: inspect /task ${task.id}, then run /resumebg ${task.id} if appropriate.`,
         ),
       );
     case "done":

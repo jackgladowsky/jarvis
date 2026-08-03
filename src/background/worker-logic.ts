@@ -1,15 +1,5 @@
 import type { BackgroundTask } from "./types.js";
 
-export function parseReviewVerdict(output: string): "ready" | "needs_fix" {
-  const firstNonemptyLine =
-    output
-      .split("\n")
-      .find((line) => line.trim().length > 0)
-      ?.trim() ?? "";
-  const match = firstNonemptyLine.match(/^VERDICT:\s*(ready|needs_fix)$/i);
-  return match?.[1].toLowerCase() === "ready" ? "ready" : "needs_fix";
-}
-
 export function stageMustHalt(task: Pick<BackgroundTask, "status">): boolean {
   return task.status === "waiting_on_main" || task.status === "cancelled";
 }

@@ -1,7 +1,7 @@
 import type { BackgroundTask } from "./types.js";
 
-const TERMINAL_STATUSES = new Set(["needs_fix", "ready_for_pr", "failed", "cancelled", "done"]);
-const ACTIVE_STATUSES = new Set(["running", "researching", "implementing", "reviewing", "awaiting_review"]);
+const TERMINAL_STATUSES = new Set(["ready_for_pr", "failed", "cancelled", "done"]);
+const ACTIVE_STATUSES = new Set(["running"]);
 
 export type WorkerRecoveryDecision = "none" | "clear_pid" | "launch" | "quarantine";
 

@@ -518,7 +518,7 @@ The `search_memory` agent tool incrementally indexes Markdown notes and the user
 - **Reply/forward context:** Telegram replies, quotes, and every current `forward_origin` shape are rendered into bounded, control-normalized reference blocks. The blocks identify sender/date/message/media metadata but are explicitly untrusted data, never instructions. Slash-command dispatch examines only the current message, and the first normal agent response threads back to the inbound Telegram message when possible.
 - **Progress commands:** `/thinking` and `/verbose` toggle coarse/verbose progress messages for future turns.
 - **Background commands:** `/bg`, `/tasks`, `/task`, `/answer`, and `/cancelbg` manage detached worker tasks.
-- **Autonomous goal commands:** `/goal start|list|status|pause|resume|stop|next|log` run a bounded controller over background workers. Goals persist under `~/.jarvis/data/goals/`, launch at most one child task at a time, enforce task/time/failure budgets, append JSONL events, and stop/wait on approvals, failures, or exhausted budgets. They do not grant push/merge/deploy/destructive authority; main JARVIS remains the review/deploy gate.
+- **Autonomous goal commands:** `/goal start|list|status|pause|resume|stop|next|log` run a bounded controller over background workers. Goals persist under `~/.jarvis/data/goals/`, launch at most one child task at a time, enforce task/time/failure budgets, append JSONL events, and stop/wait on approvals, failures, or exhausted budgets. They do not grant push/merge/deploy/destructive authority; main JARVIS remains the publication/deploy gate.
 - **Bot token security:** Token in `~/.jarvis/.env`, never committed. The user-ID allowlist is the real defense.
 
 ---

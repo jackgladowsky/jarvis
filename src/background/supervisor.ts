@@ -23,7 +23,7 @@ import {
 } from "./lifecycle-notifications.js";
 
 const SUPERVISOR_INTERVAL_MS = 30_000;
-const TERMINAL_TASK_STATUSES = new Set(["needs_fix", "ready_for_pr", "failed", "cancelled", "done"]);
+const TERMINAL_TASK_STATUSES = new Set(["ready_for_pr", "failed", "cancelled", "done"]);
 const execFileAsync = promisify(execFile);
 async function isOwnedWorkerAlive(pid: number | undefined, taskId: string): Promise<boolean> {
   if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -65,16 +65,9 @@ async function worktreeIsValid(task: BackgroundTask): Promise<boolean> {
 async function markUnrecoverable(task: BackgroundTask, message: string): Promise<void> {
   task.status = "failed";
   task.pid = undefined;
-  task.current_role = undefined;
   task.finished_at = new Date().toISOString();
   task.error = message;
   queueBackgroundStatusNotification(task);
-  const running = task.pipeline.find((stage) => stage.status === "running");
-  if (running) {
-    running.status = "failed";
-    running.finished_at = task.finished_at;
-    running.error = message;
-  }
   await writeBackgroundTask(task);
   await appendBackgroundMail(task.id, { from: "main", type: "error", body: message }).catch(() => undefined);
   await enqueueBackgroundLifecycleNotifications(task.id).catch((err) =>
@@ -92,13 +85,6 @@ async function quarantineInterruptedTask(task: BackgroundTask): Promise<void> {
   task.pid = undefined;
   task.error = message;
   queueBackgroundStatusNotification(task);
-  const running = task.pipeline.find((stage) => stage.status === "running");
-  if (running) {
-    running.status = "failed";
-    running.finished_at = new Date().toISOString();
-    running.error = message;
-    task.current_role = running.role;
-  }
   await writeBackgroundTask(task);
   await appendBackgroundMail(task.id, { from: "worker", type: "question", body: message }).catch(() => undefined);
   await enqueueBackgroundLifecycleNotifications(task.id).catch((err) =>
@@ -232,7 +218,6 @@ async function reconcileTask(taskId: string): Promise<void> {
     const launched = task.goal_id ? await readBackgroundTask(task.id) : await launchBackgroundTask(task.id);
     log.info("background supervisor reconciled task", {
       id: task.id,
-      role: launched.current_role,
       pid: launched.pid,
       queuedForCapacity: !launched.pid,
     });

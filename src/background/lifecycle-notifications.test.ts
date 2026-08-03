@@ -69,70 +69,41 @@ async function prepare() {
   return { dataDir, worktreesDir, lifecycle, manager, notifications };
 }
 
-function reviewerRejectedTask(): BackgroundTask {
+function backgroundTask(): BackgroundTask {
   const timestamp = new Date().toISOString();
   return {
     id: "fern-sparrow",
     uuid: "uuid-fern-sparrow",
-    name: "reviewed task",
+    name: "background task",
     status: "queued",
     prompt: "test",
     repo: process.cwd(),
     worktree: join(tmpdir(), "fern-sparrow"),
     branch: "worker/fern-sparrow",
     chat_id: 123,
-    pipeline: [
-      { role: "implementer", status: "done" },
-      { role: "reviewer", status: "done", summary: "VERDICT: needs_fix\nMissing regression test." },
-      { role: "fixer", status: "queued" },
-    ],
-    current_role: "fixer",
     created_at: timestamp,
     updated_at: timestamp,
   };
 }
 
-test("reviewer needs_fix is durably surfaced without a /tasks request", async () => {
+test("single-worker lifecycle transitions are durably surfaced without a /tasks request", async () => {
   const { dataDir, worktreesDir, lifecycle, manager, notifications } = await prepare();
   try {
+    await notifications.writeInternalNotificationHeartbeat();
     const cases: Array<[BackgroundTask["status"], RegExp]> = [
       ["waiting_on_main", /\/answer fern-sparrow/],
-      ["needs_fix", /\/fixbg fern-sparrow/],
-      ["ready_for_pr", /prepare the PR/],
-      ["failed", /\/fixbg fern-sparrow/],
+      ["ready_for_pr", /push it, open a PR/],
+      ["failed", /\/resumebg fern-sparrow/],
       ["done", /inspect the worktree/],
     ];
     for (const [status, nextAction] of cases) {
-      const transition = reviewerRejectedTask();
+      const transition = backgroundTask();
       transition.status = status;
       const notification = lifecycle.queueBackgroundStatusNotification(transition);
       assert.ok(notification, `expected ${status} notification`);
       assert.match(notification!.body, /Next action:/);
       assert.match(notification!.body, nextAction);
     }
-
-    const task = reviewerRejectedTask();
-    // This is the same reviewer-rejection transition used before the worker
-    // launches its automatic fixer/re-review cycle.
-    lifecycle.queueReviewerNeedsFix(task);
-    await manager.writeBackgroundTask(task);
-    await notifications.writeInternalNotificationHeartbeat();
-
-    // This is the worker/supervisor path; no owner command is needed to make
-    // the reviewer rejection visible to the main Telegram notification pump.
-    await lifecycle.enqueueBackgroundLifecycleNotifications(task.id);
-    await lifecycle.enqueueBackgroundLifecycleNotifications(task.id);
-
-    const pending = await notifications.listPendingInternalNotifications();
-    const rejection = pending.filter(
-      (notification: { source: string; title: string }) =>
-        notification.source === "background" && notification.title === `${task.id} review needs fixes`,
-    );
-    assert.equal(rejection.length, 1);
-    assert.match(rejection[0].body, /Next action:/);
-
-    const stored = await manager.readBackgroundTask(task.id);
-    assert.ok(stored.lifecycle_notifications?.[0].enqueued_at);
 
     // Preparation failures are also prompt failed lifecycle transitions, not
     // a legacy terminal slot that waits for supervisor reconciliation.
@@ -148,13 +119,6 @@ test("reviewer needs_fix is durably surfaced without a /tasks request", async ()
     // of colliding with a task directory from a prior test or live worker.
     assert.ok(failed?.worktree.startsWith(`${worktreesDir}/`));
     assert.doesNotMatch(failed?.error ?? "", /worktree already exists/);
-    const failedNotification = (await notifications.listPendingInternalNotifications()).find(
-      (notification: { source: string; title: string; body: string }) =>
-        notification.source === "background" && notification.title === `${failed!.id} failed`,
-    );
-    assert.ok(failedNotification);
-    assert.match(failedNotification.body, /Next action:/);
-
     // ── Regression: ready_for_pr events must reach the agent pump ─────────
     // Create a fresh task in the ready_for_pr terminal state and drain its
     // outbox. The resulting internal notification must NOT opt into plain
@@ -162,7 +126,7 @@ test("reviewer needs_fix is durably surfaced without a /tasks request", async ()
     // main JARVIS surfaces a conversational response to the owner.
     // This guards against the glow-comet gap where terminal events were
     // silently delivered as plain text wall-of-dumps.
-    const readyTask = reviewerRejectedTask();
+    const readyTask = backgroundTask();
     readyTask.id = "glow-sparrow";
     readyTask.uuid = "uuid-glow-sparrow";
     readyTask.worktree = join(worktreesDir, "glow-sparrow");
@@ -186,7 +150,7 @@ test("reviewer needs_fix is durably surfaced without a /tasks request", async ()
       "ready_for_pr must route through agent delivery, not plain text",
     );
     const readyRendered = notifications.renderInternalNotificationPrompt(ready);
-    assert.match(readyRendered, /prepare the PR/);
+    assert.match(readyRendered, /push it, open a PR/);
     assert.match(readyRendered, /main JARVIS/);
 
     // Idempotent drain: a second enqueue pass must not duplicate the event.

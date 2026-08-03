@@ -1,5 +1,5 @@
 /**
- * Background worker commands: `/bg`, `/fixbg`, `/tasks`, `/task`,
+ * Background worker commands: `/bg`, `/resumebg`, `/tasks`, `/task`,
  * `/answer`, `/cancelbg`. All commands in this group bypass the per-chat
  * lock — they're meta-controls over background tasks and shouldn't queue
  * behind a long agent run.
@@ -35,21 +35,20 @@ export async function handleBg(ctx: Context, parsed: ParsedCommand): Promise<voi
   const task = await startBackgroundTask(parsed.args, chatId);
   await reply(
     ctx,
-    `${task.pid ? "Started" : "Queued"} background task ${task.id}${task.pid ? "" : " for worker capacity"}.\nPipeline: ${task.pipeline.map((stage) => stage.role).join(" -> ")}\nWorktree: ${task.worktree}\nBranch: ${task.branch}`,
+    `${task.pid ? "Started" : "Queued"} background task ${task.id}${task.pid ? "" : " for worker capacity"}.\nWorktree: ${task.worktree}\nBranch: ${task.branch}`,
   );
 }
 
-export async function handleFixBg(ctx: Context, parsed: ParsedCommand): Promise<void> {
-  const [id, requestedRole] = parsed.parts;
-  const role = requestedRole === "reviewer" ? "reviewer" : "fixer";
-  if (!id || (requestedRole && !["fixer", "reviewer"].includes(requestedRole))) {
-    await reply(ctx, "Usage: /fixbg <task-id> [fixer|reviewer]");
+export async function handleResumeBg(ctx: Context, parsed: ParsedCommand): Promise<void> {
+  const id = parsed.parts[0];
+  if (!id || parsed.parts.length > 1) {
+    await reply(ctx, "Usage: /resumebg <task-id>");
     return;
   }
-  const task = await resumeBackgroundTask(id, role);
+  const task = await resumeBackgroundTask(id);
   await reply(
     ctx,
-    `Resumed ${task.id}; ${task.pid ? `starting ${role}` : `${role} queued for worker capacity`} on existing worktree.\nPipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}\nWorktree: ${task.worktree}`,
+    `Resumed ${task.id}; ${task.pid ? "worker starting" : "queued for worker capacity"} on the existing worktree.\nWorktree: ${task.worktree}`,
   );
 }
 
@@ -108,12 +107,12 @@ export const backgroundCommands: CommandDef[] = [
     handler: (ctx, parsed) => handleBg(ctx, parsed),
   },
   {
-    name: "fixbg",
-    description: "Resume a failed background task as fixer or reviewer",
+    name: "resumebg",
+    description: "Resume a failed background task in its existing worktree",
     category: "Background",
-    argsHint: "<task-id> [fixer|reviewer]",
+    argsHint: "<task-id>",
     bypassLock: true,
-    handler: (ctx, parsed) => handleFixBg(ctx, parsed),
+    handler: (ctx, parsed) => handleResumeBg(ctx, parsed),
   },
   {
     name: "tasks",

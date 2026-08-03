@@ -11,7 +11,6 @@ import {
   startBackgroundTask,
   readBackgroundTask,
 } from "../background/manager.js";
-import type { BackgroundStage } from "../background/types.js";
 import { paths } from "../paths.js";
 import { atomicWriteJson, withFileLock } from "../lib/durable-file.js";
 import { appendJsonLinesDurable, readJsonLinesRecovering } from "../lib/json-lines.js";
@@ -197,11 +196,6 @@ export async function startNextGoalTask(goalOrId: GoalState | string, reason = "
     return reservation.goal;
   }
 
-  const pipeline: BackgroundStage[] = [
-    { role: "researcher", status: "queued" },
-    { role: "implementer", status: "queued" },
-    { role: "reviewer", status: "queued" },
-  ];
   let task;
   try {
     task = await startBackgroundTask(
@@ -210,7 +204,6 @@ export async function startNextGoalTask(goalOrId: GoalState | string, reason = "
       undefined,
       {
         goalId: reservation.goal.id,
-        pipeline,
         deferStart: true,
       },
     );
@@ -357,7 +350,7 @@ export async function advanceGoalAfterBackgroundTask(taskId: string): Promise<Go
       return current;
     }
     if (result === "blocked") {
-      // Keep the child linked while it waits for /answer or /fixbg. Clearing
+      // Keep the child linked while it waits for /answer or /resumebg. Clearing
       // active_task_id here allowed /goal next to start a second child and
       // detached the eventual resumed result from its parent goal.
       const paused = current.status === "paused";
@@ -508,7 +501,7 @@ async function reconcilePendingGoalReservation(goal: GoalState): Promise<void> {
       task_id: orphan.id,
       body: `Recovered stale task reservation and linked orphan task ${orphan.id}.`,
     });
-    if (["done", "ready_for_pr", "needs_fix", "failed", "cancelled"].includes(orphan.status)) {
+    if (["done", "ready_for_pr", "failed", "cancelled"].includes(orphan.status)) {
       await advanceGoalAfterBackgroundTask(orphan.id);
     }
     return;
@@ -596,10 +589,7 @@ export async function reconcileGoals(options: ReconcileGoalsOptions = {}): Promi
         if (task && current.status === "active" && task.status === "queued" && !task.pid) {
           await launchLinkedGoalTask(current.id, task.id);
         }
-        if (
-          task &&
-          ["done", "ready_for_pr", "needs_fix", "failed", "cancelled", "waiting_on_main"].includes(task.status)
-        ) {
+        if (task && ["done", "ready_for_pr", "failed", "cancelled", "waiting_on_main"].includes(task.status)) {
           await advanceGoalAfterBackgroundTask(task.id);
         }
       }

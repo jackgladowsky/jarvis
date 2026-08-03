@@ -13,7 +13,7 @@ import { registerCallback } from "../dispatcher.js";
  *
  * This function is kept as an explicit product boundary and for tests: any
  * notification type should render as text only. Use /task, /tasks, /answer,
- * /fixbg, and /cancelbg for follow-up actions.
+ * /resumebg, and /cancelbg for follow-up actions.
  */
 export function buildBackgroundKeyboard(_notification: { title: string; body: string }): undefined {
   return undefined;
@@ -21,7 +21,7 @@ export function buildBackgroundKeyboard(_notification: { title: string; body: st
 
 export async function handleLegacyBackgroundCallback(ctx: Context, _data: string): Promise<void> {
   await ctx
-    .answerCallbackQuery({ text: "Buttons removed — use /task, /answer, /fixbg, or /cancelbg." })
+    .answerCallbackQuery({ text: "Buttons removed — use /task, /answer, /resumebg, or /cancelbg." })
     .catch(() => undefined);
   await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
 }

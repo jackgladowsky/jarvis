@@ -1,31 +1,5 @@
 export type BackgroundTaskStatus =
-  | "queued"
-  | "running"
-  | "researching"
-  | "implementing"
-  | "reviewing"
-  | "waiting_on_main"
-  | "awaiting_review"
-  | "needs_fix"
-  | "ready_for_pr"
-  | "failed"
-  | "cancelled"
-  | "done";
-
-export type BackgroundRole = "planner" | "researcher" | "implementer" | "reviewer" | "fixer";
-export type BackgroundStageStatus = "queued" | "running" | "done" | "failed" | "skipped";
-
-export interface BackgroundStage {
-  role: BackgroundRole;
-  status: BackgroundStageStatus;
-  started_at?: string;
-  finished_at?: string;
-  summary?: string;
-  error?: string;
-  /** Model route selected for this stage, when one was explicitly configured. */
-  model_provider?: string;
-  model_id?: string;
-}
+  "queued" | "running" | "waiting_on_main" | "ready_for_pr" | "failed" | "cancelled" | "done";
 
 export interface BackgroundTask {
   /** Human-friendly handle used in chat commands, e.g. `moss-otter`. */
@@ -38,13 +12,11 @@ export interface BackgroundTask {
   repo: string;
   worktree: string;
   branch: string;
+  /** Commit from which the isolated worker branch was created. */
+  base_sha?: string;
   chat_id: number;
-  pipeline: BackgroundStage[];
   /** Optional parent autonomous goal id; used only for traceability/advancement. */
   goal_id?: string;
-  /** Ensures review-triggered remediation runs at most once automatically. */
-  automatic_fix_attempted?: boolean;
-  current_role?: BackgroundRole;
   /** Goal controller has created this task but has not durably linked it yet. */
   launch_deferred?: boolean;
   /** Durable task-creation lease, reconciled if the creating process dies. */
@@ -58,16 +30,12 @@ export interface BackgroundTask {
   started_at?: string;
   finished_at?: string;
   summary?: string;
-  review_summary?: string;
   error?: string;
   /** Deterministic outbox id written in the same commit as terminal/attention state. */
   terminal_notification_id?: string;
   /** Controller acknowledged that the deterministic notification is durably queued/archived. */
   terminal_notification_enqueued_at?: string;
-  /**
-   * Durable lifecycle outbox. Unlike the legacy terminal slot, this can retain
-   * a reviewer rejection while the automatic fixer advances the task.
-   */
+  /** Durable lifecycle outbox. */
   lifecycle_notifications?: Array<{
     id: string;
     event: string;
@@ -80,7 +48,7 @@ export interface BackgroundTask {
   revision?: number;
 }
 
-export type BackgroundMailType = "question" | "answer" | "status" | "decision" | "handoff" | "error" | "review";
+export type BackgroundMailType = "question" | "answer" | "status" | "handoff" | "error";
 
 export interface BackgroundMailEntry {
   ts: string;

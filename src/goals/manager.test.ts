@@ -100,7 +100,6 @@ function failedTask(id: string, goalId: string): BackgroundTask {
     worktree: join(tmpdir(), id),
     branch: `worker/${id}`,
     chat_id: 123,
-    pipeline: [{ role: "implementer", status: "failed" }],
     goal_id: goalId,
     created_at: timestamp,
     updated_at: timestamp,
@@ -185,7 +184,6 @@ test("goal advancement is idempotent, CAS-protected, and honors the failure budg
 
     const expiredTask = failedTask("expired-child", "goal-expired-case");
     expiredTask.status = "queued";
-    expiredTask.pipeline = [{ role: "implementer", status: "queued" }];
     expiredTask.launch_deferred = true;
     const expiredGoal = makeGoal(expiredTask.id);
     expiredGoal.id = "goal-expired-case";
@@ -196,7 +194,6 @@ test("goal advancement is idempotent, CAS-protected, and honors the failure budg
 
     const orphan = failedTask("paused-orphan", "goal-paused-case");
     orphan.status = "queued";
-    orphan.pipeline = [{ role: "implementer", status: "queued" }];
     orphan.launch_deferred = true;
     const pausedGoal = makeGoal("pending:stale-reservation");
     pausedGoal.id = "goal-paused-case";

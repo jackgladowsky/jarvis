@@ -15,7 +15,7 @@ export type InternalNotificationSource = "background" | "scheduler" | "deploy" |
  * Controls how the Telegram notification pump delivers a notification:
  * - `"prompt"`: feeds the notification to main JARVIS as a prompt and sends the
  *   agent response to chat. Used for lifecycle events that deserve a
- *   conversational reply (ready_for_pr, failed, needs_fix, scheduler).
+ *   conversational reply (ready_for_pr, failed, scheduler).
  * - `"plain"`: sends the fallback text as a raw Telegram message without
  *   running an agent turn. Used for lightweight progress updates and deploy
  *   back-online messages where a simple status blurb is sufficient.
