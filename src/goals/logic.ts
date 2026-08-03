@@ -60,7 +60,7 @@ export function goalPrompt(goal: GoalState, iteration: number): string {
 
 export function classifyChildResult(task: Pick<BackgroundTask, "status">): "ready" | "blocked" | "failed" | "done" {
   if (task.status === "ready_for_pr" || task.status === "done") return "ready";
-  if (task.status === "needs_fix" || task.status === "waiting_on_main") return "blocked";
+  if (task.status === "waiting_on_main") return "blocked";
   if (task.status === "failed" || task.status === "cancelled") return "failed";
   return "done";
 }

@@ -79,8 +79,6 @@ function makeTask(id: string): BackgroundTask {
     worktree: join(tmpdir(), id),
     branch: `worker/${id}`,
     chat_id: 123,
-    pipeline: [{ role: "implementer", status: "queued" }],
-    current_role: "implementer",
     created_at: timestamp,
     updated_at: timestamp,
   };

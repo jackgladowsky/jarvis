@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0
+
+- Replace role-based background pipelines with one adaptive investigate-plan-implement-verify worker.
+- Require code workers to leave clean committed branches for main-session PR publication and squash merge.
+- Simplify background task states, model routing, recovery, and resume controls.
+
 ## 0.11.1
 
 - Fix background-worker bootstrap so non-Node target repositories can run safely.

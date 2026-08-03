@@ -27,7 +27,10 @@ test("legacy background buttons are acknowledged and removed when tapped", async
   const calls: string[] = [];
   await handleLegacyBackgroundCallback(fakeCallbackCtx(calls), "bg:review:hush-tiger");
 
-  assert.deepEqual(calls, ["answer:Buttons removed — use /task, /answer, /fixbg, or /cancelbg.", "editMarkup:cleared"]);
+  assert.deepEqual(calls, [
+    "answer:Buttons removed — use /task, /answer, /resumebg, or /cancelbg.",
+    "editMarkup:cleared",
+  ]);
 });
 
 test("legacy status/reasoning toggle buttons are acknowledged and removed when tapped", async () => {

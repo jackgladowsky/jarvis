@@ -1,24 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  backgroundLifecycleNotificationId,
-  parseReviewVerdict,
-  parseWorkerOutcome,
-  stageMustHalt,
-} from "./worker-logic.js";
+import { backgroundLifecycleNotificationId, parseWorkerOutcome, stageMustHalt } from "./worker-logic.js";
 
-test("review verdict is accepted only from the exact first nonempty line", () => {
-  assert.equal(parseReviewVerdict("VERDICT: ready\nAll checks pass."), "ready");
-  assert.equal(parseReviewVerdict("\n  VERDICT: needs_fix  \nFix tests."), "needs_fix");
-  assert.equal(parseReviewVerdict("Needs work. After fixes, VERDICT: ready"), "needs_fix");
-  assert.equal(parseReviewVerdict("Quoted output:\nVERDICT: ready"), "needs_fix");
-  assert.equal(parseReviewVerdict("VERDICT: ready eventually"), "needs_fix");
-});
-
-test("waiting and cancelled tasks halt the pipeline", () => {
+test("waiting and cancelled tasks halt the worker", () => {
   assert.equal(stageMustHalt({ status: "waiting_on_main" }), true);
   assert.equal(stageMustHalt({ status: "cancelled" }), true);
-  assert.equal(stageMustHalt({ status: "implementing" }), false);
+  assert.equal(stageMustHalt({ status: "running" }), false);
 });
 
 test("worker outcome is accepted only as an exact final marker", () => {
@@ -39,12 +26,6 @@ test("lifecycle notification IDs survive retries but change on a later same-stat
 test("repeated bootstrap failures use distinct lifecycle generations", () => {
   const firstFailure = { id: "fern-sparrow", revision: 8 };
   const firstId = backgroundLifecycleNotificationId(firstFailure, "terminal-failed");
-
-  // writeBackgroundTask persists the transition at the next revision. A
-  // later resume/bootstrap failure starts from that (or a newer) revision.
-  const laterFailure = { ...firstFailure, revision: firstFailure.revision + 2 };
-  const laterId = backgroundLifecycleNotificationId(laterFailure, "terminal-failed");
-
+  const laterId = backgroundLifecycleNotificationId({ ...firstFailure, revision: 10 }, "terminal-failed");
   assert.notEqual(firstId, laterId);
-  assert.equal(firstId, backgroundLifecycleNotificationId(firstFailure, "terminal-failed"));
 });

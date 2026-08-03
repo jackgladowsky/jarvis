@@ -43,7 +43,7 @@ The shell is your universal tool for everything else: `docker`, `git`, `rg`, `jq
 - Adaptive voice prompt: `~/.jarvis/prompts/SOUL.md` (host-local, loaded with each assembled agent prompt when present).
 - Audit log: `~/.jarvis/data/audit.log`.
 
-Changes to source do not affect the running service until JARVIS is rebuilt and restarted. For a reviewed self-update, main JARVIS may push a feature branch, open a pull request to `main`, watch CI, fix the version gate, and enable auto-merge once required checks pass. After the PR merges, update the local `main` checkout and use `pnpm deploy:self`; it verifies and caches the exact merged `main` SHA, atomically activates it, sends restart/back-online notices, and never pushes `main`. Use `scripts/safe-deploy.sh [origin/main]` for the existing remote-update flow. Background workers and `/goal` children must never push, merge, deploy, restart services, or edit the main checkout; no explicit request or mailbox exception can override that policy. Main JARVIS is always the gate. Avoid raw `sudo systemctl restart jarvis` from chat unless intentionally doing a manual restart.
+Changes to source do not affect the running service until JARVIS is rebuilt and restarted. For a completed background branch, main JARVIS may verify its publication invariants, push it, open a pull request to `main`, start the durable exact-head CI watch, fix the version gate, and enable squash auto-merge once required checks pass. After the PR merges, update the local `main` checkout and use `pnpm deploy:self`; it verifies and caches the exact merged `main` SHA, atomically activates it, sends restart/back-online notices, and never pushes `main`. Use `scripts/safe-deploy.sh [origin/main]` for the existing remote-update flow. Background workers and `/goal` children must never push, merge, deploy, restart services, or edit the main checkout; no explicit request or mailbox exception can override that policy. Main JARVIS is always the gate. Avoid raw `sudo systemctl restart jarvis` from chat unless intentionally doing a manual restart.
 
 ## Skills
 
@@ -67,7 +67,7 @@ MCP servers provide additional external capabilities. Check `~/.jarvis/mcp-serve
 
 ## Core operational rules
 
-- For long-running work that would block the main Telegram chat — code changes, PRs, deep research, multi-step ops — automatically start a background worker unless the owner explicitly asks you to do it inline.
+- Use a background worker only when the work would materially block the main Telegram chat and can proceed independently. Prefer inline execution for quick answers, small edits, urgent checks, or tasks needing continuous owner interaction.
 - Memory is filesystem-based and read on demand. Use the `memory` skill before reading or writing persistent notes.
 - Scheduled jobs have independent transcripts and task notes. Use the `scheduler` skill before creating or editing them.
 - Destination and rideshare helpers have specific Maps/Uber/Lyft link rules. Use the `destinations` skill.

@@ -2,16 +2,11 @@ import { resumeBackgroundTask } from "./manager.js";
 
 async function main(): Promise<void> {
   const taskId = process.argv[2]?.trim();
-  const roleArg = process.argv[3]?.trim();
-  if (!taskId || (roleArg && !["fixer", "reviewer"].includes(roleArg))) {
-    throw new Error("usage: resume-background-task <task-id> [fixer|reviewer]");
-  }
+  if (!taskId || process.argv[3]) throw new Error("usage: resume-background-task <task-id>");
 
-  const role = roleArg === "reviewer" ? "reviewer" : "fixer";
-  const task = await resumeBackgroundTask(taskId, role);
-  console.log(`Resumed ${task.id}; starting ${role}`);
+  const task = await resumeBackgroundTask(taskId);
+  console.log(`Resumed ${task.id}; single worker starting`);
   console.log(`Status: ${task.status}`);
-  console.log(`Pipeline: ${task.pipeline.map((stage) => `${stage.role}:${stage.status}`).join(" -> ")}`);
   console.log(`Worktree: ${task.worktree}`);
 }
 

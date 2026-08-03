@@ -14,7 +14,6 @@ function task(status: BackgroundTask["status"], pid?: number): BackgroundTask {
     worktree: "/worktree",
     branch: "worker/test",
     chat_id: 1,
-    pipeline: [{ role: "implementer", status: "queued" }],
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
     pid,
@@ -22,8 +21,8 @@ function task(status: BackgroundTask["status"], pid?: number): BackgroundTask {
 }
 
 test("worker recovery decisions preserve live work and resume stale work", () => {
-  assert.equal(workerRecoveryDecision(task("implementing", 10), true), "none");
-  assert.equal(workerRecoveryDecision(task("implementing", 10), false), "quarantine");
+  assert.equal(workerRecoveryDecision(task("running", 10), true), "none");
+  assert.equal(workerRecoveryDecision(task("running", 10), false), "quarantine");
   assert.equal(workerRecoveryDecision(task("queued"), false), "launch");
   assert.equal(workerRecoveryDecision(task("waiting_on_main", 10), false), "clear_pid");
   assert.equal(workerRecoveryDecision(task("done", 10), false), "clear_pid");

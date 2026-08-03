@@ -19,33 +19,23 @@ The transport would create a background task with an explicit goal contract:
 - disallowed actions
 - review requirement before push/deploy/destructive changes
 
-The background pipeline should be finite, for example:
-
-```text
-researcher -> implementer -> reviewer
-```
-
-or, for non-code goals:
-
-```text
-researcher -> reviewer
-```
+Each child uses one finite background worker. Its system prompt requires an adaptive investigate, plan, execute, verify, and handoff workflow rather than spawning role pipelines.
 
 ## Safety constraints
 
 - No self-rescheduling by default.
 - No unbounded loops like "keep improving yourself forever."
-- Goal children never push, merge, deploy, restart services, or edit the main checkout. No original-command or mailbox exception can override this boundary; reviewed changes return to main JARVIS.
+- Goal children never push, merge, deploy, restart services, or edit the main checkout. No original-command or mailbox exception can override this boundary; committed changes return to main JARVIS for publication.
 - Credential changes and destructive filesystem actions require explicit owner approval in the task mailbox.
 - Any ambiguity that affects product/security/destructive behavior goes to the task mailbox and pauses as `waiting_on_main`.
-- Reviewer is a gate, not a rubber stamp. It can mark `needs_fix`, `ready_for_pr`, or `blocked`.
+- A child with committed changes can mark `ready_for_pr`; main JARVIS remains the publication and CI gate.
 
 ## Minimal implementation plan
 
 1. Add a `/goal` Telegram command that parses the objective and optional flags like `--hours`, `--turns`, `--repo`, and `--no-code`.
 2. Store the goal contract in the background task JSON.
 3. Teach worker prompt construction to include the contract and hard caps.
-4. Add watchdog logic that stops a task when caps are exceeded and marks it `awaiting_review` or `blocked` with a note.
+4. Add watchdog logic that stops a task when caps are exceeded and marks it `waiting_on_main` or `failed` with a note.
 5. Add tests for parsing, cap enforcement, and mailbox waiting behavior.
 
 ## Recommendation

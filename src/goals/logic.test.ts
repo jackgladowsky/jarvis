@@ -86,7 +86,6 @@ test("goal children cannot be authorized to publish or deploy", () => {
 
 test("classifyChildResult maps terminal background statuses", () => {
   assert.equal(classifyChildResult({ status: "ready_for_pr" }), "ready");
-  assert.equal(classifyChildResult({ status: "needs_fix" }), "blocked");
   assert.equal(classifyChildResult({ status: "waiting_on_main" }), "blocked");
   assert.equal(classifyChildResult({ status: "failed" }), "failed");
 });

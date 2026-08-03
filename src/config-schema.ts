@@ -29,7 +29,7 @@ const ModelSelectionSchema = z
   })
   .strict();
 
-export const CURRENT_CONFIG_SCHEMA_VERSION = 4 as const;
+export const CURRENT_CONFIG_SCHEMA_VERSION = 5 as const;
 
 // Schema mirrors config.yaml.example exactly. Any drift between the example
 // and this schema is a bug — the example is documentation, this is enforcement.
@@ -96,15 +96,7 @@ export const ConfigSchema = z
     background: z
       .object({
         max_concurrent_workers: z.number().int().positive().max(16),
-        role_models: z
-          .object({
-            planner: ModelSelectionSchema.optional(),
-            researcher: ModelSelectionSchema.optional(),
-            implementer: ModelSelectionSchema.optional(),
-            reviewer: ModelSelectionSchema.optional(),
-            fixer: ModelSelectionSchema.optional(),
-          })
-          .strict(),
+        model: ModelSelectionSchema.optional(),
       })
       .strict()
       .optional(),
@@ -212,14 +204,36 @@ export function migrateConfig(value: unknown): unknown {
     kernel: { api_key_env: "$KERNEL_API_KEY", profile_name: "jarvis", save_changes: false },
   };
   const defaultOwnerApproval = { required: false };
-  if (version === undefined || version === 1 || version === 2 || version === 3) {
+  if (version === undefined || version === 1 || version === 2 || version === 3 || version === 4) {
     // v0/v1 predate browser backend selection; v0-v2 predate the explicit
-    // owner-approval policy. Preserve local browsing and Jack's approval-free default.
+    // owner-approval policy. v5 replaces per-role background routes with one
+    // worker model. Prefer the former implementer route when migrating.
     const tools =
       typeof input.tools === "object" && input.tools !== null ? (input.tools as Record<string, unknown>) : input.tools;
+    const background =
+      typeof input.background === "object" && input.background !== null
+        ? (input.background as Record<string, unknown>)
+        : undefined;
+    const roleModels =
+      background && typeof background.role_models === "object" && background.role_models !== null
+        ? (background.role_models as Record<string, unknown>)
+        : undefined;
+    const migratedBackground = background
+      ? {
+          max_concurrent_workers: background.max_concurrent_workers,
+          model:
+            background.model ??
+            roleModels?.implementer ??
+            roleModels?.researcher ??
+            roleModels?.reviewer ??
+            roleModels?.fixer ??
+            roleModels?.planner,
+        }
+      : undefined;
     return {
       ...input,
       schema_version: CURRENT_CONFIG_SCHEMA_VERSION,
+      background: migratedBackground,
       tools:
         typeof tools === "object" && tools !== null
           ? {

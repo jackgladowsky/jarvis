@@ -7,8 +7,8 @@ Use this skill when preparing, reviewing, pushing, or opening GitHub pull reques
 - Work in the assigned repo/worktree, not a different checkout.
 - Inspect `git status`, branch, and diff before making claims.
 - Run appropriate checks before handoff.
-- `main` is PR-only: never directly push it. Background workers never push, merge, deploy, restart services, or edit the main checkout; main JARVIS is the gate after reviewer approval.
-- After review, main JARVIS may push a feature branch, open and watch its PR, fix a failing version gate, and enable auto-merge once all required checks are green. It deploys only the subsequently merged `main` SHA.
+- `main` is PR-only: never directly push it. Background workers never push, merge, deploy, restart services, or edit the main checkout; main JARVIS is the publication gate after worker completion.
+- For a completed clean worker branch, main JARVIS may verify publication invariants, push it, open and watch its PR, fix a failing version gate, and enable squash auto-merge once all required checks are green. It deploys only the subsequently merged `main` SHA.
 
 ## Before opening a PR
 
@@ -55,13 +55,13 @@ If `gh` is unavailable or unauthenticated, report that and provide the branch/su
 
 ## Main-session PR flow
 
-1. Reviewer marks `ready_for_pr`; main JARVIS inspects the finished worktree and runs appropriate checks.
-2. Main JARVIS may commit/push the reviewed feature branch and open a PR targeting `main`.
+1. The single worker marks `ready_for_pr` only after committing intended changes and leaving a clean worktree. Main JARVIS verifies the expected branch, clean state, committed diff, and absence of forbidden files.
+2. Main JARVIS pushes the worker branch and opens a PR targeting `main`.
 3. Watch required checks. If `Version gate` fails, bump `package.json` to strict SemVer-greater than the PR base and update `CHANGELOG.md`, then push the fix to the PR branch.
-4. Enable auto-merge only after every required check is green. Never merge or directly push `main` before that point.
+4. Enable squash auto-merge only after every required check is green. Never merge or directly push `main` before that point.
 5. After GitHub merges the PR, fast-forward local `main` to the exact remote merge result and run `pnpm deploy:self`; safe deploy never pushes `main`.
 
-Do not assume worker output is correct. That is how tiny fires become scheduled fires.
+Treat worker output as a publication candidate, not authority to bypass branch, cleanliness, diff, forbidden-file, or CI checks.
 
 ## Durable CI watch (main JARVIS only)
 

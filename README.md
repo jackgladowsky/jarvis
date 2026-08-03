@@ -97,7 +97,7 @@ The installer never commits or uploads `~/.jarvis`. Existing host-local files ar
 - Automatic reply, quote, and forwarded-message context with strict untrusted-content boundaries and threaded first responses.
 - Local-only Playwright browser workbench for page inspection plus guarded benign interaction, with persistent profile, screenshots, and JSON artifacts.
 - Conversational reminders and recurring automations with strict timezone-aware parsing, durable cancellation/history, and cron support through a validated scheduler control tool.
-- Detached background workers using isolated git worktrees and role pipelines.
+- Detached single-agent background workers using isolated git worktrees and adaptive investigate-plan-implement-verify workflows.
 - PR-only `main` workflow with a required SemVer version gate, then guarded deploy of the merged commit without direct pushes to `main`.
 - Safe remote-update helper that builds before restart and preserves host-local data.
 - Append-only redacted audit log for tool calls.
@@ -123,7 +123,7 @@ Important config sections:
 - `session` — inactivity and max-duration rotation thresholds.
 - `compaction` — context compaction thresholds.
 - `tools.bash` — default and maximum shell timeouts.
-- `background` — worker concurrency and optional per-role model routing; roles otherwise inherit the active model.
+- `background` — worker concurrency and an optional worker model override; workers otherwise inherit the active model.
 - `telegram` — typing indicator and parse mode.
 - `stt` — optional local whisper.cpp speech-to-text for Telegram voice/audio.
 - `scheduler` — enablement, timezone, notification chat, bootstrap tasks.
@@ -150,7 +150,7 @@ MCP integrations are also managed conversationally and are re-read without a res
 /tasks                list recent background tasks
 /task <id>            show task status and recent mailbox entries
 /answer <id> <text>   answer a worker question and resume it
-/fixbg <id> [role]    resume a needs-fix task on the same worktree
+/resumebg <id>        resume a failed task on the same worktree
 /cancelbg <id>        cancel a background worker task
 /goal start [opts] <objective>  start a bounded autonomous improvement loop
 /goal list|status|log <id>      inspect goal state/events
@@ -217,7 +217,7 @@ stt:
 
 ## Autonomous goals
 
-`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or the owner pauses/stops it. Goal children can prepare reviewed changes in their worktrees, but they can never push, merge, deploy, restart services, or edit the main checkout. Main JARVIS may run the PR lifecycle after review: push a branch, open/watch a PR, fix its version gate, and auto-merge only once required checks are green; it then deploys merged `main`. Destructive operations still require explicit owner approval. All goal transitions append JSONL events for auditability.
+`/goal` is a bounded controller over background workers, not a permission bypass or infinite agent loop. `/goal start [--max-tasks N] [--max-minutes N] [--max-failures N] [--auto] <objective>` creates persistent state under `~/.jarvis/data/goals/` and launches one child background task at a time. Defaults are intentionally conservative: one task, two hours, zero failures, and no auto-continue. A goal stops or waits when task/time/failure budget is exhausted, a child task needs fixes or main approval, or the owner pauses/stops it. Goal children can prepare committed, verified changes in their worktrees, but they can never push, merge, deploy, restart services, or edit the main checkout. Main JARVIS may run the PR lifecycle after validating the worker branch: push it, open/watch a PR, fix its version gate, and squash auto-merge only once required checks are green; it then deploys merged `main`. Destructive operations still require explicit owner approval. All goal transitions append JSONL events for auditability.
 
 ## Development
 
@@ -234,7 +234,7 @@ The test command creates an isolated temporary JARVIS data directory and placeho
 
 `pnpm run check` runs format check, lint, typecheck, and coverage.
 
-Main JARVIS publishes changes through pull requests only: after review it may push a feature branch and open the PR, then starts a durable read-only CI watch using the PR number and exact pushed head SHA. The watcher survives restarts, reconciles new heads, and sends one internal result event; it cannot push, merge, or deploy. Main JARVIS may fix a failing version gate and enable auto-merge once required checks are green. After the PR is merged and local `main` matches `origin/main`, `pnpm deploy:self` verifies or reuses that exact-SHA artifact and atomically activates it; it never pushes `main`. Background workers cannot invoke this publishing or deploy path.
+Main JARVIS publishes changes through pull requests only: after validating a completed clean worker branch it may push the branch and open the PR, then starts a durable read-only CI watch using the PR number and exact pushed head SHA. The watcher survives restarts, reconciles new heads, and sends one internal result event; it cannot push, merge, or deploy. Main JARVIS may fix a failing version gate and enable auto-merge once required checks are green. After the PR is merged and local `main` matches `origin/main`, `pnpm deploy:self` verifies or reuses that exact-SHA artifact and atomically activates it; it never pushes `main`. Background workers cannot invoke this publishing or deploy path.
 
 CI runs on pushes to `main` and pull requests targeting `main` using Node 22 and 24. Every merged/deployed change must increment `package.json`: every pull request targeting `main` must set it to a valid SemVer version strictly greater than the PR's base `main` version. The required `Version gate` CI check reports both versions when it fails. Use the release workflow (`pnpm run release`) to prepare the version and changelog together.
 

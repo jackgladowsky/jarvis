@@ -1,7 +1,7 @@
 # JARVIS configuration. Edit freely, restart the service to apply.
 # Secrets live in .env, not here. Copy this to ~/.jarvis/config.yaml.
 
-schema_version: 4
+schema_version: 5
 
 agent:
   provider: codex # "codex" / "anthropic" / "openrouter"
@@ -34,12 +34,11 @@ tools:
       profile_name: jarvis # safe Kernel profile identifier
       save_changes: false # opt in only when remote profile changes should persist
 
-# Background roles inherit the active model unless explicitly routed here.
-# This keeps Anthropic/OpenRouter-only installations working without hidden
-# Codex credential requirements.
+# Background workers inherit the active model unless one model is explicitly
+# configured here.
 background:
   max_concurrent_workers: 2
-  role_models: {}
+  # model: { provider: codex, model: gpt-5.6-terra }
 
 telegram:
   show_typing: true # 4s re-fire while the agent is working
